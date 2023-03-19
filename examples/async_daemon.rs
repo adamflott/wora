@@ -1,17 +1,23 @@
+#[allow(dead_code)]
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock;
 
 use async_trait::async_trait;
 use clap::{Parser, ValueEnum};
-use libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2};
-use log::{debug, error, info, trace, warn};
+use libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1};
 use serde::{Deserialize, Serialize};
+use tracing::{debug, error, info, trace};
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::{filter, prelude::*, reload, Registry};
 
-use wora::errors::{MainEarlyReturn, SetupFailure};
+use wora::errors::*;
 use wora::events::Event;
+use wora::exec::*;
+use wora::exec_unix::*;
+use wora::metrics::*;
 use wora::restart_policy::MainRetryAction;
 use wora::*;
-use wora::{Metric, UnixLikeSystem, UnixLikeUser};
 
 #[derive(Clone, Debug, ValueEnum, Serialize, Deserialize)]
 pub enum RunMode {
@@ -29,20 +35,53 @@ pub struct DaemonArgs {
     pub run_mode: RunMode,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct DaemonState {
-    peers: Vec<std::net::SocketAddr>,
+#[derive(Default, Deserialize)]
+struct Obj {
+    t_or_f: bool,
+    list: Vec<String>,
 }
+
+#[derive(Default, Deserialize)]
+pub struct DaemonConfig {
+    str: String,
+    num: Option<u16>,
+    obj: Obj,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DaemonState {}
 
 type DaemonSharedState = Arc<RwLock<DaemonState>>;
 struct DaemonApp {
     args: DaemonArgs,
     state: DaemonSharedState,
+    log_reload_handle: tracing_subscriber::reload::Handle<filter::LevelFilter, Registry>,
+    config: DaemonConfig,
+}
+
+impl Config for DaemonConfig {
+    type ConfigT = DaemonConfig;
+    fn parse_main_config_file(data: String) -> Result<DaemonConfig, Box<dyn std::error::Error>> {
+        match toml::from_str(&data) {
+            Ok(v) => return Ok(v),
+            Err(err) => return Err(Box::new(err)),
+        }
+    }
+    fn parse_supplemental_config_file(
+        _file_path: PathBuf,
+        data: String,
+    ) -> Result<DaemonConfig, Box<dyn std::error::Error>> {
+        match toml::from_str(&data) {
+            Ok(v) => return Ok(v),
+            Err(err) => return Err(Box::new(err)),
+        }
+    }
 }
 
 #[async_trait]
 impl App for DaemonApp {
     type AppMetricsProducer = MetricsProducerStdout;
+    type AppConfig = DaemonConfig;
 
     fn name(&self) -> &'static str {
         "async_daemon"
@@ -54,21 +93,6 @@ impl App for DaemonApp {
         exec: &(dyn Executor + Send + Sync),
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<(), SetupFailure> {
-        let l = fern::Dispatch::new()
-            .level(log::LevelFilter::Trace)
-            .format(|out, message, record| {
-                out.finish(format_args!(
-                    "{} {} {} {}",
-                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S:%f"),
-                    record.target(),
-                    record.level(),
-                    message
-                ))
-            })
-            .chain(std::io::stdout());
-
-        l.apply()?;
-
         debug!("{:?}", wora.stats_from_start());
 
         let args = DaemonArgs::parse();
@@ -83,32 +107,61 @@ impl App for DaemonApp {
         &mut self,
         wora: &mut Wora,
         _exec: &(dyn Executor + Send + Sync),
-        metrics: &mut (dyn MetricProcessor + Send + Sync),
+        _metrics: &mut (dyn MetricProcessor + Send + Sync),
     ) -> MainRetryAction {
         info!("waiting for events...");
         while let Some(ev) = wora.receiver.recv().await {
             info!("event: {:?}", &ev);
             match ev {
                 Event::UnixSignal(signum) => match signum {
-                    SIGTERM => return MainRetryAction::Success,
+                    SIGTERM | SIGINT | SIGQUIT => return MainRetryAction::UseExitCode(1),
                     SIGHUP => {
                         info!("sighup!");
                     }
-                    SIGINT => return MainRetryAction::Success,
                     SIGUSR1 => {
-                        info!("got sigusr1, incrementing counter");
-                        metrics.add(Metric::Counter("sighup".to_string())).await;
+                        self.log_reload_handle.modify(|filter| {
+                            *filter = filter::LevelFilter::TRACE;
+                        });
+                        trace!("changed log level to trace");
                     }
-                    SIGUSR2 => {}
-                    SIGQUIT => {}
                     _ => {}
                 },
-                Event::Shutdown => return MainRetryAction::Success,
-                _ => {}
+                Event::Shutdown(dt) => {
+                    info!("shutting down at {:?}", dt);
+                    return MainRetryAction::Success;
+                }
+                Event::SystemResource(_) => {}
+                Event::ConfigChange(_file, data) => {
+                    match DaemonConfig::parse_main_config_file(data) {
+                        Ok(cfg) => {
+                            info!("config changed");
+                            self.config = cfg;
+                        }
+                        Err(err) => {
+                            error!("failed to parse config{:?}", err);
+                        }
+                    }
+                }
+                Event::Suspended(dt) => {
+                    info!("suspending at {:?}", dt);
+                }
+                Event::LogRotation => {
+                    info!("rotating log");
+                }
+                Event::LeadershipChange(old_state, new_state) => {
+                    info!(
+                        "leadership has changed from state {:?} to {:?}",
+                        old_state, new_state
+                    );
+                }
             }
         }
 
         MainRetryAction::Success
+    }
+
+    async fn is_healthy() -> HealthState {
+        HealthState::Ok
     }
 
     async fn end(
@@ -123,13 +176,34 @@ impl App for DaemonApp {
 
 #[tokio::main]
 async fn main() -> Result<(), MainEarlyReturn> {
+    let filter = filter::LevelFilter::INFO;
+    let (filter, reload_handle) = reload::Layer::new(filter);
+
+    let format = tracing_subscriber::fmt::format()
+        .with_file(true)
+        .with_line_number(true)
+        .with_level(true) // don't include levels in formatted output
+        .with_target(true) // don't include targets
+        .with_thread_ids(true) // include the thread ID of the current thread
+        .with_thread_names(true) // include the name of the current thread
+        ; // use the `Compact` formatting style.
+
+    let x = tracing_subscriber::fmt::layer()
+        .event_format(format)
+        //.with_max_level(Level::TRACE)
+        .with_span_events(FmtSpan::CLOSE | FmtSpan::ENTER);
+
+    tracing_subscriber::registry().with(filter).with(x).init();
+
     let args = DaemonArgs::parse();
 
-    let app_state = DaemonState { peers: vec![] };
+    let app_state = DaemonState {};
 
     let app = DaemonApp {
         args: args.clone(),
         state: Arc::new(RwLock::new(app_state)),
+        log_reload_handle: reload_handle,
+        config: DaemonConfig::default(),
     };
 
     let metrics = MetricsProducerStdout::new().await;

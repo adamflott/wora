@@ -1,18 +1,14 @@
 use async_trait::async_trait;
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use log::{debug, error, info, trace, warn};
+use tracing_subscriber;
 
-use wora::errors::EnvVarsParseError;
-use wora::errors::{MainEarlyReturn, SetupFailure};
+use wora::errors::*;
+use wora::exec::*;
+use wora::exec_unix::*;
+use wora::metrics::*;
 use wora::restart_policy::MainRetryAction;
 use wora::*;
-use wora::{UnixLikeSystem, UnixLikeUser};
-
-#[derive(Clone, Debug, ValueEnum)]
-enum RunMode {
-    Sys,
-    User,
-}
 
 #[derive(Clone, Debug, Parser)]
 #[command(
@@ -29,22 +25,6 @@ struct BasicAppOpts {
     /// logging level
     #[arg(short, long, default_value_t=log::LevelFilter::Trace)]
     level: log::LevelFilter,
-
-    /// change default run mode
-    #[arg(short, long, value_enum, default_value_t=RunMode::User)]
-    run_mode: RunMode,
-}
-
-#[derive(Clone, Debug)]
-struct BasicEnvVars {
-    counter: Option<u32>,
-}
-
-#[derive(Clone, Debug)]
-enum BasicEvents {}
-
-fn new_env_vars_parser() -> Result<BasicEnvVars, EnvVarsParseError> {
-    todo!()
 }
 
 #[derive(Debug)]
@@ -56,41 +36,26 @@ struct BasicApp {
 #[async_trait]
 impl App for BasicApp {
     type AppMetricsProducer = MetricsProducerStdout;
+    type AppConfig = NoConfig;
 
     fn name(&self) -> &'static str {
         "wora_basic"
     }
     async fn setup(
         &mut self,
-        wora: &Wora,
+        _wora: &Wora,
         _exec: &(dyn Executor + Send + Sync),
-        metrics: &(dyn MetricProcessor + Send + Sync),
+        _metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<(), SetupFailure> {
-        let l = fern::Dispatch::new()
-            .level(log::LevelFilter::Trace)
-            .format(|out, message, record| {
-                out.finish(format_args!(
-                    "{} {} {} {}",
-                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S:%f"),
-                    record.target(),
-                    record.level(),
-                    message
-                ))
-            })
-            .chain(std::io::stdout());
-
-        l.apply()?;
-
-        //info!("{:?}", wora.stats_from_start());
-
+        debug!("command args: {:?}", self.args);
         Ok(())
     }
 
     async fn main(
         &mut self,
-        wora: &mut Wora,
+        _wora: &mut Wora,
         _exec: &(dyn Executor + Send + Sync),
-        metrics: &mut (dyn MetricProcessor + Send + Sync),
+        _metrics: &mut (dyn MetricProcessor + Send + Sync),
     ) -> MainRetryAction {
         trace!("Trace message");
         debug!("Debug message");
@@ -99,18 +64,18 @@ impl App for BasicApp {
         error!("Error message");
         self.counter += 1;
 
-        metrics
-            .add(Metric::Counter("basic.metrics.some.count".to_string()))
-            .await;
-
         MainRetryAction::Success
+    }
+
+    async fn is_healthy() -> HealthState {
+        HealthState::Ok
     }
 
     async fn end(
         &mut self,
-        wora: &Wora,
+        _wora: &Wora,
         _exec: &(dyn Executor + Send + Sync),
-        metrics: &(dyn MetricProcessor + Send + Sync),
+        _metrics: &(dyn MetricProcessor + Send + Sync),
     ) {
         info!("Final count: {}", self.counter);
     }
@@ -118,28 +83,20 @@ impl App for BasicApp {
 
 #[tokio::main]
 async fn main() -> Result<(), MainEarlyReturn> {
+    tracing_subscriber::fmt::init();
+
     let app_name = "wora_basic";
 
     let args = BasicAppOpts::parse();
 
-    //let env_vars = new_env_vars_parser()?;
     let app = BasicApp {
-        args: args.clone(),
+        args: args,
         counter: 1,
     };
 
     let metrics = MetricsProducerStdout::new().await;
-
-    match &args.run_mode {
-        RunMode::Sys => {
-            let exec = UnixLikeSystem::new(app_name).await;
-            exec_async_runner(exec, app, metrics).await?
-        }
-        RunMode::User => {
-            let exec = UnixLikeUser::new(app_name).await;
-            exec_async_runner(exec, app, metrics).await?
-        }
-    }
+    let exec = UnixLikeUser::new(app_name).await;
+    exec_async_runner(exec, app, metrics).await?;
 
     Ok(())
 }

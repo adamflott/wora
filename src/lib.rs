@@ -1,94 +1,107 @@
-#![allow(dead_code)]
-
 //! Write Once Run Anywhere (WORA)
 //!
 //! A framework for building applications (daemons, etc) that run in different environments (Linux, Kubernetes, etc).
 //!
 //! Just like Java's claim, it really doesn't run everywhere. no_std or embedded environments are not supported.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use caps::CapSet;
-use directories::ProjectDirs;
-use libc::{RLIM_INFINITY, SIGINT};
-use libc::{SIGHUP, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2};
-use log::{debug, error, info};
-use nix::sys::{
-    mman::{mlockall, MlockAllFlags},
-    resource::{setrlimit, Resource},
-};
-use nix::unistd::{chdir, getpid};
+use chrono::Utc;
+use libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2};
+use nix::unistd::getpid;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
-use users::{get_effective_username, get_user_by_name, switch::set_both_uid};
+use tracing::Instrument;
+use tracing::{error, info, trace, warn};
 
+pub mod dirs;
 pub mod errors;
 pub mod events;
+pub mod exec;
+pub mod exec_unix;
+pub mod metrics;
 pub mod restart_policy;
 
+use crate::dirs::Dirs;
 use crate::errors::{MainEarlyReturn, SetupFailure, WoraSetupError};
 use events::*;
+use exec::*;
+use metrics::*;
 use restart_policy::*;
+
+const EVENT_BUFFER_SIZE: usize = 1024;
 
 /// All possible system stats
 #[derive(Debug)]
 pub struct Stats {
-    host_info: statgrab::HostInfo,
-    cpu: statgrab::CPUStats,
-    memory: statgrab::MemStats,
-    load: statgrab::LoadStats,
-    user: statgrab::UserStats,
-    swap: statgrab::SwapStats,
-    fs: Vec<statgrab::FilesystemStats>,
-    disk_io: Vec<statgrab::DiskIOStats>,
-    net_io: Vec<statgrab::NetworkIOStats>,
-    net_if: Vec<statgrab::NetworkIfaceStats>,
-    page: statgrab::PageStats,
-    process: Vec<statgrab::ProcessStats>,
-    process_count: statgrab::ProcessCount,
-}
-
-#[derive(Clone, Debug)]
-pub struct Dirs {
-    pub root_dir: PathBuf,
-    pub log_root_dir: PathBuf,
-    pub metadata_root_dir: PathBuf,
-    pub data_root_dir: PathBuf,
-    pub runtime_root_dir: PathBuf,
-    pub cache_root_dir: PathBuf,
+    pub host_info: statgrab::HostInfo,
+    pub cpu: statgrab::CPUStats,
+    pub memory: statgrab::MemStats,
+    pub load: statgrab::LoadStats,
+    pub user: statgrab::UserStats,
+    pub swap: statgrab::SwapStats,
+    pub fs: Vec<statgrab::FilesystemStats>,
+    pub disk_io: Vec<statgrab::DiskIOStats>,
+    pub net_io: Vec<statgrab::NetworkIOStats>,
+    pub net_if: Vec<statgrab::NetworkIfaceStats>,
+    pub page: statgrab::PageStats,
+    pub process: Vec<statgrab::ProcessStats>,
+    pub process_count: statgrab::ProcessCount,
 }
 
 /// All workloads will be able to access the WORA API
 pub struct Wora {
+    /// application name
     pub app_name: String,
+    /// common directories for all executors
     pub dirs: Dirs,
+    /// statgrab handle
     sg: statgrab::SGHandle,
+    /// last stat collection
     stats: Stats,
-    fs_notify: RecommendedWatcher,
+    /// process id
     pid: nix::unistd::Pid,
+    /// `Event` producer
     pub sender: Sender<Event>,
+    /// `Event` recevier
     pub receiver: Receiver<Event>,
+    /// leadership state
+    pub leadership: Leadership,
+}
+
+#[derive(Clone, Debug)]
+pub enum Leadership {
+    Leader,
+    Follower,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HealthState {
+    Ok,
+    Suspended,
+    TryAgain,
+    Failed,
+    Unknown,
 }
 
 /// WORA API
 impl Wora {
-    pub fn new(dirs: &Dirs, app_name: String) -> Result<Wora, WoraSetupError> {
-        println!("checking executor directories exist...");
+    pub fn new(dirs: &Dirs, app_name: String, ev_buf_size: usize) -> Result<Wora, WoraSetupError> {
+        trace!("checking executor directories exist...");
 
         for dir in [
             &dirs.root_dir,
             &dirs.log_root_dir,
             &dirs.metadata_root_dir,
             &dirs.data_root_dir,
-            &dirs.runtime_root_dir,
             &dirs.cache_root_dir,
         ] {
             if !dir.exists() {
-                eprintln!("directory {:?} does not exist", dir);
                 error!("directory {:?} does not exist", dir);
                 return Err(WoraSetupError::DirectoryDoesNotExistOnFilesystem(
                     dir.clone(),
@@ -114,14 +127,9 @@ impl Wora {
             process_count: sg.get_process_count_of(statgrab::ProcessCountSource::Entire),
         };
 
-        let watcher = notify::recommended_watcher(|res| match res {
-            Ok(event) => println!("event: {:?}", event),
-            Err(e) => println!("watch error: {:?}", e),
-        })?;
-
         let pid = getpid();
 
-        let (tx, rx1) = mpsc::channel(16); // TODO
+        let (tx, rx) = mpsc::channel(ev_buf_size);
 
         for &signum in [SIGHUP, SIGTERM, SIGQUIT, SIGUSR1, SIGUSR2, SIGINT].iter() {
             let send = tx.clone();
@@ -141,10 +149,10 @@ impl Wora {
             dirs: dirs.clone(),
             sg,
             stats,
-            fs_notify: watcher,
             pid,
             sender: tx,
-            receiver: rx1,
+            receiver: rx,
+            leadership: Leadership::Unknown,
         })
     }
 
@@ -155,303 +163,85 @@ impl Wora {
     pub fn dirs(&self) -> &Dirs {
         &self.dirs
     }
-}
 
-pub fn new_arg_parser_clap<Args: clap::Parser>() -> Result<Args, clap::error::Error> {
-    clap::Parser::try_parse()
-}
-
-///
-#[async_trait]
-pub trait MetricProcessor {
-    async fn setup(&mut self) -> Result<(), SetupFailure>;
-    async fn add(&mut self, m: Metric) -> Result<(), SetupFailure>;
-    async fn end(&self);
-}
-
-pub enum Metric {
-    Counter(String),
-}
-
-/// Common methods for all `Executors`
-pub trait Executor {
-    ///
-    fn dirs(&self) -> &Dirs;
-
-    /// Disable memory limits
-    fn disable_memory_limits(&self) -> Result<(), SetupFailure> {
-        setrlimit(Resource::RLIMIT_MEMLOCK, RLIM_INFINITY, RLIM_INFINITY)?;
-        Ok(())
-    }
-
-    //  Disable paging memory to swap
-    fn disable_paging_mem_to_swap(&self) -> Result<(), SetupFailure> {
-        mlockall(MlockAllFlags::all())?;
-        Ok(())
-    }
-
-    //  Disable core files
-    fn disable_core_dumps(&self) -> Result<(), SetupFailure> {
-        setrlimit(Resource::RLIMIT_CORE, 0, 0)?;
-        Ok(())
-    }
-
-    // Switch to a non-root user
-    fn run_as_user_and_group(&self, user_name: &str, group_name: &str) -> Result<(), SetupFailure> {
-        let newuser = get_user_by_name(user_name)
-            .ok_or(SetupFailure::UnknownSystemUser(user_name.to_string()))?;
-        set_both_uid(newuser.uid(), newuser.uid())?;
-
-        Ok(())
-    }
-
-    fn has_no_caps(&self) -> Result<bool, SetupFailure> {
-        let effective = caps::read(None, CapSet::Effective)?;
-        Ok(effective.is_empty())
-    }
-
-    fn is_running_as_root(&self) -> bool {
-        get_effective_username().unwrap_or("".into()) == "root"
-    }
-}
-
-pub struct MetricsProducerStdout {
-    handle: tokio::io::Stdout,
-    counters: HashMap<String, u64>,
-}
-
-impl MetricsProducerStdout {
-    pub async fn new() -> Self {
-        Self {
-            handle: tokio::io::stdout(),
-            counters: HashMap::new(),
+    pub async fn emit_event(&self, ev: Event) -> () {
+        match self.sender.send(ev).await {
+            Ok(_) => {}
+            Err(send_err) => {
+                error!("event:send:error: {:?}", send_err);
+            }
         }
-    }
-}
-#[async_trait]
-impl MetricProcessor for MetricsProducerStdout {
-    async fn setup(&mut self) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-
-    async fn add(&mut self, m: Metric) -> Result<(), SetupFailure> {
-        match m {
-            Metric::Counter(key) => match self.counters.get_mut(&key) {
-                Some(val) => {
-                    *val += 1;
-                    info!("metrics:stdout:counter:incr: key:{};count:{}", &key, val);
-                }
-                None => {
-                    info!("metrics:stdout:counter:incr: key:{};count:0", &key);
-                    self.counters.insert(key, 1);
-                }
-            },
-        }
-        Ok(())
-    }
-
-    async fn end(&self) {}
-}
-
-#[async_trait]
-pub trait AsyncExecutor: Executor {
-    async fn setup(
-        &mut self,
-        wora: &Wora,
-        metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<(), SetupFailure>;
-    async fn is_ready(&self, wora: &Wora, metrics: &(dyn MetricProcessor + Send + Sync)) -> bool;
-    async fn end(&self, wora: &Wora, metrics: &(dyn MetricProcessor + Send + Sync));
-}
-
-#[derive(Debug)]
-pub struct UnixLike {
-    pub dirs: Dirs,
-}
-
-impl UnixLike {
-    pub async fn new(_app_name: &str) -> Self {
-        let dirs = Dirs {
-            root_dir: PathBuf::from("/"),
-            log_root_dir: PathBuf::from("/var/log"),
-            metadata_root_dir: PathBuf::from("/etc/"),
-            data_root_dir: PathBuf::from("/usr/local/data"),
-            runtime_root_dir: PathBuf::from("/run/"),
-            cache_root_dir: PathBuf::from("/var/run/"),
-        };
-        UnixLike { dirs }
-    }
-}
-
-#[async_trait]
-impl MetricProcessor for UnixLike {
-    async fn setup(&mut self) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-    async fn add(&mut self, _m: Metric) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-    async fn end(&self) {
         ()
     }
-}
 
-impl Executor for UnixLike {
-    fn dirs(&self) -> &Dirs {
-        &self.dirs
+    pub fn host_os_name(&self) -> &str {
+        &self.stats.host_info.os_name
+    }
+    pub fn host_os_release(&self) -> &str {
+        &self.stats.host_info.os_release
+    }
+    pub fn host_os_version(&self) -> &str {
+        &self.stats.host_info.os_version
+    }
+    pub fn host_platform(&self) -> &str {
+        &self.stats.host_info.platform
+    }
+    pub fn host_hostname(&self) -> &str {
+        &self.stats.host_info.hostname
+    }
+    pub fn host_cpu_count(&self) -> u32 {
+        self.stats.host_info.ncpus
+    }
+    pub fn host_cpu_max(&self) -> u32 {
+        self.stats.host_info.maxcpus
+    }
+    pub fn host_type(&self) -> String {
+        format!("{:?}", self.stats.host_info.host_state)
     }
 }
 
-pub struct UnixLikeSystem {
-    unix: UnixLike,
-}
+pub trait Config {
+    type ConfigT: Default;
+    fn parse_main_config_file(data: String) -> Result<Self::ConfigT, Box<dyn std::error::Error>>;
 
-impl UnixLikeSystem {
-    pub async fn new(app_name: &str) -> Self {
-        let unix = UnixLike::new(app_name).await;
-        UnixLikeSystem { unix }
+    fn parse_supplemental_config_file(
+        _file_path: PathBuf,
+        _data: String,
+    ) -> Result<Self::ConfigT, Box<dyn std::error::Error>> {
+        Ok(Self::ConfigT::default())
     }
 }
 
-#[async_trait]
-impl MetricProcessor for UnixLikeSystem {
-    async fn add(&mut self, _m: Metric) -> Result<(), SetupFailure> {
+pub struct NoConfig;
+impl Config for NoConfig {
+    type ConfigT = ();
+    fn parse_main_config_file(data: String) -> Result<Self::ConfigT, Box<dyn std::error::Error>> {
         Ok(())
     }
-    async fn setup(&mut self) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-    async fn end(&self) {
-        ()
-    }
 }
-
-impl Executor for UnixLikeSystem {
-    fn dirs(&self) -> &Dirs {
-        &self.unix.dirs
-    }
-}
-
-#[async_trait]
-impl AsyncExecutor for UnixLikeSystem {
-    async fn setup(
-        &mut self,
-        _wora: &Wora,
-        _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-
-    async fn is_ready(&self, _wora: &Wora, _metrics: &(dyn MetricProcessor + Send + Sync)) -> bool {
-        true
-    }
-
-    async fn end(&self, _wora: &Wora, _metrics: &(dyn MetricProcessor + Send + Sync)) {
-        ()
-    }
-}
-
-pub struct UnixLikeUser {
-    unix: UnixLike,
-}
-
-impl UnixLikeUser {
-    pub async fn new(app_name: &str) -> Self {
-        let proj_dirs = ProjectDirs::from("com", "wora", app_name).unwrap();
-
-        let dirs = Dirs {
-            root_dir: PathBuf::from("/"),
-            log_root_dir: proj_dirs.data_local_dir().to_path_buf(),
-            metadata_root_dir: proj_dirs.config_dir().to_path_buf(),
-            data_root_dir: proj_dirs.data_dir().to_path_buf(),
-            runtime_root_dir: proj_dirs
-                .runtime_dir()
-                .unwrap_or(std::env::temp_dir().as_path())
-                .to_path_buf(),
-            cache_root_dir: proj_dirs.cache_dir().to_path_buf(),
-        };
-
-        let mut unix = UnixLike::new(app_name).await;
-        unix.dirs = dirs;
-
-        UnixLikeUser { unix }
-    }
-}
-
-#[async_trait]
-impl MetricProcessor for UnixLikeUser {
-    async fn setup(&mut self) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-    async fn add(&mut self, _m: Metric) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-    async fn end(&self) {
-        ()
-    }
-}
-
-impl Executor for UnixLikeUser {
-    fn dirs(&self) -> &Dirs {
-        &self.unix.dirs
-    }
-}
-
-#[async_trait]
-impl AsyncExecutor for UnixLikeUser {
-    async fn setup(
-        &mut self,
-        wora: &Wora,
-        _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<(), SetupFailure> {
-        let dirs = &wora.dirs;
-
-        println!("exec:setup:io:chdir({:?}): trying", &wora.dirs.root_dir);
-        chdir(&wora.dirs.root_dir)?;
-        println!("exec:setup:io:chdir({:?}): success", &wora.dirs.root_dir);
-
-        for dir in [
-            &dirs.log_root_dir,
-            &dirs.metadata_root_dir,
-            &dirs.data_root_dir,
-            &dirs.runtime_root_dir,
-            &dirs.cache_root_dir,
-        ] {
-            // TODO - maybe theres a better way to handle logging before the app sets up logging? use a simple internal logger?
-            println!("exec:setup:io:create dir:{:?}: trying", dir);
-            std::fs::create_dir_all(dir)?;
-            println!("exec:setup:io:create dir:{:?}: success", dir);
-        }
-
-        Ok(())
-    }
-
-    async fn is_ready(&self, _wora: &Wora, _metrics: &(dyn MetricProcessor + Send + Sync)) -> bool {
-        true
-    }
-
-    async fn end(&self, _wora: &Wora, _metrics: &(dyn MetricProcessor + Send + Sync)) {
-        ()
-    }
-}
-
 #[async_trait]
 pub trait App {
     type AppMetricsProducer: MetricProcessor;
+    type AppConfig: Config;
 
     fn name(&self) -> &'static str;
+
     async fn setup(
         &mut self,
         wora: &Wora,
         exec: &(dyn Executor + Send + Sync),
         metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<(), SetupFailure>;
+
     async fn main(
         &mut self,
         wora: &mut Wora,
         exec: &(dyn Executor + Send + Sync),
         metrics: &mut (dyn MetricProcessor + Send + Sync),
     ) -> MainRetryAction;
+
+    async fn is_healthy() -> HealthState;
+
     async fn end(
         &mut self,
         wora: &Wora,
@@ -460,71 +250,136 @@ pub trait App {
     );
 }
 
+fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)>
+{
+    let (tx, rx) = channel(1);
+
+    let watcher = RecommendedWatcher::new(
+        move |res| {
+            futures::executor::block_on(async {
+                tx.send(res).await.unwrap();
+            })
+        },
+        notify::Config::default(),
+    )?;
+
+    Ok((watcher, rx))
+}
+
 pub async fn exec_async_runner(
     mut exec: impl AsyncExecutor + Sync + Send + Executor,
-    mut app: impl App,
+    mut app: impl App + Sync + Send + 'static,
     mut metrics: impl MetricProcessor + Sync + Send,
 ) -> Result<(), MainEarlyReturn> {
-    let mut wora = Wora::new(exec.dirs(), app.name().to_string())?;
+    let mut wora = Wora::new(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE)?;
 
-    exec.setup(&wora, &metrics).await?;
-    match app.setup(&wora, &exec, &metrics).await {
+    let mut exec_metrics = MetricExecutorTimings::default();
+
+    metrics.add(&Metric::Counter("exec:run:setup:start".into()));
+    exec.setup(&wora, &metrics)
+        .instrument(tracing::info_span!("exec:run:setup"))
+        .await?;
+    exec_metrics.setup_finish = Some(Utc::now());
+    metrics.add(&Metric::Counter("exec:run:setup:finish".into()));
+
+    let mut app_metrics = MetricAppTimings::default();
+    app_metrics.setup_finish = Some(Utc::now());
+    match app
+        .setup(&wora, &exec, &metrics)
+        .instrument(tracing::info_span!("app:run:setup"))
+        .await
+    {
         Ok(_) => {
+            info!(
+                host.hostname = wora.host_hostname(),
+                host.platform = wora.host_platform(),
+                host.os_name = wora.host_os_name(),
+                host.os_release = wora.host_os_release(),
+                host.os_version = wora.host_os_version(),
+                host.cpu_count = wora.host_cpu_count(),
+                host.cpu_max = wora.host_cpu_max(),
+                host.machine_type = wora.host_type()
+            );
             info!("dirs.root: {:?}", wora.dirs.root_dir);
             info!("dirs.log: {:?}", wora.dirs.log_root_dir);
             info!("dirs.metadata: {:?}", wora.dirs.metadata_root_dir);
             info!("dirs.data: {:?}", wora.dirs.data_root_dir);
             info!("dirs.runtime: {:?}", wora.dirs.runtime_root_dir);
             info!("dirs.cache: {:?}", wora.dirs.cache_root_dir);
+            info!("dirs.secrets: {:?}", wora.dirs.secrets_root_dir);
 
-            info!("host: {:?}", wora.stats_from_start().host_info);
+            let (mut watcher, mut watch_rx) = async_watcher()?;
 
             info!("notify:watch:dir: {:?}", &wora.dirs.metadata_root_dir);
-            wora.fs_notify.watch(
+            watcher.watch(
                 std::path::Path::new(&wora.dirs.metadata_root_dir),
                 RecursiveMode::Recursive,
             )?;
+            let ev_sender = wora.sender.clone();
 
-            info!("{}", Event::PhaseEnd(Phase::Setup).to_string());
-            info!("{}", Event::PhaseBegin(Phase::Main).to_string());
-            info!(
-                "{}",
-                Event::Begin(app.name().to_string(), ProcessId(wora.pid)).to_string()
-            );
+            tokio::spawn(async move {
+                while let Some(res) = watch_rx.recv().await {
+                    match res {
+                        Ok(event) => {
+                            info!("changed: {:?}", event);
+                            for path in event.paths {
+                                match tokio::fs::read_to_string(&path).await {
+                                    Ok(data) => {
+                                        ev_sender
+                                            .send(Event::ConfigChange(path.clone(), data))
+                                            .await;
+                                    }
+                                    Err(_) => {}
+                                }
+                            }
+                        }
+                        Err(e) => error!("watch error: {:?}", e),
+                    }
+                }
+            });
 
-            if exec.is_ready(&wora, &metrics).await {
-                match app.main(&mut wora, &exec, &mut metrics).await {
+            info!(process_id = wora.pid.to_string(), app_name = app.name());
+
+            if exec
+                .is_ready(&wora, &metrics)
+                .instrument(tracing::info_span!("exec:run:is_ready"))
+                .await
+            {
+                match app
+                    .main(&mut wora, &exec, &mut metrics)
+                    .instrument(tracing::info_span!("app:run:main"))
+                    .await
+                {
                     MainRetryAction::UseExitCode(ec) => {
-                        info!("{}", Event::PhaseEnd(Phase::Main).to_string());
                         return Err(MainEarlyReturn::UseExitCode(ec));
                     }
                     MainRetryAction::UseRestartPolicy => {
-                        info!("{}", Event::PhaseEnd(Phase::Main).to_string());
-
-                        info!("{}", Event::PhaseBegin(Phase::Main).to_string());
-                        app.main(&mut wora, &exec, &mut metrics).await;
-                        info!("{}", Event::PhaseEnd(Phase::Main).to_string());
+                        app.main(&mut wora, &exec, &mut metrics)
+                            .instrument(tracing::info_span!("app:run:main:retry"))
+                            .await;
                     }
-                    MainRetryAction::Success => {
-                        info!("{}", Event::PhaseEnd(Phase::Main).to_string());
-                    }
+                    MainRetryAction::Success => {}
                 }
             } else {
-                // TODO
+                warn!(comp = "exec", method = "run", is_ready = false);
             }
 
-            info!("{}", Event::PhaseBegin(Phase::End).to_string());
-            app.end(&wora, &exec, &metrics).await;
-            info!("{}", Event::PhaseEnd(Phase::End).to_string());
+            app.end(&wora, &exec, &metrics)
+                .instrument(tracing::info_span!("app:run:end"))
+                .await;
         }
         Err(setup_err) => {
             error!("{:?}", setup_err)
         }
     }
 
-    debug!("exec:run:end:start");
-    exec.end(&wora, &metrics).await;
-    debug!("exec:run:end:finish");
+    exec_metrics.end_start = Some(Utc::now());
+    metrics.add(&Metric::Counter("exec:run:end:start".into()));
+    exec.end(&wora, &metrics)
+        .instrument(tracing::info_span!("exec:run:end"))
+        .await;
+    exec_metrics.end_start = Some(Utc::now());
+    metrics.add(&Metric::Counter("exec:run:end:finish".into()));
 
     Ok(())
 }

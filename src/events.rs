@@ -1,19 +1,10 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use nix::unistd::Pid;
+use serde::{Serialize, Serializer};
 
-use serde::{Deserialize, Serialize, Serializer};
-//use serde_json::Result;
-
-use crate::restart_policy::*;
-
-// # General
-
-/// Percentage from 0 to 100
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Percent(i8);
-
-// # System
+use crate::Leadership;
 
 /// Process Id (pid)
 #[derive(Clone, Debug)]
@@ -26,27 +17,6 @@ impl Serialize for ProcessId {
     {
         serializer.serialize_i32(self.0.as_raw())
     }
-}
-
-// # Communication
-
-/// wora control socket operation.
-#[derive(Clone, Debug, Serialize)]
-pub enum SocketOp {
-    Open,
-    Bind,
-    Accept,
-    Listen,
-    Recv,
-    Close,
-}
-
-/// wora phase. One of setup, main, end.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum Phase {
-    Setup,
-    Main,
-    End,
 }
 
 /// stats for CPU, disk, file system, load, memory, network usage, process, etc from the system
@@ -81,18 +51,6 @@ impl Serialize for SystemResourceStat {
 /// TODO - implement Serialize, Deserialize
 #[derive(Clone, Debug)]
 pub enum Event {
-    // wora
-    /// start of the wora running the workload
-    Begin(String, ProcessId),
-    /// start of a phase change in wora
-    PhaseBegin(Phase),
-    /// end of a phase change in wora
-    PhaseEnd(Phase),
-    /// end of wora running the workload
-    End,
-    /// workload retry count, policy, and next action
-    WorkloadRetry(usize, WorkloadRestartPolicy, MainRetryAction),
-
     // system
     /// when a Unix signal arrives
     UnixSignal(i32),
@@ -100,12 +58,14 @@ pub enum Event {
     SystemResource(SystemResourceStat),
 
     // workload
-    ConfigChange,
-    ControlOp(SocketOp),
+    ///
+    ConfigChange(PathBuf, String),
 
-    Suspended,
-    Shutdown,
+    // operations
+    Suspended(Option<chrono::NaiveDateTime>),
+    Shutdown(Option<chrono::NaiveDateTime>),
     LogRotation,
+    LeadershipChange(Leadership, Leadership),
 }
 
 impl ToString for Event {

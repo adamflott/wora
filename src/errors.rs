@@ -56,8 +56,12 @@ pub enum SetupFailure {
     ParseInt(#[from] std::num::ParseIntError),
     #[error("setup: unknown system user")]
     UnknownSystemUser(String),
+    #[cfg(target_os = "linux")]
     #[error("setup: capability")]
+    #[cfg(target_os = "linux")]
     Capability(#[from] CapsError),
+    #[error("JSON parsing error")]
+    JSON(#[from] serde_json::Error),
 }
 
 #[derive(Debug, Error)]
@@ -80,6 +84,8 @@ pub enum MainEarlyReturn {
     ArgParsingClap(#[from] clap::error::Error),
     #[error("env vars")]
     EnvParser(#[from] EnvVarsParseError),
+    #[error("logger")]
+    SetupError(#[from] log::SetLoggerError),
 }
 
 #[derive(Debug, Error)]
