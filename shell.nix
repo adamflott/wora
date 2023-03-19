@@ -4,6 +4,7 @@ let
   pkgs = import (fetchTarball("channel:nixpkgs-unstable")) {};
 in pkgs.clangStdenv.mkDerivation {
   name = "wora";
-  buildInputs = [ pkgs.cargo pkgs.rustc pkgs.libstatgrab pkgs.libclang pkgs.pkg-config ];
+  buildInputs = [ pkgs.cargo pkgs.rustc pkgs.libstatgrab pkgs.libclang
+  pkgs.pkg-config pkgs.clippy ];
   LIBCLANG_PATH = "${pkgs.llvmPackages_11.libclang.lib}/lib";
 }
