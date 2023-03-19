@@ -55,6 +55,8 @@ struct BasicApp {
 
 #[async_trait]
 impl App for BasicApp {
+    type AppMetricsProducer = MetricsProducerStdout;
+
     fn name(&self) -> &'static str {
         "wora_basic"
     }
@@ -62,6 +64,7 @@ impl App for BasicApp {
         &mut self,
         wora: &Wora,
         _exec: &(dyn Executor + Send + Sync),
+        metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<(), SetupFailure> {
         let l = fern::Dispatch::new()
             .level(log::LevelFilter::Trace)
@@ -87,6 +90,7 @@ impl App for BasicApp {
         &mut self,
         wora: &mut Wora,
         _exec: &(dyn Executor + Send + Sync),
+        metrics: &mut (dyn MetricProcessor + Send + Sync),
     ) -> MainRetryAction {
         trace!("Trace message");
         debug!("Debug message");
@@ -95,15 +99,19 @@ impl App for BasicApp {
         error!("Error message");
         self.counter += 1;
 
-        let ten_millis = std::time::Duration::from_millis(10);
-        let _now = std::time::Instant::now();
-
-        std::thread::sleep(ten_millis);
+        metrics
+            .add(Metric::Counter("basic.metrics.some.count".to_string()))
+            .await;
 
         MainRetryAction::Success
     }
 
-    async fn end(&mut self, wora: &Wora, _exec: &(dyn Executor + Send + Sync)) {
+    async fn end(
+        &mut self,
+        wora: &Wora,
+        _exec: &(dyn Executor + Send + Sync),
+        metrics: &(dyn MetricProcessor + Send + Sync),
+    ) {
         info!("Final count: {}", self.counter);
     }
 }
@@ -120,14 +128,16 @@ async fn main() -> Result<(), MainEarlyReturn> {
         counter: 1,
     };
 
+    let metrics = MetricsProducerStdout::new().await;
+
     match &args.run_mode {
         RunMode::Sys => {
             let exec = UnixLikeSystem::new(app_name).await;
-            exec_async_runner(exec, app).await?
+            exec_async_runner(exec, app, metrics).await?
         }
         RunMode::User => {
             let exec = UnixLikeUser::new(app_name).await;
-            exec_async_runner(exec, app).await?
+            exec_async_runner(exec, app, metrics).await?
         }
     }
 

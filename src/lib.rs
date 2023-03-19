@@ -6,6 +6,7 @@
 //!
 //! Just like Java's claim, it really doesn't run everywhere. no_std or embedded environments are not supported.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -13,7 +14,7 @@ use caps::CapSet;
 use directories::ProjectDirs;
 use libc::{RLIM_INFINITY, SIGINT};
 use libc::{SIGHUP, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2};
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info};
 use nix::sys::{
     mman::{mlockall, MlockAllFlags},
     resource::{setrlimit, Resource},
@@ -120,7 +121,7 @@ impl Wora {
 
         let pid = getpid();
 
-        let (tx, rx1) = mpsc::channel(16);
+        let (tx, rx1) = mpsc::channel(16); // TODO
 
         for &signum in [SIGHUP, SIGTERM, SIGQUIT, SIGUSR1, SIGUSR2, SIGINT].iter() {
             let send = tx.clone();
@@ -160,64 +161,42 @@ pub fn new_arg_parser_clap<Args: clap::Parser>() -> Result<Args, clap::error::Er
     clap::Parser::try_parse()
 }
 
-pub trait Executor {
-    fn dirs(&self) -> &Dirs;
-    fn disable_memory_limits(&self) -> Result<(), SetupFailure>;
-    //  Disable paging memory to swap
-    fn disable_paging_mem_to_swap(&self) -> Result<(), SetupFailure>;
-    //  Disable core files
-    fn disable_core_dumps(&self) -> Result<(), SetupFailure>;
-    // Switch to a non-root user
-    fn run_as_user_and_group(&self, user_name: &str, group_name: &str) -> Result<(), SetupFailure>;
-    fn has_no_caps(&self) -> Result<bool, SetupFailure>;
-    fn is_running_as_root(&self) -> bool;
-}
-
+///
 #[async_trait]
-pub trait AsyncExecutor: Executor {
-    async fn setup(&mut self, wora: &Wora) -> Result<(), SetupFailure>;
-    async fn is_ready(&self, wora: &Wora) -> bool;
-    async fn end(&self, wora: &Wora);
+pub trait MetricProcessor {
+    async fn setup(&mut self) -> Result<(), SetupFailure>;
+    async fn add(&mut self, m: Metric) -> Result<(), SetupFailure>;
+    async fn end(&self);
 }
 
-pub struct UnixLike {
-    pub dirs: Dirs,
+pub enum Metric {
+    Counter(String),
 }
 
-impl UnixLike {
-    pub async fn new(_app_name: &str) -> Self {
-        let dirs = Dirs {
-            root_dir: PathBuf::from("/"),
-            log_root_dir: PathBuf::from("/var/log"),
-            metadata_root_dir: PathBuf::from("/etc/"),
-            data_root_dir: PathBuf::from("/usr/local/data"),
-            runtime_root_dir: PathBuf::from("/run/"),
-            cache_root_dir: PathBuf::from("/var/run/"),
-        };
-        UnixLike { dirs }
-    }
-}
+/// Common methods for all `Executors`
+pub trait Executor {
+    ///
+    fn dirs(&self) -> &Dirs;
 
-impl Executor for UnixLike {
-    fn dirs(&self) -> &Dirs {
-        &self.dirs
-    }
-
+    /// Disable memory limits
     fn disable_memory_limits(&self) -> Result<(), SetupFailure> {
         setrlimit(Resource::RLIMIT_MEMLOCK, RLIM_INFINITY, RLIM_INFINITY)?;
         Ok(())
     }
 
+    //  Disable paging memory to swap
     fn disable_paging_mem_to_swap(&self) -> Result<(), SetupFailure> {
         mlockall(MlockAllFlags::all())?;
         Ok(())
     }
 
+    //  Disable core files
     fn disable_core_dumps(&self) -> Result<(), SetupFailure> {
         setrlimit(Resource::RLIMIT_CORE, 0, 0)?;
         Ok(())
     }
 
+    // Switch to a non-root user
     fn run_as_user_and_group(&self, user_name: &str, group_name: &str) -> Result<(), SetupFailure> {
         let newuser = get_user_by_name(user_name)
             .ok_or(SetupFailure::UnknownSystemUser(user_name.to_string()))?;
@@ -236,6 +215,93 @@ impl Executor for UnixLike {
     }
 }
 
+pub struct MetricsProducerStdout {
+    handle: tokio::io::Stdout,
+    counters: HashMap<String, u64>,
+}
+
+impl MetricsProducerStdout {
+    pub async fn new() -> Self {
+        Self {
+            handle: tokio::io::stdout(),
+            counters: HashMap::new(),
+        }
+    }
+}
+#[async_trait]
+impl MetricProcessor for MetricsProducerStdout {
+    async fn setup(&mut self) -> Result<(), SetupFailure> {
+        Ok(())
+    }
+
+    async fn add(&mut self, m: Metric) -> Result<(), SetupFailure> {
+        match m {
+            Metric::Counter(key) => match self.counters.get_mut(&key) {
+                Some(val) => {
+                    *val += 1;
+                    info!("metrics:stdout:counter:incr: key:{};count:{}", &key, val);
+                }
+                None => {
+                    info!("metrics:stdout:counter:incr: key:{};count:0", &key);
+                    self.counters.insert(key, 1);
+                }
+            },
+        }
+        Ok(())
+    }
+
+    async fn end(&self) {}
+}
+
+#[async_trait]
+pub trait AsyncExecutor: Executor {
+    async fn setup(
+        &mut self,
+        wora: &Wora,
+        metrics: &(dyn MetricProcessor + Send + Sync),
+    ) -> Result<(), SetupFailure>;
+    async fn is_ready(&self, wora: &Wora, metrics: &(dyn MetricProcessor + Send + Sync)) -> bool;
+    async fn end(&self, wora: &Wora, metrics: &(dyn MetricProcessor + Send + Sync));
+}
+
+#[derive(Debug)]
+pub struct UnixLike {
+    pub dirs: Dirs,
+}
+
+impl UnixLike {
+    pub async fn new(_app_name: &str) -> Self {
+        let dirs = Dirs {
+            root_dir: PathBuf::from("/"),
+            log_root_dir: PathBuf::from("/var/log"),
+            metadata_root_dir: PathBuf::from("/etc/"),
+            data_root_dir: PathBuf::from("/usr/local/data"),
+            runtime_root_dir: PathBuf::from("/run/"),
+            cache_root_dir: PathBuf::from("/var/run/"),
+        };
+        UnixLike { dirs }
+    }
+}
+
+#[async_trait]
+impl MetricProcessor for UnixLike {
+    async fn setup(&mut self) -> Result<(), SetupFailure> {
+        Ok(())
+    }
+    async fn add(&mut self, _m: Metric) -> Result<(), SetupFailure> {
+        Ok(())
+    }
+    async fn end(&self) {
+        ()
+    }
+}
+
+impl Executor for UnixLike {
+    fn dirs(&self) -> &Dirs {
+        &self.dirs
+    }
+}
+
 pub struct UnixLikeSystem {
     unix: UnixLike,
 }
@@ -247,47 +313,40 @@ impl UnixLikeSystem {
     }
 }
 
+#[async_trait]
+impl MetricProcessor for UnixLikeSystem {
+    async fn add(&mut self, _m: Metric) -> Result<(), SetupFailure> {
+        Ok(())
+    }
+    async fn setup(&mut self) -> Result<(), SetupFailure> {
+        Ok(())
+    }
+    async fn end(&self) {
+        ()
+    }
+}
+
 impl Executor for UnixLikeSystem {
     fn dirs(&self) -> &Dirs {
         &self.unix.dirs
-    }
-
-    fn disable_memory_limits(&self) -> Result<(), SetupFailure> {
-        self.unix.disable_memory_limits()
-    }
-
-    fn disable_paging_mem_to_swap(&self) -> Result<(), SetupFailure> {
-        self.unix.disable_paging_mem_to_swap()
-    }
-
-    fn disable_core_dumps(&self) -> Result<(), SetupFailure> {
-        self.unix.disable_core_dumps()
-    }
-
-    fn run_as_user_and_group(&self, user_name: &str, group_name: &str) -> Result<(), SetupFailure> {
-        self.unix.run_as_user_and_group(user_name, group_name)
-    }
-
-    fn has_no_caps(&self) -> Result<bool, SetupFailure> {
-        self.unix.has_no_caps()
-    }
-
-    fn is_running_as_root(&self) -> bool {
-        self.unix.is_running_as_root()
     }
 }
 
 #[async_trait]
 impl AsyncExecutor for UnixLikeSystem {
-    async fn setup(&mut self, _wora: &Wora) -> Result<(), SetupFailure> {
+    async fn setup(
+        &mut self,
+        _wora: &Wora,
+        _metrics: &(dyn MetricProcessor + Send + Sync),
+    ) -> Result<(), SetupFailure> {
         Ok(())
     }
 
-    async fn is_ready(&self, _wora: &Wora) -> bool {
+    async fn is_ready(&self, _wora: &Wora, _metrics: &(dyn MetricProcessor + Send + Sync)) -> bool {
         true
     }
 
-    async fn end(&self, _wora: &Wora) {
+    async fn end(&self, _wora: &Wora, _metrics: &(dyn MetricProcessor + Send + Sync)) {
         ()
     }
 }
@@ -319,44 +378,37 @@ impl UnixLikeUser {
     }
 }
 
+#[async_trait]
+impl MetricProcessor for UnixLikeUser {
+    async fn setup(&mut self) -> Result<(), SetupFailure> {
+        Ok(())
+    }
+    async fn add(&mut self, _m: Metric) -> Result<(), SetupFailure> {
+        Ok(())
+    }
+    async fn end(&self) {
+        ()
+    }
+}
+
 impl Executor for UnixLikeUser {
     fn dirs(&self) -> &Dirs {
         &self.unix.dirs
-    }
-
-    fn disable_memory_limits(&self) -> Result<(), SetupFailure> {
-        self.unix.disable_memory_limits()
-    }
-
-    fn disable_paging_mem_to_swap(&self) -> Result<(), SetupFailure> {
-        self.unix.disable_paging_mem_to_swap()
-    }
-
-    fn disable_core_dumps(&self) -> Result<(), SetupFailure> {
-        self.unix.disable_core_dumps()
-    }
-
-    fn run_as_user_and_group(&self, user_name: &str, group_name: &str) -> Result<(), SetupFailure> {
-        self.unix.run_as_user_and_group(user_name, group_name)
-    }
-
-    fn has_no_caps(&self) -> Result<bool, SetupFailure> {
-        self.unix.has_no_caps()
-    }
-
-    fn is_running_as_root(&self) -> bool {
-        self.unix.is_running_as_root()
     }
 }
 
 #[async_trait]
 impl AsyncExecutor for UnixLikeUser {
-    async fn setup(&mut self, wora: &Wora) -> Result<(), SetupFailure> {
+    async fn setup(
+        &mut self,
+        wora: &Wora,
+        _metrics: &(dyn MetricProcessor + Send + Sync),
+    ) -> Result<(), SetupFailure> {
         let dirs = &wora.dirs;
 
-        println!("exec: setup: io: chdir({:?}): trying", &wora.dirs.root_dir);
+        println!("exec:setup:io:chdir({:?}): trying", &wora.dirs.root_dir);
         chdir(&wora.dirs.root_dir)?;
-        println!("exec: setup: io: chdir({:?}): success", &wora.dirs.root_dir);
+        println!("exec:setup:io:chdir({:?}): success", &wora.dirs.root_dir);
 
         for dir in [
             &dirs.log_root_dir,
@@ -366,47 +418,57 @@ impl AsyncExecutor for UnixLikeUser {
             &dirs.cache_root_dir,
         ] {
             // TODO - maybe theres a better way to handle logging before the app sets up logging? use a simple internal logger?
-            println!("exec: setup: io: create dir:{:?}: trying", dir);
+            println!("exec:setup:io:create dir:{:?}: trying", dir);
             std::fs::create_dir_all(dir)?;
-            println!("exec: setup: io: create dir:{:?}: success", dir);
+            println!("exec:setup:io:create dir:{:?}: success", dir);
         }
 
         Ok(())
     }
 
-    async fn is_ready(&self, _wora: &Wora) -> bool {
+    async fn is_ready(&self, _wora: &Wora, _metrics: &(dyn MetricProcessor + Send + Sync)) -> bool {
         true
     }
 
-    async fn end(&self, _wora: &Wora) {
+    async fn end(&self, _wora: &Wora, _metrics: &(dyn MetricProcessor + Send + Sync)) {
         ()
     }
 }
 
 #[async_trait]
 pub trait App {
+    type AppMetricsProducer: MetricProcessor;
+
     fn name(&self) -> &'static str;
     async fn setup(
         &mut self,
         wora: &Wora,
         exec: &(dyn Executor + Send + Sync),
+        metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<(), SetupFailure>;
     async fn main(
         &mut self,
         wora: &mut Wora,
         exec: &(dyn Executor + Send + Sync),
+        metrics: &mut (dyn MetricProcessor + Send + Sync),
     ) -> MainRetryAction;
-    async fn end(&mut self, wora: &Wora, exec: &(dyn Executor + Send + Sync));
+    async fn end(
+        &mut self,
+        wora: &Wora,
+        exec: &(dyn Executor + Send + Sync),
+        metrics: &(dyn MetricProcessor + Send + Sync),
+    );
 }
 
 pub async fn exec_async_runner(
-    mut exec: impl AsyncExecutor + Sync + Send,
+    mut exec: impl AsyncExecutor + Sync + Send + Executor,
     mut app: impl App,
+    mut metrics: impl MetricProcessor + Sync + Send,
 ) -> Result<(), MainEarlyReturn> {
     let mut wora = Wora::new(exec.dirs(), app.name().to_string())?;
 
-    exec.setup(&wora).await?;
-    match app.setup(&wora, &exec).await {
+    exec.setup(&wora, &metrics).await?;
+    match app.setup(&wora, &exec, &metrics).await {
         Ok(_) => {
             info!("dirs.root: {:?}", wora.dirs.root_dir);
             info!("dirs.log: {:?}", wora.dirs.log_root_dir);
@@ -417,10 +479,7 @@ pub async fn exec_async_runner(
 
             info!("host: {:?}", wora.stats_from_start().host_info);
 
-            info!(
-                "recursively watching metadata directory for changes: {:?}",
-                &wora.dirs.metadata_root_dir
-            );
+            info!("notify:watch:dir: {:?}", &wora.dirs.metadata_root_dir);
             wora.fs_notify.watch(
                 std::path::Path::new(&wora.dirs.metadata_root_dir),
                 RecursiveMode::Recursive,
@@ -433,8 +492,8 @@ pub async fn exec_async_runner(
                 Event::Begin(app.name().to_string(), ProcessId(wora.pid)).to_string()
             );
 
-            if exec.is_ready(&wora).await {
-                match app.main(&mut wora, &exec).await {
+            if exec.is_ready(&wora, &metrics).await {
+                match app.main(&mut wora, &exec, &mut metrics).await {
                     MainRetryAction::UseExitCode(ec) => {
                         info!("{}", Event::PhaseEnd(Phase::Main).to_string());
                         return Err(MainEarlyReturn::UseExitCode(ec));
@@ -443,7 +502,7 @@ pub async fn exec_async_runner(
                         info!("{}", Event::PhaseEnd(Phase::Main).to_string());
 
                         info!("{}", Event::PhaseBegin(Phase::Main).to_string());
-                        app.main(&mut wora, &exec).await;
+                        app.main(&mut wora, &exec, &mut metrics).await;
                         info!("{}", Event::PhaseEnd(Phase::Main).to_string());
                     }
                     MainRetryAction::Success => {
@@ -455,7 +514,7 @@ pub async fn exec_async_runner(
             }
 
             info!("{}", Event::PhaseBegin(Phase::End).to_string());
-            app.end(&wora, &exec).await;
+            app.end(&wora, &exec, &metrics).await;
             info!("{}", Event::PhaseEnd(Phase::End).to_string());
         }
         Err(setup_err) => {
@@ -463,9 +522,9 @@ pub async fn exec_async_runner(
         }
     }
 
-    debug!("Running executor end()");
-    exec.end(&wora).await;
-    debug!("done Running executor end()");
+    debug!("exec:run:end:start");
+    exec.end(&wora, &metrics).await;
+    debug!("exec:run:end:finish");
 
     Ok(())
 }
