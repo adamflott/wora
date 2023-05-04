@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use clap::Parser;
 use log::{debug, error, info, trace, warn};
+use lunchbox::LocalFS;
 use tracing_subscriber;
 
 use wora::errors::*;
@@ -34,26 +35,28 @@ struct BasicApp {
 }
 
 #[async_trait]
-impl App for BasicApp {
+impl App<()> for BasicApp {
     type AppMetricsProducer = MetricsProducerStdout;
     type AppConfig = NoConfig;
 
     fn name(&self) -> &'static str {
         "wora_basic"
     }
+
     async fn setup(
         &mut self,
-        _wora: &Wora,
+        _wora: &Wora<()>,
         _exec: &(dyn Executor + Send + Sync),
+        _fs: &WFS,
         _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<(), SetupFailure> {
+    ) -> Result<(), Box<dyn std::error::Error>> {
         debug!("command args: {:?}", self.args);
         Ok(())
     }
 
     async fn main(
         &mut self,
-        _wora: &mut Wora,
+        _wora: &mut Wora<()>,
         _exec: &(dyn Executor + Send + Sync),
         _metrics: &mut (dyn MetricProcessor + Send + Sync),
     ) -> MainRetryAction {
@@ -73,7 +76,7 @@ impl App for BasicApp {
 
     async fn end(
         &mut self,
-        _wora: &Wora,
+        _wora: &Wora<()>,
         _exec: &(dyn Executor + Send + Sync),
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) {
@@ -94,9 +97,10 @@ async fn main() -> Result<(), MainEarlyReturn> {
         counter: 1,
     };
 
+    let fs = LocalFS::new().unwrap();
     let metrics = MetricsProducerStdout::new().await;
     let exec = UnixLikeUser::new(app_name).await;
-    exec_async_runner(exec, app, metrics).await?;
+    exec_async_runner(exec, app, fs, metrics).await?;
 
     Ok(())
 }

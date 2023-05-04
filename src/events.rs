@@ -50,7 +50,7 @@ impl Serialize for SystemResourceStat {
 ///
 /// TODO - implement Serialize, Deserialize
 #[derive(Clone, Debug)]
-pub enum Event {
+pub enum Event<T> {
     // system
     /// when a Unix signal arrives
     UnixSignal(i32),
@@ -66,9 +66,10 @@ pub enum Event {
     Shutdown(Option<chrono::NaiveDateTime>),
     LogRotation,
     LeadershipChange(Leadership, Leadership),
+    App(T),
 }
 
-impl ToString for Event {
+impl<T: std::fmt::Debug> ToString for Event<T> {
     fn to_string(&self) -> String {
         format!("{:?}", self)
     }

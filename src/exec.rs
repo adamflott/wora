@@ -7,12 +7,14 @@ use nix::sys::{
     resource::{setrlimit, Resource},
 };
 use tracing::info;
-use users::{get_effective_username, get_user_by_name, switch::set_both_uid};
+use users::switch::set_both_gid;
+use users::{get_effective_username, get_group_by_name, get_user_by_name, switch::set_both_uid};
 
 use crate::dirs::Dirs;
 use crate::errors::SetupFailure;
 use crate::metrics::*;
 use crate::Wora;
+use crate::WFS;
 
 /// Common methods for all `Executors`
 pub trait Executor {
@@ -45,10 +47,23 @@ pub trait Executor {
 
     // Switch to a non-root user
     fn run_as_user_and_group(&self, user_name: &str, group_name: &str) -> Result<(), SetupFailure> {
-        info!("setting uid to: {}", user_name);
-        let newuser = get_user_by_name(user_name)
+        let new_user = get_user_by_name(user_name)
             .ok_or(SetupFailure::UnknownSystemUser(user_name.to_string()))?;
-        set_both_uid(newuser.uid(), newuser.uid())?;
+        set_both_uid(new_user.uid(), new_user.uid())?;
+        info!(
+            "process now runs as user: {} (id: {})",
+            user_name,
+            new_user.uid()
+        );
+
+        let new_group = get_group_by_name(group_name)
+            .ok_or(SetupFailure::UnknownSystemUser(user_name.to_string()))?;
+        set_both_gid(new_group.gid(), new_group.gid())?;
+        info!(
+            "process now runs as group: {} (id: {})",
+            group_name,
+            new_group.gid()
+        );
 
         Ok(())
     }
@@ -65,12 +80,14 @@ pub trait Executor {
 }
 
 #[async_trait]
-pub trait AsyncExecutor: Executor {
+pub trait AsyncExecutor<T>: Executor {
     async fn setup(
         &mut self,
-        wora: &Wora,
+        wora: &Wora<T>,
+        fs: &WFS,
         metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<(), SetupFailure>;
-    async fn is_ready(&self, wora: &Wora, metrics: &(dyn MetricProcessor + Send + Sync)) -> bool;
-    async fn end(&self, wora: &Wora, metrics: &(dyn MetricProcessor + Send + Sync));
+    async fn is_ready(&self, wora: &Wora<T>, metrics: &(dyn MetricProcessor + Send + Sync))
+        -> bool;
+    async fn end(&self, wora: &Wora<T>, metrics: &(dyn MetricProcessor + Send + Sync));
 }

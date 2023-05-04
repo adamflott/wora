@@ -5,14 +5,14 @@ use chrono::{DateTime, Utc};
 
 use crate::errors::SetupFailure;
 
-pub trait Metricer {
+pub trait MetricEncoder {
     fn encode(&self) -> Vec<u8>;
 }
 
 #[async_trait]
 pub trait MetricProcessor {
     async fn setup(&mut self) -> Result<(), SetupFailure>;
-    async fn add(&mut self, m: &(dyn Metricer)) -> Result<(), SetupFailure>;
+    async fn add(&mut self, m: &dyn MetricEncoder) -> Result<(), SetupFailure>;
     async fn end(&self);
 }
 
@@ -20,7 +20,7 @@ pub enum Metric {
     Counter(String),
 }
 
-impl Metricer for Metric {
+impl MetricEncoder for Metric {
     fn encode(&self) -> Vec<u8> {
         match self {
             Metric::Counter(key) => format!("metric:counter:{}", key).into_bytes(),
@@ -47,7 +47,7 @@ impl MetricProcessor for MetricsProducerStdout {
         Ok(())
     }
 
-    async fn add(&mut self, _m: &(dyn Metricer)) -> Result<(), SetupFailure> {
+    async fn add(&mut self, _metric: &dyn MetricEncoder) -> Result<(), SetupFailure> {
         Ok(())
     }
 

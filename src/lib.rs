@@ -9,10 +9,11 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use chrono::Utc;
 use libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2};
+use lunchbox::LocalFS;
 use nix::unistd::getpid;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use proc_lock::try_lock;
 use tokio::signal::unix::SignalKind;
-use tokio::sync::mpsc;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::Instrument;
@@ -27,7 +28,7 @@ pub mod metrics;
 pub mod restart_policy;
 
 use crate::dirs::Dirs;
-use crate::errors::{MainEarlyReturn, SetupFailure, WoraSetupError};
+use crate::errors::{MainEarlyReturn, WoraSetupError};
 use events::*;
 use exec::*;
 use metrics::*;
@@ -35,7 +36,9 @@ use restart_policy::*;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
 
-/// All possible system stats
+pub type WFS = LocalFS;
+
+/// System stats/information from `libstatgrab`
 #[derive(Debug)]
 pub struct Stats {
     pub host_info: statgrab::HostInfo,
@@ -54,7 +57,7 @@ pub struct Stats {
 }
 
 /// All workloads will be able to access the WORA API
-pub struct Wora {
+pub struct Wora<T> {
     /// application name
     pub app_name: String,
     /// common directories for all executors
@@ -66,9 +69,9 @@ pub struct Wora {
     /// process id
     pid: nix::unistd::Pid,
     /// `Event` producer
-    pub sender: Sender<Event>,
-    /// `Event` recevier
-    pub receiver: Receiver<Event>,
+    pub sender: Sender<Event<T>>,
+    /// `Event` receiver
+    pub receiver: Receiver<Event<T>>,
     /// leadership state
     pub leadership: Leadership,
 }
@@ -90,8 +93,12 @@ pub enum HealthState {
 }
 
 /// WORA API
-impl Wora {
-    pub fn new(dirs: &Dirs, app_name: String, ev_buf_size: usize) -> Result<Wora, WoraSetupError> {
+impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
+    pub fn new(
+        dirs: &Dirs,
+        app_name: String,
+        ev_buf_size: usize,
+    ) -> Result<Wora<T>, WoraSetupError> {
         trace!("checking executor directories exist...");
 
         for dir in [
@@ -129,7 +136,7 @@ impl Wora {
 
         let pid = getpid();
 
-        let (tx, rx) = mpsc::channel(ev_buf_size);
+        let (tx, rx) = channel(ev_buf_size);
 
         for &signum in [SIGHUP, SIGTERM, SIGQUIT, SIGUSR1, SIGUSR2, SIGINT].iter() {
             let send = tx.clone();
@@ -164,7 +171,7 @@ impl Wora {
         &self.dirs
     }
 
-    pub async fn emit_event(&self, ev: Event) -> () {
+    pub async fn emit_event(&self, ev: Event<T>) -> () {
         match self.sender.send(ev).await {
             Ok(_) => {}
             Err(send_err) => {
@@ -215,12 +222,12 @@ pub trait Config {
 pub struct NoConfig;
 impl Config for NoConfig {
     type ConfigT = ();
-    fn parse_main_config_file(data: String) -> Result<Self::ConfigT, Box<dyn std::error::Error>> {
+    fn parse_main_config_file(_data: String) -> Result<Self::ConfigT, Box<dyn std::error::Error>> {
         Ok(())
     }
 }
 #[async_trait]
-pub trait App {
+pub trait App<T> {
     type AppMetricsProducer: MetricProcessor;
     type AppConfig: Config;
 
@@ -228,14 +235,15 @@ pub trait App {
 
     async fn setup(
         &mut self,
-        wora: &Wora,
+        wora: &Wora<T>,
         exec: &(dyn Executor + Send + Sync),
+        fs: &WFS,
         metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<(), SetupFailure>;
+    ) -> Result<(), Box<dyn std::error::Error>>;
 
     async fn main(
         &mut self,
-        wora: &mut Wora,
+        wora: &mut Wora<T>,
         exec: &(dyn Executor + Send + Sync),
         metrics: &mut (dyn MetricProcessor + Send + Sync),
     ) -> MainRetryAction;
@@ -244,7 +252,7 @@ pub trait App {
 
     async fn end(
         &mut self,
-        wora: &Wora,
+        wora: &Wora<T>,
         exec: &(dyn Executor + Send + Sync),
         metrics: &(dyn MetricProcessor + Send + Sync),
     );
@@ -266,120 +274,138 @@ fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Resul
     Ok((watcher, rx))
 }
 
-pub async fn exec_async_runner(
-    mut exec: impl AsyncExecutor + Sync + Send + Executor,
-    mut app: impl App + Sync + Send + 'static,
+// TODO create a non-file locking variant
+
+/// Run apps via an `async` based executor
+pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
+    mut exec: impl AsyncExecutor<T> + Sync + Send + Executor,
+    mut app: impl App<T> + Sync + Send + 'static,
+    fs: WFS,
     mut metrics: impl MetricProcessor + Sync + Send,
 ) -> Result<(), MainEarlyReturn> {
-    let mut wora = Wora::new(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE)?;
+    let mut lock_path = PathBuf::new();
+    lock_path.push(&exec.dirs().runtime_root_dir);
+    lock_path.push(app.name().to_owned() + ".lock");
+    let lock_path = proc_lock::LockPath::FullPath(lock_path);
+    match try_lock(&lock_path) {
+        Ok(guard) => {
+            let mut wora = Wora::new(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE)?;
 
-    let mut exec_metrics = MetricExecutorTimings::default();
+            let mut exec_metrics = MetricExecutorTimings::default();
 
-    metrics.add(&Metric::Counter("exec:run:setup:start".into()));
-    exec.setup(&wora, &metrics)
-        .instrument(tracing::info_span!("exec:run:setup"))
-        .await?;
-    exec_metrics.setup_finish = Some(Utc::now());
-    metrics.add(&Metric::Counter("exec:run:setup:finish".into()));
+            //metrics.add(&Metric::Counter("exec:run:setup:start".into()));
+            exec.setup(&wora, &fs, &metrics)
+                .instrument(tracing::info_span!("exec:run:setup"))
+                .await?;
+            exec_metrics.setup_finish = Some(Utc::now());
+            //metrics.add(&Metric::Counter("exec:run:setup:finish".into()));
 
-    let mut app_metrics = MetricAppTimings::default();
-    app_metrics.setup_finish = Some(Utc::now());
-    match app
-        .setup(&wora, &exec, &metrics)
-        .instrument(tracing::info_span!("app:run:setup"))
-        .await
-    {
-        Ok(_) => {
-            info!(
-                host.hostname = wora.host_hostname(),
-                host.platform = wora.host_platform(),
-                host.os_name = wora.host_os_name(),
-                host.os_release = wora.host_os_release(),
-                host.os_version = wora.host_os_version(),
-                host.cpu_count = wora.host_cpu_count(),
-                host.cpu_max = wora.host_cpu_max(),
-                host.machine_type = wora.host_type()
-            );
-            info!("dirs.root: {:?}", wora.dirs.root_dir);
-            info!("dirs.log: {:?}", wora.dirs.log_root_dir);
-            info!("dirs.metadata: {:?}", wora.dirs.metadata_root_dir);
-            info!("dirs.data: {:?}", wora.dirs.data_root_dir);
-            info!("dirs.runtime: {:?}", wora.dirs.runtime_root_dir);
-            info!("dirs.cache: {:?}", wora.dirs.cache_root_dir);
-            info!("dirs.secrets: {:?}", wora.dirs.secrets_root_dir);
-
-            let (mut watcher, mut watch_rx) = async_watcher()?;
-
-            info!("notify:watch:dir: {:?}", &wora.dirs.metadata_root_dir);
-            watcher.watch(
-                std::path::Path::new(&wora.dirs.metadata_root_dir),
-                RecursiveMode::Recursive,
-            )?;
-            let ev_sender = wora.sender.clone();
-
-            tokio::spawn(async move {
-                while let Some(res) = watch_rx.recv().await {
-                    match res {
-                        Ok(event) => {
-                            info!("changed: {:?}", event);
-                            for path in event.paths {
-                                match tokio::fs::read_to_string(&path).await {
-                                    Ok(data) => {
-                                        ev_sender
-                                            .send(Event::ConfigChange(path.clone(), data))
-                                            .await;
-                                    }
-                                    Err(_) => {}
-                                }
-                            }
-                        }
-                        Err(e) => error!("watch error: {:?}", e),
-                    }
-                }
-            });
-
-            info!(process_id = wora.pid.to_string(), app_name = app.name());
-
-            if exec
-                .is_ready(&wora, &metrics)
-                .instrument(tracing::info_span!("exec:run:is_ready"))
+            let mut app_metrics = MetricAppTimings::default();
+            app_metrics.setup_finish = Some(Utc::now());
+            match app
+                .setup(&wora, &exec, &fs, &metrics)
+                .instrument(tracing::info_span!("app:run:setup"))
                 .await
             {
-                match app
-                    .main(&mut wora, &exec, &mut metrics)
-                    .instrument(tracing::info_span!("app:run:main"))
-                    .await
-                {
-                    MainRetryAction::UseExitCode(ec) => {
-                        return Err(MainEarlyReturn::UseExitCode(ec));
+                Ok(_) => {
+                    info!(
+                        host.hostname = wora.host_hostname(),
+                        host.platform = wora.host_platform(),
+                        host.os_name = wora.host_os_name(),
+                        host.os_release = wora.host_os_release(),
+                        host.os_version = wora.host_os_version(),
+                        host.cpu_count = wora.host_cpu_count(),
+                        host.cpu_max = wora.host_cpu_max(),
+                        host.machine_type = wora.host_type()
+                    );
+                    info!("dirs.root: {:?}", wora.dirs.root_dir);
+                    info!("dirs.log: {:?}", wora.dirs.log_root_dir);
+                    info!("dirs.metadata: {:?}", wora.dirs.metadata_root_dir);
+                    info!("dirs.data: {:?}", wora.dirs.data_root_dir);
+                    info!("dirs.runtime: {:?}", wora.dirs.runtime_root_dir);
+                    info!("dirs.cache: {:?}", wora.dirs.cache_root_dir);
+                    info!("dirs.secrets: {:?}", wora.dirs.secrets_root_dir);
+
+                    let (mut watcher, mut watch_rx) = async_watcher()?;
+
+                    info!("notify:watch:dir: {:?}", &wora.dirs.metadata_root_dir);
+                    watcher.watch(
+                        std::path::Path::new(&wora.dirs.metadata_root_dir),
+                        RecursiveMode::Recursive,
+                    )?;
+                    let ev_sender = wora.sender.clone();
+
+                    tokio::spawn(async move {
+                        while let Some(res) = watch_rx.recv().await {
+                            match res {
+                                Ok(event) => {
+                                    info!("changed: {:?}", event);
+                                    for path in event.paths {
+                                        match tokio::fs::read_to_string(&path).await {
+                                            Ok(data) => {
+                                                ev_sender
+                                                    .send(Event::ConfigChange(path.clone(), data))
+                                                    .await;
+                                            }
+                                            Err(_) => {}
+                                        }
+                                    }
+                                }
+                                Err(e) => error!("watch error: {:?}", e),
+                            }
+                        }
+                    });
+
+                    info!(process_id = wora.pid.to_string(), app_name = app.name());
+
+                    if exec
+                        .is_ready(&wora, &metrics)
+                        .instrument(tracing::info_span!("exec:run:is_ready"))
+                        .await
+                    {
+                        match app
+                            .main(&mut wora, &exec, &mut metrics)
+                            .instrument(tracing::info_span!("app:run:main"))
+                            .await
+                        {
+                            MainRetryAction::UseExitCode(ec) => {
+                                return Err(MainEarlyReturn::UseExitCode(ec));
+                            }
+                            MainRetryAction::UseRestartPolicy => {
+                                app.main(&mut wora, &exec, &mut metrics)
+                                    .instrument(tracing::info_span!("app:run:main:retry"))
+                                    .await;
+                            }
+                            MainRetryAction::Success => {}
+                        }
+                    } else {
+                        warn!(comp = "exec", method = "run", is_ready = false);
                     }
-                    MainRetryAction::UseRestartPolicy => {
-                        app.main(&mut wora, &exec, &mut metrics)
-                            .instrument(tracing::info_span!("app:run:main:retry"))
-                            .await;
-                    }
-                    MainRetryAction::Success => {}
+
+                    app.end(&wora, &exec, &metrics)
+                        .instrument(tracing::info_span!("app:run:end"))
+                        .await;
                 }
-            } else {
-                warn!(comp = "exec", method = "run", is_ready = false);
+                Err(setup_err) => {
+                    error!("{:?}", setup_err)
+                }
             }
 
-            app.end(&wora, &exec, &metrics)
-                .instrument(tracing::info_span!("app:run:end"))
+            exec_metrics.end_start = Some(Utc::now());
+            //metrics.add(&Metric::Counter("exec:run:end:start".into()));
+            exec.end(&wora, &metrics)
+                .instrument(tracing::info_span!("exec:run:end"))
                 .await;
+            exec_metrics.end_start = Some(Utc::now());
+            //metrics.add(&Metric::Counter("exec:run:end:finish".into()));
+
+            drop(guard);
+
+            Ok(())
         }
-        Err(setup_err) => {
-            error!("{:?}", setup_err)
+        Err(err) => {
+            eprintln!("{:?} - {}", lock_path, err);
+            return Err(MainEarlyReturn::UseExitCode(111)); // TODO fix print and return
         }
     }
-
-    exec_metrics.end_start = Some(Utc::now());
-    metrics.add(&Metric::Counter("exec:run:end:start".into()));
-    exec.end(&wora, &metrics)
-        .instrument(tracing::info_span!("exec:run:end"))
-        .await;
-    exec_metrics.end_start = Some(Utc::now());
-    metrics.add(&Metric::Counter("exec:run:end:finish".into()));
-
-    Ok(())
 }

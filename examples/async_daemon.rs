@@ -6,6 +6,8 @@ use std::sync::RwLock;
 use async_trait::async_trait;
 use clap::{Parser, ValueEnum};
 use libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1};
+use lunchbox::LocalFS;
+use lunchbox::ReadableFileSystem;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, trace};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -79,7 +81,7 @@ impl Config for DaemonConfig {
 }
 
 #[async_trait]
-impl App for DaemonApp {
+impl App<()> for DaemonApp {
     type AppMetricsProducer = MetricsProducerStdout;
     type AppConfig = DaemonConfig;
 
@@ -89,10 +91,11 @@ impl App for DaemonApp {
 
     async fn setup(
         &mut self,
-        wora: &Wora,
+        wora: &Wora<()>,
         exec: &(dyn Executor + Send + Sync),
+        fs: &LocalFS,
         _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<(), SetupFailure> {
+    ) -> Result<(), Box<dyn std::error::Error>> {
         debug!("{:?}", wora.stats_from_start());
 
         let args = DaemonArgs::parse();
@@ -105,8 +108,8 @@ impl App for DaemonApp {
 
     async fn main(
         &mut self,
-        wora: &mut Wora,
-        _exec: &(dyn Executor + Send + Sync),
+        wora: &mut Wora<()>,
+        exec: &(dyn Executor + Send + Sync),
         _metrics: &mut (dyn MetricProcessor + Send + Sync),
     ) -> MainRetryAction {
         info!("waiting for events...");
@@ -154,6 +157,7 @@ impl App for DaemonApp {
                         old_state, new_state
                     );
                 }
+                Event::App(_) => {}
             }
         }
 
@@ -166,7 +170,7 @@ impl App for DaemonApp {
 
     async fn end(
         &mut self,
-        _wora: &Wora,
+        _wora: &Wora<()>,
         _exec: &(dyn Executor + Send + Sync),
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) {
@@ -207,15 +211,15 @@ async fn main() -> Result<(), MainEarlyReturn> {
     };
 
     let metrics = MetricsProducerStdout::new().await;
-
+    let fs = LocalFS::new().unwrap();
     match &args.run_mode {
         RunMode::Sys => {
             let exec = UnixLikeSystem::new(app.name()).await;
-            exec_async_runner(exec, app, metrics).await?
+            exec_async_runner(exec, app, fs, metrics).await?
         }
         RunMode::User => {
             let exec = UnixLikeUser::new(app.name()).await;
-            exec_async_runner(exec, app, metrics).await?
+            exec_async_runner(exec, app, fs, metrics).await?
         }
     }
 
