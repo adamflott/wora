@@ -99,8 +99,15 @@ async fn main() -> Result<(), MainEarlyReturn> {
 
     let fs = LocalFS::new().unwrap();
     let metrics = MetricsProducerStdout::new().await;
-    let exec = UnixLikeUser::new(app_name).await;
-    exec_async_runner(exec, app, fs, metrics).await?;
+    match UnixLikeUser::new(app_name).await {
+        Ok(exec) => {
+            exec_async_runner(exec, app, fs, metrics).await?
+        }
+        Err(exec_err) => {
+            error!("exec error:{}", exec_err);
+            return Err(MainEarlyReturn::IO(exec_err));
+        }
+    }
 
     Ok(())
 }
