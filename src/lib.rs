@@ -381,8 +381,14 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                             .await
                         {
                             MainRetryAction::UseExitCode(ec) => {
-                                debug!("lock:removing file:{:?}", &lock_path);
-                                let _ = std::fs::remove_file(&lock_path);
+                                match std::fs::remove_file(&lock_path) {
+                                    Ok(_) => {
+                                        debug!("lock:removed file:{:?}", &lock_path);
+                                    }
+                                    Err(rm_err) => {
+                                        error!("lock file:{:?} error:{}", &lock_path, rm_err);
+                                    }
+                                }
 
                                 return Err(MainEarlyReturn::UseExitCode(ec));
                             }
@@ -416,16 +422,28 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
 
             drop(guard);
 
-            debug!("lock:removing file:{:?}", &lock_path);
-            let _ = std::fs::remove_file(&lock_path);
+            match std::fs::remove_file(&lock_path) {
+                Ok(_) => {
+                    debug!("lock:removed file:{:?}", &lock_path);
+                }
+                Err(rm_err) => {
+                    error!("lock file:{:?} error:{}", &lock_path, rm_err);
+                }
+            }
 
             Ok(())
         }
         Err(err) => {
             error!("lock file:{:?} error:{:?}", &lock_path, err);
 
-            debug!("lock:removing file:{:?}", &lock_path);
-            let _ = std::fs::remove_file(&lock_path);
+            match std::fs::remove_file(&lock_path) {
+                Ok(_) => {
+                    debug!("lock:removed file:{:?}", &lock_path);
+                }
+                Err(rm_err) => {
+                    error!("lock file:{:?} error:{}", &lock_path, rm_err);
+                }
+            }
 
             return Err(MainEarlyReturn::UseExitCode(111)); // TODO fix print and return
         }
