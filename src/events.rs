@@ -6,6 +6,9 @@ use serde::{Serialize, Serializer};
 
 use crate::Leadership;
 
+use decimal_percentage::Percentage;
+
+
 /// Process Id (pid)
 #[derive(Clone, Debug)]
 pub struct ProcessId(pub Pid);
@@ -56,16 +59,27 @@ pub enum Event<T> {
     UnixSignal(i32),
     /// system stats
     SystemResource(SystemResourceStat),
+    /// system stat thresholds reached
+    SystemResourceCPUThreshold(Percentage, statgrab::CPUPercents),
+    SystemResourceLoadThreshold(Percentage, statgrab::LoadStats),
+    SystemResourceMemoryThreshold(Percentage, statgrab::MemStats),
 
     // workload
-    ///
+    /// workload configuration has changed
     ConfigChange(PathBuf, String),
 
-    // operations
+    // workload operations
+    /// workload is being requested to suspend
     Suspended(Option<chrono::NaiveDateTime>),
+    /// workload is being requested to shutdown
     Shutdown(Option<chrono::NaiveDateTime>),
-    LogRotation,
+    /// workload is being requested to change leadership role
     LeadershipChange(Leadership, Leadership),
+
+    /// workload is being requested to rotate logging
+    LogRotation,
+
+    /// custom workload/app events
     App(T),
 }
 
