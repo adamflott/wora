@@ -27,7 +27,7 @@ pub enum SystemResourceStat {
     Disk(HashMap<String, statgrab::DiskIOStats>),
     Filesystem(HashMap<String, statgrab::FilesystemStats>),
     Load(statgrab::LoadStats),
-    Memory(statgrab::LoadStats),
+    Memory(statgrab::MemStats),
     NetworkIO(HashMap<String, statgrab::NetworkIOStats>),
     NetworkInterface(HashMap<String, statgrab::NetworkIfaceStats>),
     Page(statgrab::PageStats),
