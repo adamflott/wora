@@ -1,3 +1,4 @@
+use std::io::Error;
 #[allow(dead_code)]
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -158,6 +159,7 @@ impl App<()> for DaemonApp {
                     );
                 }
                 Event::App(_) => {}
+                _ => {}
             }
         }
 
@@ -180,7 +182,7 @@ impl App<()> for DaemonApp {
 
 #[tokio::main]
 async fn main() -> Result<(), MainEarlyReturn> {
-    let filter = filter::LevelFilter::INFO;
+    let filter = filter::LevelFilter::TRACE;
     let (filter, reload_handle) = reload::Layer::new(filter);
 
     let format = tracing_subscriber::fmt::format()
@@ -218,8 +220,15 @@ async fn main() -> Result<(), MainEarlyReturn> {
             exec_async_runner(exec, app, fs, metrics).await?
         }
         RunMode::User => {
-            let exec = UnixLikeUser::new(app.name()).await;
-            exec_async_runner(exec, app, fs, metrics).await?
+            match UnixLikeUser::new(app.name()).await {
+                Ok(exec) => {
+                    exec_async_runner(exec, app, fs, metrics).await?
+                }
+                Err(exec_err) => {
+                    error!("exec error:{}", exec_err);
+                    return Err(MainEarlyReturn::IO(exec_err));
+                }
+            }
         }
     }
 
