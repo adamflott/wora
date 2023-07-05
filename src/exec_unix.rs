@@ -122,7 +122,7 @@ pub struct UnixLikeUser {
 }
 
 impl UnixLikeUser {
-    pub async fn new(app_name: &str) -> Self {
+    pub async fn new(app_name: &str) -> Result<Self, std::io::Error> {
         let proj_dirs = ProjectDirs::from("com", "wora", app_name).unwrap();
 
         let dirs = Dirs {
@@ -138,11 +138,16 @@ impl UnixLikeUser {
             secrets_root_dir: proj_dirs.cache_dir().to_path_buf(),
         };
 
+        std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+        std::fs::create_dir_all(&dirs.cache_root_dir)?;
+        std::fs::create_dir_all(&dirs.data_root_dir)?;
+        std::fs::create_dir_all(&dirs.metadata_root_dir)?;
+
         let mut unix = UnixLike::new(app_name).await;
         unix.dirs = dirs;
 
         let fs = LocalFS::new().unwrap();
-        UnixLikeUser { unix, fs }
+        Ok(UnixLikeUser { unix, fs })
     }
 }
 
