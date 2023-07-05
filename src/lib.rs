@@ -17,7 +17,7 @@ use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::Instrument;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 pub mod dirs;
 pub mod errors;
@@ -233,6 +233,10 @@ pub trait App<T> {
 
     fn name(&self) -> &'static str;
 
+    fn allow_concurrent_executions(&self) -> bool {
+        false
+    }
+
     async fn setup(
         &mut self,
         wora: &Wora<T>,
@@ -285,9 +289,17 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
 ) -> Result<(), MainEarlyReturn> {
     let mut lock_path = PathBuf::new();
     lock_path.push(&exec.dirs().runtime_root_dir);
-    lock_path.push(app.name().to_owned() + ".lock");
-    let lock_path = proc_lock::LockPath::FullPath(lock_path);
-    match try_lock(&lock_path) {
+    let lock_fp = if app.allow_concurrent_executions() {
+        let now = Utc::now();
+        let ts = now.timestamp_millis().to_string();
+        app.name().to_owned() + ts.as_str() + ".lock"
+    } else {
+        app.name().to_owned() + ".lock"
+    };
+
+    lock_path.push(&lock_fp);
+    let lock = proc_lock::LockPath::FullPath(&lock_path);
+    match try_lock(&lock) {
         Ok(guard) => {
             let mut wora = Wora::new(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE)?;
 
@@ -369,6 +381,9 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                             .await
                         {
                             MainRetryAction::UseExitCode(ec) => {
+                                debug!("lock:removing file:{:?}", &lock_path);
+                                let _ = std::fs::remove_file(&lock_path);
+
                                 return Err(MainEarlyReturn::UseExitCode(ec));
                             }
                             MainRetryAction::UseRestartPolicy => {
@@ -401,10 +416,17 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
 
             drop(guard);
 
+            debug!("lock:removing file:{:?}", &lock_path);
+            let _ = std::fs::remove_file(&lock_path);
+
             Ok(())
         }
         Err(err) => {
-            eprintln!("{:?} - {}", lock_path, err);
+            error!("lock file:{:?} error:{:?}", &lock_path, err);
+
+            debug!("lock:removing file:{:?}", &lock_path);
+            let _ = std::fs::remove_file(&lock_path);
+
             return Err(MainEarlyReturn::UseExitCode(111)); // TODO fix print and return
         }
     }
