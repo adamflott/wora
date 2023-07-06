@@ -219,17 +219,13 @@ async fn main() -> Result<(), MainEarlyReturn> {
             let exec = UnixLikeSystem::new(app.name()).await;
             exec_async_runner(exec, app, fs, metrics).await?
         }
-        RunMode::User => {
-            match UnixLikeUser::new(app.name()).await {
-                Ok(exec) => {
-                    exec_async_runner(exec, app, fs, metrics).await?
-                }
-                Err(exec_err) => {
-                    error!("exec error:{}", exec_err);
-                    return Err(MainEarlyReturn::IO(exec_err));
-                }
+        RunMode::User => match UnixLikeUser::new(app.name()).await {
+            Ok(exec) => exec_async_runner(exec, app, fs, metrics).await?,
+            Err(exec_err) => {
+                error!("exec error:{}", exec_err);
+                return Err(MainEarlyReturn::IO(exec_err));
             }
-        }
+        },
     }
 
     Ok(())

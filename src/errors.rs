@@ -6,8 +6,6 @@ use thiserror::Error;
 pub enum WoraSetupError {
     #[error("dirs")]
     Dirs,
-    #[error("statgrab")]
-    Statgrab(statgrab::SGError),
     #[error("io")]
     IO(#[from] std::io::Error),
     #[error("ioerrno")]
@@ -22,12 +20,6 @@ pub enum WoraSetupError {
     FSNotify(#[from] notify::Error),
     #[error("dir missing")]
     DirectoryDoesNotExistOnFilesystem(std::path::PathBuf),
-}
-
-impl From<statgrab::SGError> for WoraSetupError {
-    fn from(err: statgrab::SGError) -> Self {
-        WoraSetupError::Statgrab(err)
-    }
 }
 
 #[derive(Clone, Error, Debug)]
@@ -70,8 +62,6 @@ pub enum MainEarlyReturn {
     IO(#[from] std::io::Error),
     #[error("notify")]
     Notify(#[from] notify::Error),
-    #[error("statgrab")]
-    Statgrab(statgrab::SGError),
     #[error("wora setup")]
     WoraSetup(#[from] WoraSetupError),
     #[error("workload")]

@@ -1,13 +1,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use decimal_percentage::Percentage;
 use nix::unistd::Pid;
 use serde::{Serialize, Serializer};
 
-use crate::Leadership;
-
-use decimal_percentage::Percentage;
-
+use crate::{Cpu, Disk, Leadership, LoadAvg, MemStats, NetIO, SwapStats};
 
 /// Process Id (pid)
 #[derive(Clone, Debug)]
@@ -23,36 +21,19 @@ impl Serialize for ProcessId {
 }
 
 /// stats for CPU, disk, file system, load, memory, network usage, process, etc from the system
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum SystemResourceStat {
-    CPUPercents(statgrab::CPUPercents),
-    CPU(statgrab::CPUStats),
-    Disk(HashMap<String, statgrab::DiskIOStats>),
-    Filesystem(HashMap<String, statgrab::FilesystemStats>),
-    Load(statgrab::LoadStats),
-    Memory(statgrab::MemStats),
-    NetworkIO(HashMap<String, statgrab::NetworkIOStats>),
-    NetworkInterface(HashMap<String, statgrab::NetworkIfaceStats>),
-    Page(statgrab::PageStats),
-    ProcessCount(statgrab::ProcessCount),
-    Process(HashMap<String, statgrab::ProcessStats>),
-    Swap(statgrab::SwapStats),
-    User(HashMap<String, statgrab::UserStats>),
-}
-
-impl Serialize for SystemResourceStat {
-    fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        todo!()
-    }
+    CPU(Cpu),
+    Disk(HashMap<String, Disk>),
+    Load(LoadAvg),
+    Memory(MemStats),
+    NetworkIO(HashMap<String, NetIO>),
+    Swap(SwapStats),
 }
 
 /// wora and system based events
 ///
-/// TODO - implement Serialize, Deserialize
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum Event<T> {
     // system
     /// when a Unix signal arrives
@@ -60,9 +41,9 @@ pub enum Event<T> {
     /// system stats
     SystemResource(SystemResourceStat),
     /// system stat thresholds reached
-    SystemResourceCPUThreshold(Percentage, statgrab::CPUPercents),
-    SystemResourceLoadThreshold(Percentage, statgrab::LoadStats),
-    SystemResourceMemoryThreshold(Percentage, statgrab::MemStats),
+    SystemResourceCPUThreshold(Percentage, Cpu),
+    SystemResourceLoadThreshold(Percentage, LoadAvg),
+    SystemResourceMemoryThreshold(Percentage, MemStats),
 
     // workload
     /// workload configuration has changed

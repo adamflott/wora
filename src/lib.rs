@@ -4,7 +4,9 @@
 //!
 //! Just like Java's claim, it really doesn't run everywhere. no_std or embedded environments are not supported.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -13,6 +15,8 @@ use lunchbox::LocalFS;
 use nix::unistd::getpid;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use proc_lock::try_lock;
+use serde::Serialize;
+use sysinfo::{CpuExt, NetworkExt, NetworksExt, SystemExt};
 use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -38,22 +42,83 @@ const EVENT_BUFFER_SIZE: usize = 1024;
 
 pub type WFS = LocalFS;
 
-/// System stats/information from `libstatgrab`
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize)]
+pub struct HostInfo {
+    pub os_name: String,
+    pub os_version: Option<String>,
+    pub kernel_version: Option<String>,
+    pub architecture: Option<String>,
+    pub hostname: Option<String>,
+    pub ncpus: usize,
+    pub maxcpus: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Cpu {
+    name: String,
+    brand: String,
+    freq: u64,
+    usage: f32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MemStats {
+    pub total: u64,
+    pub free: u64,
+    pub used: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SwapStats {
+    pub total: u64,
+    pub used: u64,
+    pub free: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LoadAvg {
+    pub one: f64,
+    pub five: f64,
+    pub fifteen: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Disk {
+    pub name: String,
+    pub kind: String,
+    pub file_system: String,
+    pub mount_point: PathBuf,
+    pub total_space: u64,
+    pub available_space: u64,
+    pub is_removable: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct NetIO {
+    pub received: u64,
+    pub total_received: u64,
+    pub transmitted: u64,
+    pub total_transmitted: u64,
+    pub packets_received: u64,
+    pub total_packets_received: u64,
+    pub packets_transmitted: u64,
+    pub total_packets_transmitted: u64,
+    pub errors_on_received: u64,
+    pub total_errors_on_received: u64,
+    pub errors_on_transmitted: u64,
+    pub total_errors_on_transmitted: u64,
+}
+
+/// System stats/information from `sysinfo`
+#[derive(Clone, Debug, Serialize)]
 pub struct Stats {
-    pub host_info: statgrab::HostInfo,
-    pub cpu: statgrab::CPUStats,
-    pub memory: statgrab::MemStats,
-    pub load: statgrab::LoadStats,
-    pub user: statgrab::UserStats,
-    pub swap: statgrab::SwapStats,
-    pub fs: Vec<statgrab::FilesystemStats>,
-    pub disk_io: Vec<statgrab::DiskIOStats>,
-    pub net_io: Vec<statgrab::NetworkIOStats>,
-    pub net_if: Vec<statgrab::NetworkIfaceStats>,
-    pub page: statgrab::PageStats,
-    pub process: Vec<statgrab::ProcessStats>,
-    pub process_count: statgrab::ProcessCount,
+    pub host_info: HostInfo,
+    pub cpu: Vec<Cpu>,
+    pub memory: MemStats,
+    pub load: LoadAvg,
+    pub swap: SwapStats,
+    pub fs: Vec<Disk>,
+    pub net_io: HashMap<String, NetIO>,
 }
 
 /// All workloads will be able to access the WORA API
@@ -63,9 +128,9 @@ pub struct Wora<T> {
     /// common directories for all executors
     pub dirs: Dirs,
     /// statgrab handle
-    sg: statgrab::SGHandle,
+    pub si: Arc<sysinfo::System>,
     /// last stat collection
-    stats: Stats,
+    pub stats: Stats,
     /// process id
     pid: nix::unistd::Pid,
     /// `Event` producer
@@ -76,14 +141,14 @@ pub struct Wora<T> {
     pub leadership: Leadership,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum Leadership {
     Leader,
     Follower,
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum HealthState {
     Ok,
     Suspended,
@@ -116,22 +181,71 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
             }
         }
 
-        let sg = statgrab::init(true)?;
+        let mut sys = sysinfo::System::new_all();
+        sys.refresh_all();
+
+        let osinfo = os_info::get();
+
+        let mut cpus = vec![];
+        for cpu in sys.cpus() {
+            cpus.push(Cpu {
+                name: cpu.name().to_string(),
+                brand: cpu.brand().to_string(),
+                freq: cpu.frequency(),
+                usage: cpu.cpu_usage(),
+            })
+        }
+        let fs = vec![];
+
+        let mut net_io = HashMap::new();
+        for (if_name, net_data) in sys.networks().iter() {
+            net_io.insert(
+                if_name.to_string(),
+                NetIO {
+                    received: net_data.received(),
+                    total_received: net_data.total_received(),
+                    transmitted: net_data.transmitted(),
+                    total_transmitted: net_data.total_transmitted(),
+                    packets_received: net_data.packets_received(),
+                    total_packets_received: net_data.total_packets_received(),
+                    packets_transmitted: net_data.packets_transmitted(),
+                    total_packets_transmitted: net_data.total_packets_transmitted(),
+                    errors_on_received: net_data.errors_on_received(),
+                    total_errors_on_received: net_data.total_errors_on_received(),
+                    errors_on_transmitted: net_data.errors_on_transmitted(),
+                    total_errors_on_transmitted: net_data.total_errors_on_transmitted(),
+                },
+            );
+        }
 
         let stats = Stats {
-            host_info: sg.get_host_info(),
-            cpu: sg.get_cpu_stats(),
-            memory: sg.get_mem_stats(),
-            load: sg.get_load_stats(),
-            user: sg.get_user_stats(),
-            swap: sg.get_swap_stats(),
-            fs: sg.get_fs_stats(),
-            disk_io: sg.get_disk_io_stats(),
-            net_io: sg.get_network_io_stats(),
-            net_if: sg.get_network_iface_stats(),
-            page: sg.get_page_stats(),
-            process: sg.get_process_stats(),
-            process_count: sg.get_process_count_of(statgrab::ProcessCountSource::Entire),
+            host_info: HostInfo {
+                os_name: sys.distribution_id(),
+                os_version: sys.os_version(),
+                kernel_version: sys.kernel_version(),
+                architecture: osinfo.architecture().map(|v| v.to_string()),
+                hostname: sys.host_name(),
+                ncpus: sys.physical_core_count().unwrap_or(0),
+                maxcpus: sys.cpus().len(),
+            },
+            cpu: cpus,
+            memory: MemStats {
+                total: sys.total_memory(),
+                free: sys.free_memory(),
+                used: sys.used_memory(),
+            },
+            load: LoadAvg {
+                one: sys.load_average().one,
+                five: sys.load_average().five,
+                fifteen: sys.load_average().fifteen,
+            },
+            swap: SwapStats {
+                total: sys.total_swap(),
+                used: sys.used_swap(),
+                free: sys.free_swap(),
+            },
+            fs: fs,
+            net_io: net_io,
         };
 
         let pid = getpid();
@@ -154,7 +268,7 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
         Ok(Wora {
             app_name,
             dirs: dirs.clone(),
-            sg,
+            si: Arc::new(sys),
             stats,
             pid,
             sender: tx,
@@ -184,26 +298,20 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
     pub fn host_os_name(&self) -> &str {
         &self.stats.host_info.os_name
     }
-    pub fn host_os_release(&self) -> &str {
-        &self.stats.host_info.os_release
+    pub fn host_os_version(&self) -> Option<String> {
+        self.stats.host_info.os_version.clone()
     }
-    pub fn host_os_version(&self) -> &str {
-        &self.stats.host_info.os_version
+    pub fn host_architecture(&self) -> Option<String> {
+        self.stats.host_info.architecture.clone()
     }
-    pub fn host_platform(&self) -> &str {
-        &self.stats.host_info.platform
+    pub fn host_hostname(&self) -> Option<String> {
+        self.stats.host_info.hostname.clone()
     }
-    pub fn host_hostname(&self) -> &str {
-        &self.stats.host_info.hostname
-    }
-    pub fn host_cpu_count(&self) -> u32 {
+    pub fn host_cpu_count(&self) -> usize {
         self.stats.host_info.ncpus
     }
-    pub fn host_cpu_max(&self) -> u32 {
+    pub fn host_cpu_max(&self) -> usize {
         self.stats.host_info.maxcpus
-    }
-    pub fn host_type(&self) -> String {
-        format!("{:?}", self.stats.host_info.host_state)
     }
 }
 
@@ -322,13 +430,11 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                 Ok(_) => {
                     info!(
                         host.hostname = wora.host_hostname(),
-                        host.platform = wora.host_platform(),
+                        host.platform = wora.host_architecture(),
                         host.os_name = wora.host_os_name(),
-                        host.os_release = wora.host_os_release(),
                         host.os_version = wora.host_os_version(),
                         host.cpu_count = wora.host_cpu_count(),
                         host.cpu_max = wora.host_cpu_max(),
-                        host.machine_type = wora.host_type()
                     );
                     info!("dirs.root: {:?}", wora.dirs.root_dir);
                     info!("dirs.log: {:?}", wora.dirs.log_root_dir);
@@ -355,11 +461,19 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                                     for path in event.paths {
                                         match tokio::fs::read_to_string(&path).await {
                                             Ok(data) => {
-                                                ev_sender
+                                                match ev_sender
                                                     .send(Event::ConfigChange(path.clone(), data))
-                                                    .await;
+                                                    .await
+                                                {
+                                                    Ok(_) => {}
+                                                    Err(send_err) => {
+                                                        error!("send error: {:?}", send_err);
+                                                    }
+                                                }
                                             }
-                                            Err(_) => {}
+                                            Err(read_err) => {
+                                                error!("read error: {:?}", read_err);
+                                            }
                                         }
                                     }
                                 }
