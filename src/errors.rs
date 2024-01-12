@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use caps::errors::CapsError;
 use nix::errno::Errno;
 use thiserror::Error;
