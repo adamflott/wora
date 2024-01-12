@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use directories::ProjectDirs;
-use lunchbox::LocalFS;
 use nix::unistd::chdir;
 use tracing::trace;
+use vfs::async_vfs::AsyncFileSystem;
 
 use crate::dirs::Dirs;
 use crate::errors::SetupFailure;
@@ -12,12 +12,10 @@ use crate::metrics::*;
 use crate::AsyncExecutor;
 use crate::Executor;
 use crate::Wora;
-use crate::WFS;
 
 #[derive(Debug)]
 pub struct UnixLike {
     pub dirs: Dirs,
-    fs: LocalFS,
 }
 
 impl UnixLike {
@@ -31,8 +29,7 @@ impl UnixLike {
             cache_root_dir: PathBuf::from("/var/run/"),
             secrets_root_dir: PathBuf::from("/var/run/"),
         };
-        let fs = LocalFS::new().unwrap();
-        UnixLike { dirs, fs }
+        UnixLike { dirs }
     }
 }
 
@@ -97,7 +94,7 @@ impl<T> AsyncExecutor<T> for UnixLikeSystem {
     async fn setup(
         &mut self,
         _wora: &Wora<T>,
-        _fs: &WFS,
+        _fs: &(dyn AsyncFileSystem),
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<(), SetupFailure> {
         Ok(())
@@ -118,7 +115,6 @@ impl<T> AsyncExecutor<T> for UnixLikeSystem {
 
 pub struct UnixLikeUser {
     unix: UnixLike,
-    fs: LocalFS,
 }
 
 impl UnixLikeUser {
@@ -146,8 +142,7 @@ impl UnixLikeUser {
         let mut unix = UnixLike::new(app_name).await;
         unix.dirs = dirs;
 
-        let fs = LocalFS::new().unwrap();
-        Ok(UnixLikeUser { unix, fs })
+        Ok(UnixLikeUser { unix })
     }
 }
 
@@ -178,7 +173,7 @@ impl<T: Send + Sync> AsyncExecutor<T> for UnixLikeUser {
     async fn setup(
         &mut self,
         wora: &Wora<T>,
-        _fs: &WFS,
+        _fs: &(dyn AsyncFileSystem),
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<(), SetupFailure> {
         let dirs = &wora.dirs;
@@ -216,7 +211,6 @@ impl<T: Send + Sync> AsyncExecutor<T> for UnixLikeUser {
 }
 
 pub struct UnixLikeBare {
-    fs: LocalFS,
     unix: UnixLike,
 }
 
@@ -236,9 +230,7 @@ impl UnixLikeBare {
         let mut unix = UnixLike::new(app_name).await;
         unix.dirs = dirs;
 
-        let fs = LocalFS::new().unwrap();
-
-        UnixLikeBare { unix, fs }
+        UnixLikeBare { unix }
     }
 }
 
@@ -269,7 +261,7 @@ impl<T> AsyncExecutor<T> for UnixLikeBare {
     async fn setup(
         &mut self,
         _wora: &Wora<T>,
-        _fs: &WFS,
+        _fs: &(dyn AsyncFileSystem),
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<(), SetupFailure> {
         Ok(())

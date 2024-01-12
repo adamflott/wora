@@ -11,7 +11,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::Utc;
 use libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2};
-use lunchbox::LocalFS;
 use nix::unistd::getpid;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use proc_lock::try_lock;
@@ -22,6 +21,7 @@ use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::Instrument;
 use tracing::{debug, error, info, trace, warn};
+use vfs::async_vfs::filesystem::AsyncFileSystem;
 
 pub mod dirs;
 pub mod errors;
@@ -40,7 +40,6 @@ use restart_policy::*;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
 
-pub type WFS = LocalFS;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct HostInfo {
@@ -349,7 +348,7 @@ pub trait App<T> {
         &mut self,
         wora: &Wora<T>,
         exec: &(dyn Executor + Send + Sync),
-        fs: &WFS,
+        fs: impl AsyncFileSystem,
         metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<(), Box<dyn std::error::Error>>;
 
@@ -392,7 +391,7 @@ fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Resul
 pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
     mut exec: impl AsyncExecutor<T> + Sync + Send + Executor,
     mut app: impl App<T> + Sync + Send + 'static,
-    fs: WFS,
+    fs: impl AsyncFileSystem,
     mut metrics: impl MetricProcessor + Sync + Send,
 ) -> Result<(), MainEarlyReturn> {
     let mut lock_path = PathBuf::new();
@@ -423,7 +422,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
             let mut app_metrics = MetricAppTimings::default();
             app_metrics.setup_finish = Some(Utc::now());
             match app
-                .setup(&wora, &exec, &fs, &metrics)
+                .setup(&wora, &exec, fs, &metrics)
                 .instrument(tracing::info_span!("app:run:setup"))
                 .await
             {
