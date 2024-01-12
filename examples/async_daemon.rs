@@ -1,5 +1,3 @@
-use std::io::Error;
-#[allow(dead_code)]
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -7,12 +5,11 @@ use std::sync::RwLock;
 use async_trait::async_trait;
 use clap::{Parser, ValueEnum};
 use libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1};
-use lunchbox::LocalFS;
-use lunchbox::ReadableFileSystem;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, trace};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{filter, prelude::*, reload, Registry};
+use vfs::async_vfs::{AsyncFileSystem, AsyncPhysicalFS};
 
 use wora::errors::*;
 use wora::events::Event;
@@ -58,7 +55,7 @@ type DaemonSharedState = Arc<RwLock<DaemonState>>;
 struct DaemonApp {
     args: DaemonArgs,
     state: DaemonSharedState,
-    log_reload_handle: tracing_subscriber::reload::Handle<filter::LevelFilter, Registry>,
+    log_reload_handle: reload::Handle<filter::LevelFilter, Registry>,
     config: DaemonConfig,
 }
 
@@ -66,8 +63,8 @@ impl Config for DaemonConfig {
     type ConfigT = DaemonConfig;
     fn parse_main_config_file(data: String) -> Result<DaemonConfig, Box<dyn std::error::Error>> {
         match toml::from_str(&data) {
-            Ok(v) => return Ok(v),
-            Err(err) => return Err(Box::new(err)),
+            Ok(v) => Ok(v),
+            Err(err) => Err(Box::new(err)),
         }
     }
     fn parse_supplemental_config_file(
@@ -75,8 +72,8 @@ impl Config for DaemonConfig {
         data: String,
     ) -> Result<DaemonConfig, Box<dyn std::error::Error>> {
         match toml::from_str(&data) {
-            Ok(v) => return Ok(v),
-            Err(err) => return Err(Box::new(err)),
+            Ok(v) => Ok(v),
+            Err(err) => Err(Box::new(err)),
         }
     }
 }
@@ -94,7 +91,7 @@ impl App<()> for DaemonApp {
         &mut self,
         wora: &Wora<()>,
         exec: &(dyn Executor + Send + Sync),
-        fs: &LocalFS,
+        _fs: &impl AsyncFileSystem,
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<(), Box<dyn std::error::Error>> {
         debug!("{:?}", wora.stats_from_start());
@@ -110,7 +107,8 @@ impl App<()> for DaemonApp {
     async fn main(
         &mut self,
         wora: &mut Wora<()>,
-        exec: &(dyn Executor + Send + Sync),
+        _exec: &(dyn Executor + Send + Sync),
+        _fs: &impl AsyncFileSystem,
         _metrics: &mut (dyn MetricProcessor + Send + Sync),
     ) -> MainRetryAction {
         info!("waiting for events...");
@@ -174,6 +172,7 @@ impl App<()> for DaemonApp {
         &mut self,
         _wora: &Wora<()>,
         _exec: &(dyn Executor + Send + Sync),
+        _fs: &impl AsyncFileSystem,
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) {
         ()
@@ -213,7 +212,7 @@ async fn main() -> Result<(), MainEarlyReturn> {
     };
 
     let metrics = MetricsProducerStdout::new().await;
-    let fs = LocalFS::new().unwrap();
+    let fs = AsyncPhysicalFS::new("/");
     match &args.run_mode {
         RunMode::Sys => {
             let exec = UnixLikeSystem::new(app.name()).await;
