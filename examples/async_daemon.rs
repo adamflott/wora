@@ -82,7 +82,7 @@ impl Config for DaemonConfig {
 impl App<()> for DaemonApp {
     type AppMetricsProducer = MetricsProducerStdout;
     type AppConfig = DaemonConfig;
-
+    type Setup = ();
     fn name(&self) -> &'static str {
         "async_daemon"
     }
@@ -93,7 +93,7 @@ impl App<()> for DaemonApp {
         exec: &(dyn Executor + Send + Sync),
         _fs: &impl AsyncFileSystem,
         _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
         debug!("{:?}", wora.stats_from_start());
 
         let args = DaemonArgs::parse();
@@ -190,15 +190,13 @@ async fn main() -> Result<(), MainEarlyReturn> {
         .with_level(true) // don't include levels in formatted output
         .with_target(true) // don't include targets
         .with_thread_ids(true) // include the thread ID of the current thread
-        .with_thread_names(true) // include the name of the current thread
-        ; // use the `Compact` formatting style.
+        .with_thread_names(true); // include the name of the current thread
 
-    let x = tracing_subscriber::fmt::layer()
+    let span_layer = tracing_subscriber::fmt::layer()
         .event_format(format)
-        //.with_max_level(Level::TRACE)
         .with_span_events(FmtSpan::CLOSE | FmtSpan::ENTER);
 
-    tracing_subscriber::registry().with(filter).with(x).init();
+    tracing_subscriber::registry().with(filter).with(span_layer).init();
 
     let args = DaemonArgs::parse();
 
@@ -218,11 +216,11 @@ async fn main() -> Result<(), MainEarlyReturn> {
             let exec = UnixLikeSystem::new(app.name()).await;
             exec_async_runner(exec, app, fs, metrics).await?
         }
-        RunMode::User => match UnixLikeUser::new(app.name()).await {
+        RunMode::User => match UnixLikeUser::new(app.name(), &fs).await {
             Ok(exec) => exec_async_runner(exec, app, fs, metrics).await?,
             Err(exec_err) => {
                 error!("exec error:{}", exec_err);
-                return Err(MainEarlyReturn::IO(exec_err));
+                return Err(MainEarlyReturn::Vfs(exec_err));
             }
         },
     }

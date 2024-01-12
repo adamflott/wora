@@ -39,7 +39,7 @@ struct BasicApp {
 impl App<()> for BasicApp {
     type AppMetricsProducer = MetricsProducerStdout;
     type AppConfig = NoConfig;
-
+    type Setup = ();
     fn name(&self) -> &'static str {
         "wora_basic"
     }
@@ -50,7 +50,7 @@ impl App<()> for BasicApp {
         _exec: &(dyn Executor + Send + Sync),
         _fs: &impl AsyncFileSystem,
         _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
         debug!("command args: {:?}", self.args);
         Ok(())
     }
@@ -102,11 +102,11 @@ async fn main() -> Result<(), MainEarlyReturn> {
 
     let fs = AsyncPhysicalFS::new("/");
     let metrics = MetricsProducerStdout::new().await;
-    match UnixLikeUser::new(app_name).await {
+    match UnixLikeUser::new(app_name, &fs).await {
         Ok(exec) => exec_async_runner(exec, app, fs, metrics).await?,
         Err(exec_err) => {
             error!("exec error:{}", exec_err);
-            return Err(MainEarlyReturn::IO(exec_err));
+            return Err(MainEarlyReturn::Vfs(exec_err));
         }
     }
 
