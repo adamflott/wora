@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 #[cfg(target_os = "linux")]
 use caps::CapSet;
+#[cfg(target_os = "linux")]
+use libc::RLIM_INFINITY;
 use nix::sys::{
     mman::{mlockall, MlockAllFlags},
     resource::{setrlimit, Resource},
