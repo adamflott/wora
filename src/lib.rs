@@ -126,6 +126,8 @@ pub struct Wora<T> {
     pub app_name: String,
     /// common directories for all executors
     pub dirs: Dirs,
+    /// current directory where the process was invoked (an executor will likely override this)
+    pub initial_working_dir: PathBuf,
     /// statgrab handle
     pub si: Arc<sysinfo::System>,
     /// last stat collection
@@ -264,8 +266,11 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
             });
         }
 
+        let current_dir = std::env::current_dir()?;
+
         Ok(Wora {
             app_name,
+            initial_working_dir: current_dir,
             dirs: dirs.clone(),
             si: Arc::new(sys),
             stats,
