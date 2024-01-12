@@ -41,6 +41,8 @@ impl From<std::env::VarError> for NewWorkloadError {
 pub enum SetupFailure {
     #[error("setup: I/O")]
     IO(#[from] std::io::Error),
+    #[error("setup: VFS: {0}")]
+    Vfs(#[from] vfs::error::VfsError),
     #[error("setup: Errno")]
     Errno(#[from] Errno),
     #[error("setup: logger")]
@@ -61,6 +63,8 @@ pub enum SetupFailure {
 pub enum MainEarlyReturn {
     #[error("io")]
     IO(#[from] std::io::Error),
+    #[error("vfs")]
+    Vfs(#[from] vfs::error::VfsError),
     #[error("notify")]
     Notify(#[from] notify::Error),
     #[error("wora setup")]

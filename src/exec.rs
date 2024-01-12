@@ -86,7 +86,7 @@ pub trait AsyncExecutor<T>: Executor {
     async fn setup(
         &mut self,
         wora: &Wora<T>,
-        fs: &(dyn AsyncFileSystem),
+        fs: &impl AsyncFileSystem,
         metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<Self::Setup, SetupFailure>;
     async fn is_ready(&self, wora: &Wora<T>, metrics: &(dyn MetricProcessor + Send + Sync))

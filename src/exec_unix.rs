@@ -95,7 +95,7 @@ impl<T> AsyncExecutor<T> for UnixLikeSystem {
     async fn setup(
         &mut self,
         _wora: &Wora<T>,
-        _fs: &(dyn AsyncFileSystem),
+        _fs: &impl AsyncFileSystem,
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<Self::Setup, SetupFailure> {
         Ok(())
@@ -119,7 +119,7 @@ pub struct UnixLikeUser {
 }
 
 impl UnixLikeUser {
-    pub async fn new(app_name: &str) -> Result<Self, std::io::Error> {
+    pub async fn new(app_name: &str, fs: &impl AsyncFileSystem) -> Result<Self, vfs::error::VfsError> {
         let proj_dirs = ProjectDirs::from("com", "wora", app_name).unwrap();
 
         let dirs = Dirs {
@@ -135,10 +135,10 @@ impl UnixLikeUser {
             secrets_root_dir: proj_dirs.cache_dir().to_path_buf(),
         };
 
-        std::fs::create_dir_all(&dirs.runtime_root_dir)?;
-        std::fs::create_dir_all(&dirs.cache_root_dir)?;
-        std::fs::create_dir_all(&dirs.data_root_dir)?;
-        std::fs::create_dir_all(&dirs.metadata_root_dir)?;
+        fs.create_dir(&dirs.runtime_root_dir.to_str().unwrap()).await?;
+        fs.create_dir(&dirs.cache_root_dir.to_str().unwrap()).await?;
+        fs.create_dir(&dirs.data_root_dir.to_str().unwrap()).await?;
+        fs.create_dir(&dirs.metadata_root_dir.to_str().unwrap()).await?;
 
         let mut unix = UnixLike::new(app_name).await;
         unix.dirs = dirs;
@@ -175,7 +175,7 @@ impl<T: Send + Sync> AsyncExecutor<T> for UnixLikeUser {
     async fn setup(
         &mut self,
         wora: &Wora<T>,
-        _fs: &(dyn AsyncFileSystem),
+        fs: &impl AsyncFileSystem,
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<Self::Setup, SetupFailure> {
         let dirs = &wora.dirs;
@@ -192,7 +192,7 @@ impl<T: Send + Sync> AsyncExecutor<T> for UnixLikeUser {
             &dirs.cache_root_dir,
         ] {
             trace!("exec:setup:io:create dir:{:?}: trying", dir);
-            tokio::fs::create_dir_all(dir).await?;
+            fs.create_dir(dir.to_str().unwrap()).await?;
             trace!("exec:setup:io:create dir:{:?}: success", dir);
         }
 
@@ -264,7 +264,7 @@ impl<T> AsyncExecutor<T> for UnixLikeBare {
     async fn setup(
         &mut self,
         _wora: &Wora<T>,
-        _fs: &(dyn AsyncFileSystem),
+        _fs: &impl AsyncFileSystem,
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<Self::Setup, SetupFailure> {
         Ok(())
