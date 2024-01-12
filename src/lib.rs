@@ -342,6 +342,7 @@ impl Config for NoConfig {
 pub trait App<T> {
     type AppMetricsProducer: MetricProcessor;
     type AppConfig: Config;
+    type Setup;
 
     fn name(&self) -> &'static str;
 
@@ -355,7 +356,7 @@ pub trait App<T> {
         exec: &(dyn Executor + Send + Sync),
         fs: &impl AsyncFileSystem,
         metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<(), Box<dyn std::error::Error>>;
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>>;
 
     async fn main(
         &mut self,

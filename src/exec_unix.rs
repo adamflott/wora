@@ -91,12 +91,13 @@ impl Executor for UnixLikeSystem {
 
 #[async_trait]
 impl<T> AsyncExecutor<T> for UnixLikeSystem {
+    type Setup = ();
     async fn setup(
         &mut self,
         _wora: &Wora<T>,
         _fs: &(dyn AsyncFileSystem),
         _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<(), SetupFailure> {
+    ) -> Result<Self::Setup, SetupFailure> {
         Ok(())
     }
 
@@ -170,12 +171,13 @@ impl Executor for UnixLikeUser {
 
 #[async_trait]
 impl<T: Send + Sync> AsyncExecutor<T> for UnixLikeUser {
+    type Setup = ();
     async fn setup(
         &mut self,
         wora: &Wora<T>,
         _fs: &(dyn AsyncFileSystem),
         _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<(), SetupFailure> {
+    ) -> Result<Self::Setup, SetupFailure> {
         let dirs = &wora.dirs;
 
         trace!("exec:setup:io:chdir({:?}): trying", &wora.dirs.root_dir);
@@ -258,12 +260,13 @@ impl Executor for UnixLikeBare {
 
 #[async_trait]
 impl<T> AsyncExecutor<T> for UnixLikeBare {
+    type Setup = ();
     async fn setup(
         &mut self,
         _wora: &Wora<T>,
         _fs: &(dyn AsyncFileSystem),
         _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<(), SetupFailure> {
+    ) -> Result<Self::Setup, SetupFailure> {
         Ok(())
     }
 
