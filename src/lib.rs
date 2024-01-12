@@ -353,7 +353,7 @@ pub trait App<T> {
         &mut self,
         wora: &Wora<T>,
         exec: &(dyn Executor + Send + Sync),
-        fs: impl AsyncFileSystem,
+        fs: &impl AsyncFileSystem,
         metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<(), Box<dyn std::error::Error>>;
 
@@ -361,6 +361,7 @@ pub trait App<T> {
         &mut self,
         wora: &mut Wora<T>,
         exec: &(dyn Executor + Send + Sync),
+        fs: &impl AsyncFileSystem,
         metrics: &mut (dyn MetricProcessor + Send + Sync),
     ) -> MainRetryAction;
 
@@ -370,6 +371,7 @@ pub trait App<T> {
         &mut self,
         wora: &Wora<T>,
         exec: &(dyn Executor + Send + Sync),
+        fs: &impl AsyncFileSystem,
         metrics: &(dyn MetricProcessor + Send + Sync),
     );
 }
@@ -427,7 +429,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
             let mut app_metrics = MetricAppTimings::default();
             app_metrics.setup_finish = Some(Utc::now());
             match app
-                .setup(&wora, &exec, fs, &metrics)
+                .setup(&wora, &exec, &fs, &metrics)
                 .instrument(tracing::info_span!("app:run:setup"))
                 .await
             {
@@ -494,7 +496,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                         .await
                     {
                         match app
-                            .main(&mut wora, &exec, &mut metrics)
+                            .main(&mut wora, &exec, &fs, &mut metrics)
                             .instrument(tracing::info_span!("app:run:main"))
                             .await
                         {
@@ -511,7 +513,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                                 return Err(MainEarlyReturn::UseExitCode(ec));
                             }
                             MainRetryAction::UseRestartPolicy => {
-                                app.main(&mut wora, &exec, &mut metrics)
+                                app.main(&mut wora, &exec, &fs, &mut metrics)
                                     .instrument(tracing::info_span!("app:run:main:retry"))
                                     .await;
                             }
@@ -521,7 +523,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                         warn!(comp = "exec", method = "run", is_ready = false);
                     }
 
-                    app.end(&wora, &exec, &metrics)
+                    app.end(&wora, &exec, &fs, &metrics)
                         .instrument(tracing::info_span!("app:run:end"))
                         .await;
                 }

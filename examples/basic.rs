@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use clap::Parser;
 use log::{debug, error, info, trace, warn};
-use lunchbox::LocalFS;
 use tracing_subscriber;
+use vfs::async_vfs::{AsyncFileSystem, AsyncPhysicalFS};
 
 use wora::errors::*;
 use wora::exec::*;
@@ -34,6 +34,7 @@ struct BasicApp {
     counter: u32,
 }
 
+
 #[async_trait]
 impl App<()> for BasicApp {
     type AppMetricsProducer = MetricsProducerStdout;
@@ -47,7 +48,7 @@ impl App<()> for BasicApp {
         &mut self,
         _wora: &Wora<()>,
         _exec: &(dyn Executor + Send + Sync),
-        _fs: &WFS,
+        _fs: &impl AsyncFileSystem,
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<(), Box<dyn std::error::Error>> {
         debug!("command args: {:?}", self.args);
@@ -58,6 +59,7 @@ impl App<()> for BasicApp {
         &mut self,
         _wora: &mut Wora<()>,
         _exec: &(dyn Executor + Send + Sync),
+        _fs: &impl AsyncFileSystem,
         _metrics: &mut (dyn MetricProcessor + Send + Sync),
     ) -> MainRetryAction {
         trace!("Trace message");
@@ -78,6 +80,7 @@ impl App<()> for BasicApp {
         &mut self,
         _wora: &Wora<()>,
         _exec: &(dyn Executor + Send + Sync),
+        _fs: &impl AsyncFileSystem,
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) {
         info!("Final count: {}", self.counter);
@@ -97,7 +100,7 @@ async fn main() -> Result<(), MainEarlyReturn> {
         counter: 1,
     };
 
-    let fs = LocalFS::new().unwrap();
+    let fs = AsyncPhysicalFS::new("/");
     let metrics = MetricsProducerStdout::new().await;
     match UnixLikeUser::new(app_name).await {
         Ok(exec) => exec_async_runner(exec, app, fs, metrics).await?,
