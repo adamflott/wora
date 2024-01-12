@@ -1,4 +1,4 @@
-use sysinfo::{CpuExt, DiskExt, NetworkExt, NetworksExt, PidExt, ProcessExt, System, SystemExt};
+use sysinfo::{CpuExt, DiskExt, NetworkExt, NetworksExt, ProcessExt, SystemExt};
 
 fn main() {
     let mut sys = sysinfo::System::new_all();
