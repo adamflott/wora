@@ -128,7 +128,7 @@ pub struct Wora<T> {
     pub dirs: Dirs,
     /// current directory where the process was invoked (an executor will likely override this)
     pub initial_working_dir: PathBuf,
-    /// statgrab handle
+    /// sysinfo handle
     pub si: Arc<sysinfo::System>,
     /// last stat collection
     pub stats: Stats,
