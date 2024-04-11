@@ -157,7 +157,7 @@ impl App<()> for DaemonApp {
         MainRetryAction::Success
     }
 
-    async fn is_healthy() -> HealthState {
+    async fn is_healthy(&mut self) -> HealthState {
         HealthState::Ok
     }
 

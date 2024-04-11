@@ -368,7 +368,7 @@ pub trait App<T> {
         metrics: &mut (dyn MetricProcessor + Send + Sync),
     ) -> MainRetryAction;
 
-    async fn is_healthy() -> HealthState;
+    async fn is_healthy(&mut self) -> HealthState;
 
     async fn end(
         &mut self,
