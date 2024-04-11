@@ -1,6 +1,5 @@
 pub use crate::dirs::Dirs;
 pub use crate::errors::*;
-pub use crate::errors::*;
 pub use crate::events::Event;
 pub use crate::exec::*;
 pub use crate::exec_async_runner;
