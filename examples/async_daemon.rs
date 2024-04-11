@@ -126,14 +126,19 @@ impl App<()> for DaemonApp {
                     return MainRetryAction::Success;
                 }
                 Event::SystemResource(_) => {}
-                Event::ConfigChange(_file, data) => {
-                    match DaemonConfig::parse_main_config_file(data) {
-                        Ok(cfg) => {
-                            info!("config changed");
-                            self.config = cfg;
-                        }
-                        Err(err) => {
-                            error!("failed to parse config{:?}", err);
+                Event::ConfigChange(event) => {
+                    for pathbuf in event.paths {
+                        match fs.read_to_string(pathbuf).await {
+                            Ok(data) => match DaemonConfig::parse_main_config_file(data) {
+                                Ok(cfg) => {
+                                    info!("config changed");
+                                    self.config = cfg;
+                                }
+                                Err(err) => {
+                                    error!("failed to parse config{:?}", err);
+                                }
+                            },
+                            Err(_) => {}
                         }
                     }
                 }

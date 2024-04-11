@@ -529,22 +529,10 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                             match res {
                                 Ok(event) => {
                                     info!("changed: {:?}", event);
-                                    for path in event.paths {
-                                        match tokio::fs::read_to_string(&path).await {
-                                            Ok(data) => {
-                                                match ev_sender
-                                                    .send(Event::ConfigChange(path.clone(), data))
-                                                    .await
-                                                {
-                                                    Ok(_) => {}
-                                                    Err(send_err) => {
-                                                        error!("send error: {:?}", send_err);
-                                                    }
-                                                }
-                                            }
-                                            Err(read_err) => {
-                                                error!("read error: {:?}", read_err);
-                                            }
+                                    match ev_sender.send(Event::ConfigChange(event)).await {
+                                        Ok(_) => {}
+                                        Err(send_err) => {
+                                            error!("send error: {:?}", send_err);
                                         }
                                     }
                                 }
