@@ -11,13 +11,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{filter, prelude::*, reload, Registry};
 use vfs::async_vfs::{AsyncFileSystem, AsyncPhysicalFS};
 
-use wora::errors::*;
-use wora::events::Event;
-use wora::exec::*;
-use wora::exec_unix::*;
-use wora::metrics::*;
-use wora::restart_policy::MainRetryAction;
-use wora::*;
+use wora::prelude::*;
 
 #[derive(Clone, Debug, ValueEnum, Serialize, Deserialize)]
 pub enum RunMode {
