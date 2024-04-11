@@ -1,7 +1,7 @@
 use serde_derive::{Deserialize, Serialize};
 
 /// The policy to use when the workload returns.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub enum WorkloadRestartPolicy {
     /// Use an exponential backoff algorithm up to the retry times.
     ExponentialBackoff,
@@ -10,13 +10,8 @@ pub enum WorkloadRestartPolicy {
     /// Retry without any pause between invocations.
     RetryInstantly,
     /// Use a constant pause (in seconds) between invocations. Set via `workload_restart_policy_pause_duration`.
+    #[default]
     RetryPause,
-}
-
-impl Default for WorkloadRestartPolicy {
-    fn default() -> Self {
-        WorkloadRestartPolicy::RetryPause
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

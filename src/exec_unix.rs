@@ -41,7 +41,6 @@ impl MetricProcessor for UnixLike {
         Ok(())
     }
     async fn end(&self) {
-        ()
     }
 }
 
@@ -74,7 +73,6 @@ impl MetricProcessor for UnixLikeSystem {
         Ok(())
     }
     async fn end(&self) {
-        ()
     }
 }
 
@@ -100,7 +98,6 @@ impl<T> AsyncExecutor<T> for UnixLikeSystem {
     }
 
     async fn end(&self, _wora: &Wora<T>, _metrics: &(dyn MetricProcessor + Send + Sync)) {
-        ()
     }
 }
 
@@ -138,7 +135,6 @@ impl MetricProcessor for UnixLikeUser {
         Ok(())
     }
     async fn end(&self) {
-        ()
     }
 }
 
@@ -184,7 +180,6 @@ impl<T: Send + Sync> AsyncExecutor<T> for UnixLikeUser {
     }
 
     async fn end(&self, _wora: &Wora<T>, _metrics: &(dyn MetricProcessor + Send + Sync)) {
-        ()
     }
 }
 
@@ -221,7 +216,6 @@ impl MetricProcessor for UnixLikeBare {
         Ok(())
     }
     async fn end(&self) {
-        ()
     }
 }
 
@@ -246,6 +240,5 @@ impl<T> AsyncExecutor<T> for UnixLikeBare {
     }
 
     async fn end(&self, _wora: &Wora<T>, _metrics: &(dyn MetricProcessor + Send + Sync)) {
-        ()
     }
 }

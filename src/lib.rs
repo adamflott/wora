@@ -264,8 +264,8 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
                 used: sys.used_swap(),
                 free: sys.free_swap(),
             },
-            fs: fs,
-            net_io: net_io,
+            fs,
+            net_io,
         };
 
         let pid = getpid();
@@ -308,7 +308,7 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
         &self.dirs
     }
 
-    pub async fn emit_event(&self, ev: Event<T>) -> () {
+    pub async fn emit_event(&self, ev: Event<T>) {
         match self.sender.send(ev).await {
             Ok(_) => {
                 debug!("event:sent");
@@ -317,7 +317,6 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
                 error!("event:send:error: {:?}", send_err);
             }
         }
-        ()
     }
 
     pub fn host_os_name(&self) -> &str {
@@ -339,7 +338,7 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
         self.stats.host_info.maxcpus
     }
 
-    pub async fn schedule_event(&self, duration: tokio::time::Duration, ev: Event<T>) -> () {
+    pub async fn schedule_event(&self, duration: tokio::time::Duration, ev: Event<T>) {
         tokio::time::sleep(duration).await;
         self.emit_event(ev).await
     }
