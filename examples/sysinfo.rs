@@ -1,14 +1,14 @@
-use sysinfo::{CpuExt, DiskExt, NetworkExt, NetworksExt, ProcessExt, SystemExt};
+use sysinfo::{Disks, Networks, System};
 
 fn main() {
     let mut sys = sysinfo::System::new_all();
     sys.refresh_all();
     let osinfo = os_info::get();
-    println!("name: {:?}", sys.name());
-    println!("os version: {:?}", sys.os_version());
-    println!("long os version: {:?}", sys.long_os_version());
-    println!("kernel version: {:?}", sys.kernel_version());
-    println!("distribution id: {:?}", sys.distribution_id());
+    println!("name: {:?}", System::name());
+    println!("os version: {:?}", System::os_version());
+    println!("long os version: {:?}", System::long_os_version());
+    println!("kernel version: {:?}", System::kernel_version());
+    println!("distribution id: {:?}", System::distribution_id());
     println!("cpus: {:?}", sys.cpus());
     println!("cpu count: {:?}", sys.cpus().len());
     for cpu in sys.cpus() {
@@ -27,7 +27,8 @@ fn main() {
     println!("os edition: {:?}", osinfo.edition());
     println!("os code name: {:?}", osinfo.codename());
     println!("os bitness: {:?}", osinfo.bitness());
-    for disk in sys.disks() {
+    let disks = Disks::new_with_refreshed_list();
+    for disk in &disks {
         println!(
             "{:?}: {:?} {:?} {:?} {:?}",
             disk.name(),
@@ -37,19 +38,20 @@ fn main() {
             disk.mount_point()
         );
     }
-    println!("{:?}", sys.networks());
-    for (n, d) in sys.networks().iter() {
-        println!("{:?} {:?}", n, d);
-        println!("{:?}", d.mac_address());
+    let networks = Networks::new_with_refreshed_list();
+    println!("{:?}", &networks);
+    for (n, d) in &networks {
+        println!("Network: {:?} {:?}", n, d);
+        println!("  MAC: {:?}", d.mac_address());
     }
     for (pid, process) in sys.processes() {
         let disk_usage = process.disk_usage();
         println!(
-            "[{}] read bytes   : new/total => {}/{} B",
+            "pid [{}] read bytes   : new/total => {}/{} B",
             pid, disk_usage.read_bytes, disk_usage.total_read_bytes,
         );
         println!(
-            "[{}] written bytes: new/total => {}/{} B",
+            "pid [{}] written bytes: new/total => {}/{} B",
             pid, disk_usage.written_bytes, disk_usage.total_written_bytes,
         );
     }
