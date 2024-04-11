@@ -20,7 +20,7 @@ futures = "~0.3.30"
 libc = "~0.2.151"
 log = "~0.4.20"
 nix = { version = "~0.28.0", features = ["process", "mman", "resource", "fs"]}
-notify = {  versio = "~6.1.1", features = ["serde"] }
+notify = { version = "~6.1.1", features = ["serde"] }
 opentelemetry = "~0.22.0"
 os_info = "~3.8.2"
 proc-lock = "~0.4.0"
