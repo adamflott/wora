@@ -42,9 +42,15 @@ use vfs::*;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
 
+#[derive(Clone, Debug, Serialize)]
+pub enum SupportedOSes {
+    Linux,
+    OSX,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct HostInfo {
+    pub os_type: SupportedOSes,
     pub os_name: String,
     pub os_version: Option<String>,
     pub kernel_version: Option<String>,
@@ -221,8 +227,17 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
             );
         }
 
+        let os_type = match sys.distribution_id().as_str() {
+            "linux" | "nixos" => SupportedOSes::Linux,
+            unsupported => {
+                error!("unsupported os type {}", unsupported);
+                return Err(WoraSetupError::UnsupportedOS(unsupported.to_string()));
+            }
+        };
+
         let stats = Stats {
             host_info: HostInfo {
+                os_type,
                 os_name: sys.distribution_id(),
                 os_version: sys.os_version(),
                 kernel_version: sys.kernel_version(),
