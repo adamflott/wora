@@ -19,6 +19,7 @@ use sysinfo::{CpuExt, NetworkExt, NetworksExt, SystemExt};
 use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::task::JoinHandle;
 use tracing::Instrument;
 use tracing::{debug, error, info, trace, warn};
 
@@ -334,6 +335,42 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
     pub fn host_cpu_max(&self) -> usize {
         self.stats.host_info.maxcpus
     }
+
+    pub async fn schedule_event(&self, duration: tokio::time::Duration, ev: Event<T>) -> () {
+        tokio::time::sleep(duration).await;
+        self.emit_event(ev).await
+    }
+
+    pub async fn schedule_task<F, Fut>(
+        &self,
+        duration: tokio::time::Duration,
+        future: F,
+    ) -> JoinHandle<TaskOp>
+    where
+        F: Fn() -> Fut + Send + 'static,
+        Fut: Future<Output = TaskOp> + Send,
+    {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(duration).await;
+                match future().await {
+                    TaskOp::Requeue => {
+                        debug!("wora:task action:requeue");
+                    }
+                    TaskOp::Abort => {
+                        info!("wora:task action:abort");
+                        return TaskOp::Abort;
+                    }
+                }
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum TaskOp {
+    Requeue,
+    Abort,
 }
 
 pub trait Config {
