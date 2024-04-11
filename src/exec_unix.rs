@@ -91,20 +91,11 @@ impl Executor for UnixLikeSystem {
 #[async_trait]
 impl<T> AsyncExecutor<T> for UnixLikeSystem {
     type Setup = ();
-    async fn setup(
-        &mut self,
-        _wora: &Wora<T>,
-        _fs: impl WFS,
-        _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<Self::Setup, SetupFailure> {
+    async fn setup(&mut self, _wora: &Wora<T>, _fs: impl WFS, _metrics: &(dyn MetricProcessor + Send + Sync)) -> Result<Self::Setup, SetupFailure> {
         Ok(())
     }
 
-    async fn is_ready(
-        &self,
-        _wora: &Wora<T>,
-        _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> bool {
+    async fn is_ready(&self, _wora: &Wora<T>, _metrics: &(dyn MetricProcessor + Send + Sync)) -> bool {
         true
     }
 
@@ -126,20 +117,15 @@ impl UnixLikeUser {
             log_root_dir: proj_dirs.data_local_dir().to_path_buf(),
             metadata_root_dir: proj_dirs.config_dir().to_path_buf(),
             data_root_dir: proj_dirs.data_dir().to_path_buf(),
-            runtime_root_dir: proj_dirs
-                .runtime_dir()
-                .unwrap_or(std::env::temp_dir().as_path())
-                .to_path_buf(),
+            runtime_root_dir: proj_dirs.runtime_dir().unwrap_or(std::env::temp_dir().as_path()).to_path_buf(),
             cache_root_dir: proj_dirs.cache_dir().to_path_buf(),
             secrets_root_dir: proj_dirs.cache_dir().to_path_buf(),
         };
 
-        fs.create_dir(&dirs.runtime_root_dir.to_str().unwrap())
-            .await;
+        fs.create_dir(&dirs.runtime_root_dir.to_str().unwrap()).await;
         fs.create_dir(&dirs.cache_root_dir.to_str().unwrap()).await;
         fs.create_dir(&dirs.data_root_dir.to_str().unwrap()).await;
-        fs.create_dir(&dirs.metadata_root_dir.to_str().unwrap())
-            .await;
+        fs.create_dir(&dirs.metadata_root_dir.to_str().unwrap()).await;
 
         let mut unix = UnixLike::new(app_name).await;
         unix.dirs = dirs;
@@ -173,12 +159,7 @@ impl Executor for UnixLikeUser {
 #[async_trait]
 impl<T: Send + Sync> AsyncExecutor<T> for UnixLikeUser {
     type Setup = ();
-    async fn setup(
-        &mut self,
-        wora: &Wora<T>,
-        fs: impl WFS,
-        _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<Self::Setup, SetupFailure> {
+    async fn setup(&mut self, wora: &Wora<T>, fs: impl WFS, _metrics: &(dyn MetricProcessor + Send + Sync)) -> Result<Self::Setup, SetupFailure> {
         let dirs = &wora.dirs;
 
         trace!("exec:setup:io:chdir({:?}): trying", &wora.dirs.root_dir);
@@ -200,11 +181,7 @@ impl<T: Send + Sync> AsyncExecutor<T> for UnixLikeUser {
         Ok(())
     }
 
-    async fn is_ready(
-        &self,
-        _wora: &Wora<T>,
-        _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> bool {
+    async fn is_ready(&self, _wora: &Wora<T>, _metrics: &(dyn MetricProcessor + Send + Sync)) -> bool {
         true
     }
 
@@ -262,20 +239,11 @@ impl Executor for UnixLikeBare {
 #[async_trait]
 impl<T> AsyncExecutor<T> for UnixLikeBare {
     type Setup = ();
-    async fn setup(
-        &mut self,
-        _wora: &Wora<T>,
-        _fs: impl WFS,
-        _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<Self::Setup, SetupFailure> {
+    async fn setup(&mut self, _wora: &Wora<T>, _fs: impl WFS, _metrics: &(dyn MetricProcessor + Send + Sync)) -> Result<Self::Setup, SetupFailure> {
         Ok(())
     }
 
-    async fn is_ready(
-        &self,
-        _wora: &Wora<T>,
-        _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> bool {
+    async fn is_ready(&self, _wora: &Wora<T>, _metrics: &(dyn MetricProcessor + Send + Sync)) -> bool {
         true
     }
 

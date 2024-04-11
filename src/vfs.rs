@@ -11,10 +11,7 @@ pub trait WFS: Debug + Clone + Send + Sync {
     fn new() -> Self;
     async fn create_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<(), VfsError>;
     async fn read_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<ReadDir, VfsError>;
-    async fn read_to_string<P: AsRef<Path> + Send + Sync>(
-        &self,
-        path: P,
-    ) -> Result<String, VfsError>;
+    async fn read_to_string<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<String, VfsError>;
 }
 
 #[derive(Debug, Clone)]
@@ -27,20 +24,13 @@ impl WFS for PhysicalVFS {
     }
 
     async fn create_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<(), VfsError> {
-        tokio::fs::create_dir(path)
-            .await
-            .map_err(|e| VfsError::Io(e))
+        tokio::fs::create_dir(path).await.map_err(|e| VfsError::Io(e))
     }
     async fn read_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<ReadDir, VfsError> {
         tokio::fs::read_dir(path).await.map_err(|e| VfsError::Io(e))
     }
 
-    async fn read_to_string<P: AsRef<Path> + Send + Sync>(
-        &self,
-        path: P,
-    ) -> Result<String, VfsError> {
-        tokio::fs::read_to_string(path)
-            .await
-            .map_err(|e| VfsError::Io(e))
+    async fn read_to_string<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<String, VfsError> {
+        tokio::fs::read_to_string(path).await.map_err(|e| VfsError::Io(e))
     }
 }

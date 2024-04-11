@@ -60,10 +60,7 @@ impl Config for DaemonConfig {
             Err(err) => Err(Box::new(err)),
         }
     }
-    fn parse_supplemental_config_file(
-        _file_path: PathBuf,
-        data: String,
-    ) -> Result<DaemonConfig, Box<dyn std::error::Error>> {
+    fn parse_supplemental_config_file(_file_path: PathBuf, data: String) -> Result<DaemonConfig, Box<dyn std::error::Error>> {
         match toml::from_str(&data) {
             Ok(v) => Ok(v),
             Err(err) => Err(Box::new(err)),
@@ -149,10 +146,7 @@ impl App<()> for DaemonApp {
                     info!("rotating log");
                 }
                 Event::LeadershipChange(old_state, new_state) => {
-                    info!(
-                        "leadership has changed from state {:?} to {:?}",
-                        old_state, new_state
-                    );
+                    info!("leadership has changed from state {:?} to {:?}", old_state, new_state);
                 }
                 Event::App(_) => {}
                 _ => {}
@@ -166,13 +160,7 @@ impl App<()> for DaemonApp {
         HealthState::Ok
     }
 
-    async fn end(
-        &mut self,
-        _wora: &Wora<()>,
-        _exec: &(dyn Executor + Send + Sync),
-        _fs: impl WFS,
-        _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) {
+    async fn end(&mut self, _wora: &Wora<()>, _exec: &(dyn Executor + Send + Sync), _fs: impl WFS, _metrics: &(dyn MetricProcessor + Send + Sync)) {
         ()
     }
 }

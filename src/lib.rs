@@ -171,11 +171,7 @@ pub enum HealthState {
 
 /// WORA API
 impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
-    pub fn new(
-        dirs: &Dirs,
-        app_name: String,
-        ev_buf_size: usize,
-    ) -> Result<Wora<T>, WoraSetupError> {
+    pub fn new(dirs: &Dirs, app_name: String, ev_buf_size: usize) -> Result<Wora<T>, WoraSetupError> {
         trace!("checking executor directories exist...");
 
         for dir in [
@@ -187,9 +183,7 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
         ] {
             if !dir.exists() {
                 error!("directory {:?} does not exist", dir);
-                return Err(WoraSetupError::DirectoryDoesNotExistOnFilesystem(
-                    dir.clone(),
-                ));
+                return Err(WoraSetupError::DirectoryDoesNotExistOnFilesystem(dir.clone()));
             }
         }
 
@@ -345,11 +339,7 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
         self.emit_event(ev).await
     }
 
-    pub async fn schedule_task<F, Fut>(
-        &self,
-        duration: tokio::time::Duration,
-        future: F,
-    ) -> JoinHandle<TaskOp>
+    pub async fn schedule_task<F, Fut>(&self, duration: tokio::time::Duration, future: F) -> JoinHandle<TaskOp>
     where
         F: Fn() -> Fut + Send + 'static,
         Fut: Future<Output = TaskOp> + Send,
@@ -381,10 +371,7 @@ pub trait Config {
     type ConfigT: Default;
     fn parse_main_config_file(data: String) -> Result<Self::ConfigT, Box<dyn std::error::Error>>;
 
-    fn parse_supplemental_config_file(
-        _file_path: PathBuf,
-        _data: String,
-    ) -> Result<Self::ConfigT, Box<dyn std::error::Error>> {
+    fn parse_supplemental_config_file(_file_path: PathBuf, _data: String) -> Result<Self::ConfigT, Box<dyn std::error::Error>> {
         Ok(Self::ConfigT::default())
     }
 }
@@ -426,17 +413,10 @@ pub trait App<T> {
 
     async fn is_healthy(&mut self) -> HealthState;
 
-    async fn end(
-        &mut self,
-        wora: &Wora<T>,
-        exec: &(dyn Executor + Send + Sync),
-        fs: impl WFS,
-        metrics: &(dyn MetricProcessor + Send + Sync),
-    );
+    async fn end(&mut self, wora: &Wora<T>, exec: &(dyn Executor + Send + Sync), fs: impl WFS, metrics: &(dyn MetricProcessor + Send + Sync));
 }
 
-fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)>
-{
+fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)> {
     let (tx, rx) = channel(1);
 
     let watcher = RecommendedWatcher::new(
@@ -450,7 +430,6 @@ fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Resul
 
     Ok((watcher, rx))
 }
-
 
 // TODOs
 // - create a non-file locking variant
@@ -518,10 +497,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                     let (mut watcher, mut watch_rx) = async_watcher()?;
 
                     info!("notify:watch:dir: {:?}", &wora.dirs.metadata_root_dir);
-                    watcher.watch(
-                        std::path::Path::new(&wora.dirs.metadata_root_dir),
-                        RecursiveMode::Recursive,
-                    )?;
+                    watcher.watch(std::path::Path::new(&wora.dirs.metadata_root_dir), RecursiveMode::Recursive)?;
                     let ev_sender = wora.sender.clone();
 
                     tokio::spawn(async move {
@@ -543,11 +519,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
 
                     info!(process_id = wora.pid.to_string(), app_name = app.name());
 
-                    if exec
-                        .is_ready(&wora, &metrics)
-                        .instrument(tracing::info_span!("exec:run:is_ready"))
-                        .await
-                    {
+                    if exec.is_ready(&wora, &metrics).instrument(tracing::info_span!("exec:run:is_ready")).await {
                         match app
                             .main(&mut wora, &exec, fs.clone(), &mut metrics)
                             .instrument(tracing::info_span!("app:run:main"))
@@ -576,9 +548,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                         warn!(comp = "exec", method = "run", is_ready = false);
                     }
 
-                    app.end(&wora, &exec, fs.clone(), &metrics)
-                        .instrument(tracing::info_span!("app:run:end"))
-                        .await;
+                    app.end(&wora, &exec, fs.clone(), &metrics).instrument(tracing::info_span!("app:run:end")).await;
                 }
                 Err(setup_err) => {
                     error!("{:?}", setup_err)
@@ -587,9 +557,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
 
             exec_metrics.end_start = Some(Utc::now());
             //metrics.add(&Metric::Counter("exec:run:end:start".into()));
-            exec.end(&wora, &metrics)
-                .instrument(tracing::info_span!("exec:run:end"))
-                .await;
+            exec.end(&wora, &metrics).instrument(tracing::info_span!("exec:run:end")).await;
             exec_metrics.end_start = Some(Utc::now());
             //metrics.add(&Metric::Counter("exec:run:end:finish".into()));
 

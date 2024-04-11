@@ -6,12 +6,7 @@ use tracing_subscriber;
 use wora::prelude::*;
 
 #[derive(Clone, Debug, Parser)]
-#[command(
-    author,
-    version,
-    about,
-    long_about = "A basic wora example to show off various features"
-)]
+#[command(author, version, about, long_about = "A basic wora example to show off various features")]
 struct BasicAppOpts {
     /// start app counter at n
     #[arg(short, long, default_value_t = 0)]
@@ -69,13 +64,7 @@ impl App<()> for BasicApp {
         HealthState::Ok
     }
 
-    async fn end(
-        &mut self,
-        _wora: &Wora<()>,
-        _exec: &(dyn Executor + Send + Sync),
-        _fs: impl WFS,
-        _metrics: &(dyn MetricProcessor + Send + Sync),
-    ) {
+    async fn end(&mut self, _wora: &Wora<()>, _exec: &(dyn Executor + Send + Sync), _fs: impl WFS, _metrics: &(dyn MetricProcessor + Send + Sync)) {
         info!("Final count: {}", self.counter);
     }
 }
@@ -88,10 +77,7 @@ async fn main() -> Result<(), MainEarlyReturn> {
 
     let args = BasicAppOpts::parse();
 
-    let app = BasicApp {
-        args: args,
-        counter: 1,
-    };
+    let app = BasicApp { args: args, counter: 1 };
 
     let fs = PhysicalVFS::new();
     let metrics = MetricsProducerStdout::new().await;

@@ -23,7 +23,7 @@ pub enum WoraSetupError {
     #[error("dir missing")]
     DirectoryDoesNotExistOnFilesystem(std::path::PathBuf),
     #[error("{0} is an unsupported OS")]
-    UnsupportedOS(String)
+    UnsupportedOS(String),
 }
 
 #[derive(Clone, Error, Debug)]

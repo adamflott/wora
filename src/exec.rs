@@ -47,23 +47,13 @@ pub trait Executor {
 
     // Switch to a non-root user
     fn run_as_user_and_group(&self, user_name: &str, group_name: &str) -> Result<(), SetupFailure> {
-        let new_user = get_user_by_name(user_name)
-            .ok_or(SetupFailure::UnknownSystemUser(user_name.to_string()))?;
+        let new_user = get_user_by_name(user_name).ok_or(SetupFailure::UnknownSystemUser(user_name.to_string()))?;
         set_both_uid(new_user.uid(), new_user.uid())?;
-        info!(
-            "process now runs as user: {} (id: {})",
-            user_name,
-            new_user.uid()
-        );
+        info!("process now runs as user: {} (id: {})", user_name, new_user.uid());
 
-        let new_group = get_group_by_name(group_name)
-            .ok_or(SetupFailure::UnknownSystemUser(user_name.to_string()))?;
+        let new_group = get_group_by_name(group_name).ok_or(SetupFailure::UnknownSystemUser(user_name.to_string()))?;
         set_both_gid(new_group.gid(), new_group.gid())?;
-        info!(
-            "process now runs as group: {} (id: {})",
-            group_name,
-            new_group.gid()
-        );
+        info!("process now runs as group: {} (id: {})", group_name, new_group.gid());
 
         Ok(())
     }
@@ -82,13 +72,7 @@ pub trait Executor {
 #[async_trait]
 pub trait AsyncExecutor<T>: Executor {
     type Setup;
-    async fn setup(
-        &mut self,
-        wora: &Wora<T>,
-        fs: impl WFS,
-        metrics: &(dyn MetricProcessor + Send + Sync),
-    ) -> Result<Self::Setup, SetupFailure>;
-    async fn is_ready(&self, wora: &Wora<T>, metrics: &(dyn MetricProcessor + Send + Sync))
-        -> bool;
+    async fn setup(&mut self, wora: &Wora<T>, fs: impl WFS, metrics: &(dyn MetricProcessor + Send + Sync)) -> Result<Self::Setup, SetupFailure>;
+    async fn is_ready(&self, wora: &Wora<T>, metrics: &(dyn MetricProcessor + Send + Sync)) -> bool;
     async fn end(&self, wora: &Wora<T>, metrics: &(dyn MetricProcessor + Send + Sync));
 }
