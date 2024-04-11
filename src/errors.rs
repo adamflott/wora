@@ -22,6 +22,8 @@ pub enum WoraSetupError {
     FSNotify(#[from] notify::Error),
     #[error("dir missing")]
     DirectoryDoesNotExistOnFilesystem(std::path::PathBuf),
+    #[error("{0} is an unsupported OS")]
+    UnsupportedOS(String)
 }
 
 #[derive(Clone, Error, Debug)]
