@@ -21,7 +21,6 @@ use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::Instrument;
 use tracing::{debug, error, info, trace, warn};
-use vfs::async_vfs::filesystem::AsyncFileSystem;
 
 pub mod dirs;
 pub mod errors;
@@ -29,7 +28,9 @@ pub mod events;
 pub mod exec;
 pub mod exec_unix;
 pub mod metrics;
+pub mod prelude;
 pub mod restart_policy;
+pub mod vfs;
 
 use crate::dirs::Dirs;
 use crate::errors::{MainEarlyReturn, WoraSetupError};
@@ -37,6 +38,7 @@ use events::*;
 use exec::*;
 use metrics::*;
 use restart_policy::*;
+use vfs::*;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
 
@@ -354,7 +356,7 @@ pub trait App<T> {
         &mut self,
         wora: &Wora<T>,
         exec: &(dyn Executor + Send + Sync),
-        fs: &impl AsyncFileSystem,
+        fs: impl WFS,
         metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<Self::Setup, Box<dyn std::error::Error>>;
 
@@ -362,7 +364,7 @@ pub trait App<T> {
         &mut self,
         wora: &mut Wora<T>,
         exec: &(dyn Executor + Send + Sync),
-        fs: &impl AsyncFileSystem,
+        fs: impl WFS,
         metrics: &mut (dyn MetricProcessor + Send + Sync),
     ) -> MainRetryAction;
 
@@ -372,7 +374,7 @@ pub trait App<T> {
         &mut self,
         wora: &Wora<T>,
         exec: &(dyn Executor + Send + Sync),
-        fs: &impl AsyncFileSystem,
+        fs: impl WFS,
         metrics: &(dyn MetricProcessor + Send + Sync),
     );
 }
@@ -399,7 +401,7 @@ fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Resul
 pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
     mut exec: impl AsyncExecutor<T> + Sync + Send + Executor,
     mut app: impl App<T> + Sync + Send + 'static,
-    fs: impl AsyncFileSystem,
+    fs: impl WFS,
     mut metrics: impl MetricProcessor + Sync + Send,
 ) -> Result<(), MainEarlyReturn> {
     let mut lock_path = PathBuf::new();
@@ -421,7 +423,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
             let mut exec_metrics = MetricExecutorTimings::default();
 
             //metrics.add(&Metric::Counter("exec:run:setup:start".into()));
-            exec.setup(&wora, &fs, &metrics)
+            exec.setup(&wora, fs.clone(), &metrics)
                 .instrument(tracing::info_span!("exec:run:setup"))
                 .await?;
             exec_metrics.setup_finish = Some(Utc::now());
@@ -430,7 +432,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
             let mut app_metrics = MetricAppTimings::default();
             app_metrics.setup_finish = Some(Utc::now());
             match app
-                .setup(&wora, &exec, &fs, &metrics)
+                .setup(&wora, &exec, fs.clone(), &metrics)
                 .instrument(tracing::info_span!("app:run:setup"))
                 .await
             {
@@ -497,7 +499,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                         .await
                     {
                         match app
-                            .main(&mut wora, &exec, &fs, &mut metrics)
+                            .main(&mut wora, &exec, fs.clone(), &mut metrics)
                             .instrument(tracing::info_span!("app:run:main"))
                             .await
                         {
@@ -514,7 +516,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                                 return Err(MainEarlyReturn::UseExitCode(ec));
                             }
                             MainRetryAction::UseRestartPolicy => {
-                                app.main(&mut wora, &exec, &fs, &mut metrics)
+                                app.main(&mut wora, &exec, fs.clone(), &mut metrics)
                                     .instrument(tracing::info_span!("app:run:main:retry"))
                                     .await;
                             }
@@ -524,7 +526,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                         warn!(comp = "exec", method = "run", is_ready = false);
                     }
 
-                    app.end(&wora, &exec, &fs, &metrics)
+                    app.end(&wora, &exec, fs.clone(), &metrics)
                         .instrument(tracing::info_span!("app:run:end"))
                         .await;
                 }

@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, trace};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{filter, prelude::*, reload, Registry};
-use vfs::async_vfs::{AsyncFileSystem, AsyncPhysicalFS};
 
 use wora::prelude::*;
 
@@ -85,7 +84,7 @@ impl App<()> for DaemonApp {
         &mut self,
         wora: &Wora<()>,
         exec: &(dyn Executor + Send + Sync),
-        _fs: &impl AsyncFileSystem,
+        _fs: impl WFS,
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
         debug!("{:?}", wora.stats_from_start());
@@ -102,7 +101,7 @@ impl App<()> for DaemonApp {
         &mut self,
         wora: &mut Wora<()>,
         _exec: &(dyn Executor + Send + Sync),
-        _fs: &impl AsyncFileSystem,
+        fs: impl WFS,
         _metrics: &mut (dyn MetricProcessor + Send + Sync),
     ) -> MainRetryAction {
         info!("waiting for events...");
@@ -166,7 +165,7 @@ impl App<()> for DaemonApp {
         &mut self,
         _wora: &Wora<()>,
         _exec: &(dyn Executor + Send + Sync),
-        _fs: &impl AsyncFileSystem,
+        _fs: impl WFS,
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) {
         ()
@@ -204,14 +203,14 @@ async fn main() -> Result<(), MainEarlyReturn> {
     };
 
     let metrics = MetricsProducerStdout::new().await;
-    let fs = AsyncPhysicalFS::new("/");
+    let fs = PhysicalVFS::new();
     match &args.run_mode {
         RunMode::Sys => {
             let exec = UnixLikeSystem::new(app.name()).await;
             exec_async_runner(exec, app, fs, metrics).await?
         }
-        RunMode::User => match UnixLikeUser::new(app.name(), &fs).await {
-            Ok(exec) => exec_async_runner(exec, app, fs, metrics).await?,
+        RunMode::User => match UnixLikeUser::new(app.name(), fs.clone()).await {
+            Ok(exec) => exec_async_runner(exec, app, fs.clone(), metrics).await?,
             Err(exec_err) => {
                 error!("exec error:{}", exec_err);
                 return Err(MainEarlyReturn::Vfs(exec_err));

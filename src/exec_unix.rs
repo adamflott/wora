@@ -4,14 +4,13 @@ use async_trait::async_trait;
 use directories::ProjectDirs;
 use nix::unistd::chdir;
 use tracing::trace;
-use vfs::async_vfs::AsyncFileSystem;
 
 use crate::dirs::Dirs;
-use crate::errors::SetupFailure;
+use crate::errors::{SetupFailure, VfsError};
 use crate::metrics::*;
-use crate::AsyncExecutor;
 use crate::Executor;
 use crate::Wora;
+use crate::{AsyncExecutor, WFS};
 
 #[derive(Debug)]
 pub struct UnixLike {
@@ -95,7 +94,7 @@ impl<T> AsyncExecutor<T> for UnixLikeSystem {
     async fn setup(
         &mut self,
         _wora: &Wora<T>,
-        _fs: &impl AsyncFileSystem,
+        _fs: impl WFS,
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<Self::Setup, SetupFailure> {
         Ok(())
@@ -119,7 +118,7 @@ pub struct UnixLikeUser {
 }
 
 impl UnixLikeUser {
-    pub async fn new(app_name: &str, fs: &impl AsyncFileSystem) -> Result<Self, vfs::error::VfsError> {
+    pub async fn new(app_name: &str, fs: impl WFS) -> Result<Self, VfsError> {
         let proj_dirs = ProjectDirs::from("com", "wora", app_name).unwrap();
 
         let dirs = Dirs {
@@ -135,10 +134,12 @@ impl UnixLikeUser {
             secrets_root_dir: proj_dirs.cache_dir().to_path_buf(),
         };
 
-        fs.create_dir(&dirs.runtime_root_dir.to_str().unwrap()).await?;
-        fs.create_dir(&dirs.cache_root_dir.to_str().unwrap()).await?;
-        fs.create_dir(&dirs.data_root_dir.to_str().unwrap()).await?;
-        fs.create_dir(&dirs.metadata_root_dir.to_str().unwrap()).await?;
+        fs.create_dir(&dirs.runtime_root_dir.to_str().unwrap())
+            .await;
+        fs.create_dir(&dirs.cache_root_dir.to_str().unwrap()).await;
+        fs.create_dir(&dirs.data_root_dir.to_str().unwrap()).await;
+        fs.create_dir(&dirs.metadata_root_dir.to_str().unwrap())
+            .await;
 
         let mut unix = UnixLike::new(app_name).await;
         unix.dirs = dirs;
@@ -175,7 +176,7 @@ impl<T: Send + Sync> AsyncExecutor<T> for UnixLikeUser {
     async fn setup(
         &mut self,
         wora: &Wora<T>,
-        fs: &impl AsyncFileSystem,
+        fs: impl WFS,
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<Self::Setup, SetupFailure> {
         let dirs = &wora.dirs;
@@ -192,7 +193,7 @@ impl<T: Send + Sync> AsyncExecutor<T> for UnixLikeUser {
             &dirs.cache_root_dir,
         ] {
             trace!("exec:setup:io:create dir:{:?}: trying", dir);
-            fs.create_dir(dir.to_str().unwrap()).await?;
+            fs.create_dir(dir.to_str().unwrap()).await;
             trace!("exec:setup:io:create dir:{:?}: success", dir);
         }
 
@@ -264,7 +265,7 @@ impl<T> AsyncExecutor<T> for UnixLikeBare {
     async fn setup(
         &mut self,
         _wora: &Wora<T>,
-        _fs: &impl AsyncFileSystem,
+        _fs: impl WFS,
         _metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<Self::Setup, SetupFailure> {
         Ok(())

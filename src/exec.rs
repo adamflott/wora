@@ -10,12 +10,11 @@ use nix::sys::{
 use tracing::info;
 use users::switch::set_both_gid;
 use users::{get_effective_username, get_group_by_name, get_user_by_name, switch::set_both_uid};
-use vfs::async_vfs::AsyncFileSystem;
 
 use crate::dirs::Dirs;
 use crate::errors::SetupFailure;
 use crate::metrics::*;
-use crate::Wora;
+use crate::{Wora, WFS};
 
 /// Common methods for all `Executors`
 pub trait Executor {
@@ -86,7 +85,7 @@ pub trait AsyncExecutor<T>: Executor {
     async fn setup(
         &mut self,
         wora: &Wora<T>,
-        fs: &impl AsyncFileSystem,
+        fs: impl WFS,
         metrics: &(dyn MetricProcessor + Send + Sync),
     ) -> Result<Self::Setup, SetupFailure>;
     async fn is_ready(&self, wora: &Wora<T>, metrics: &(dyn MetricProcessor + Send + Sync))
