@@ -17,7 +17,9 @@ use nix::unistd::getpid;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use proc_lock::try_lock;
 use serde::Serialize;
-use sysinfo::{CpuExt, NetworkExt, NetworksExt, SystemExt};
+use sysinfo::{
+    Networks, System,
+};
 use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -187,7 +189,7 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
             }
         }
 
-        let mut sys = sysinfo::System::new_all();
+        let mut sys = System::new_all();
         sys.refresh_all();
 
         let osinfo = os_info::get();
@@ -204,7 +206,8 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
         let fs = vec![];
 
         let mut net_io = HashMap::new();
-        for (if_name, net_data) in sys.networks().iter() {
+        let networks = Networks::new_with_refreshed_list();
+        for (if_name, net_data) in &networks {
             net_io.insert(
                 if_name.to_string(),
                 NetIO {
@@ -224,7 +227,7 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
             );
         }
 
-        let os_type = match sys.distribution_id().as_str() {
+        let os_type = match System::distribution_id().as_str() {
             "linux" | "nixos" => SupportedOSes::Linux,
             unsupported => {
                 error!("unsupported os type {}", unsupported);
@@ -232,14 +235,16 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
             }
         };
 
+
+        let load_avg = System::load_average();
         let stats = Stats {
             host_info: HostInfo {
                 os_type,
-                os_name: sys.distribution_id(),
-                os_version: sys.os_version(),
-                kernel_version: sys.kernel_version(),
+                os_name: System::distribution_id(),
+                os_version: System::os_version(),
+                kernel_version: System::kernel_version(),
                 architecture: osinfo.architecture().map(|v| v.to_string()),
-                hostname: sys.host_name(),
+                hostname: System::host_name(),
                 ncpus: sys.physical_core_count().unwrap_or(0),
                 maxcpus: sys.cpus().len(),
             },
@@ -250,9 +255,9 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
                 used: sys.used_memory(),
             },
             load: LoadAvg {
-                one: sys.load_average().one,
-                five: sys.load_average().five,
-                fifteen: sys.load_average().fifteen,
+                one: load_avg.one,
+                five: load_avg.five,
+                fifteen: load_avg.fifteen,
             },
             swap: SwapStats {
                 total: sys.total_swap(),

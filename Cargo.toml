@@ -27,7 +27,7 @@ proc-lock = "~0.4.0"
 serde_derive = "~1.0.197"
 serde_json = "~1.0.115"
 serde = { version = "~1.0.197", features = ["derive"] }
-sysinfo = "~0.29.0"
+sysinfo = "~0.30.10"
 thiserror = "~1.0.58"
 tokio = { version = "~1.37.0", features = ["full"] }
 toml = "~0.8.12"
