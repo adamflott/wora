@@ -429,6 +429,8 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
             exec_metrics.setup_finish = Some(Utc::now());
             //metrics.add(&Metric::Counter("exec:run:setup:finish".into()));
 
+            let mut rc = Err(MainEarlyReturn::UseExitCode(1));
+
             let mut app_metrics = MetricAppTimings::default();
             app_metrics.setup_finish = Some(Utc::now());
             match app
@@ -513,7 +515,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                                     }
                                 }
 
-                                return Err(MainEarlyReturn::UseExitCode(ec));
+                                rc = Err(MainEarlyReturn::UseExitCode(ec));
                             }
                             MainRetryAction::UseRestartPolicy => {
                                 app.main(&mut wora, &exec, fs.clone(), &mut metrics)
@@ -554,7 +556,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                 }
             }
 
-            Ok(())
+            rc
         }
         Err(err) => {
             error!("lock file:{:?} error:{:?}", &lock_path, err);
