@@ -5,6 +5,8 @@
 //! Just like Java's claim, it really doesn't run everywhere. no_std or embedded environments are not supported.
 
 use std::collections::HashMap;
+use std::fmt::Debug;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -309,7 +311,9 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
 
     pub async fn emit_event(&self, ev: Event<T>) -> () {
         match self.sender.send(ev).await {
-            Ok(_) => {}
+            Ok(_) => {
+                debug!("event:sent");
+            }
             Err(send_err) => {
                 error!("event:send:error: {:?}", send_err);
             }
@@ -447,7 +451,10 @@ fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Resul
     Ok((watcher, rx))
 }
 
-// TODO create a non-file locking variant
+
+// TODOs
+// - create a non-file locking variant
+// - use WFS for file locking?
 
 /// Run apps via an `async` based executor
 pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
@@ -470,6 +477,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
     let lock = proc_lock::LockPath::FullPath(&lock_path);
     match try_lock(&lock) {
         Ok(guard) => {
+            info!("exec:run:lock_file created:{:?}", &lock_path);
             let mut wora = Wora::new(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE)?;
 
             let mut exec_metrics = MetricExecutorTimings::default();
