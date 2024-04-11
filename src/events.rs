@@ -47,7 +47,7 @@ pub enum Event<T> {
 
     // workload
     /// workload configuration has changed
-    ConfigChange(PathBuf, String),
+    ConfigChange(notify::Event),
 
     // workload operations
     /// workload is being requested to suspend
