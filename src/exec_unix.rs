@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use directories::ProjectDirs;
 use nix::unistd::chdir;
-use tracing::trace;
+use tracing::{trace,error};
 
 use crate::dirs::Dirs;
 use crate::errors::{SetupFailure, VfsError};
@@ -109,7 +109,7 @@ pub struct UnixLikeUser {
 }
 
 impl UnixLikeUser {
-    pub async fn new(app_name: &str, fs: impl WFS) -> Result<Self, VfsError> {
+    pub async fn new(app_name: &str, _fs: impl WFS) -> Result<Self, VfsError> {
         let proj_dirs = ProjectDirs::from("com", "wora", app_name).unwrap();
 
         let dirs = Dirs {
@@ -121,11 +121,6 @@ impl UnixLikeUser {
             cache_root_dir: proj_dirs.cache_dir().to_path_buf(),
             secrets_root_dir: proj_dirs.cache_dir().to_path_buf(),
         };
-
-        fs.create_dir(&dirs.runtime_root_dir.to_str().unwrap()).await;
-        fs.create_dir(&dirs.cache_root_dir.to_str().unwrap()).await;
-        fs.create_dir(&dirs.data_root_dir.to_str().unwrap()).await;
-        fs.create_dir(&dirs.metadata_root_dir.to_str().unwrap()).await;
 
         let mut unix = UnixLike::new(app_name).await;
         unix.dirs = dirs;
@@ -174,7 +169,10 @@ impl<T: Send + Sync> AsyncExecutor<T> for UnixLikeUser {
             &dirs.cache_root_dir,
         ] {
             trace!("exec:setup:io:create dir:{:?}: trying", dir);
-            fs.create_dir(dir.to_str().unwrap()).await;
+            let _ = fs.create_dir(dir.to_str().unwrap()).await.map_err(|err| {
+                error!("exec:setup:io:create dir:{:?}: error:{}", dir, err);
+                // directory may already exist, in which case this is not a terminating error
+            });
             trace!("exec:setup:io:create dir:{:?}: success", dir);
         }
 
