@@ -228,7 +228,7 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
         }
 
         let os_type = match System::distribution_id().as_str() {
-            "ubuntu" | "linux" | "nixos" => SupportedOSes::Linux,
+            "ubuntu" | "linux" | "macos" | "nixos" => SupportedOSes::Linux,
             unsupported => {
                 error!("unsupported os type {}", unsupported);
                 return Err(WoraSetupError::UnsupportedOS(unsupported.to_string()));
