@@ -1,3 +1,4 @@
+use crate::metrics::MetricError;
 #[cfg(target_os = "linux")]
 use caps::errors::CapsError;
 use nix::errno::Errno;
@@ -22,8 +23,8 @@ pub enum WoraSetupError {
     FSNotify(#[from] notify::Error),
     #[error("dir missing")]
     DirectoryDoesNotExistOnFilesystem(std::path::PathBuf),
-    #[error("{0} is an unsupported OS")]
-    UnsupportedOS(String),
+    #[error("metric {0}")]
+    Metric(#[from] MetricError),
 }
 
 #[derive(Clone, Error, Debug)]

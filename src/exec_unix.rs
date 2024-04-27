@@ -3,16 +3,14 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use directories::ProjectDirs;
 use nix::unistd::chdir;
-use tracing::{trace,error};
+use tracing::{error, trace};
 
 use crate::dirs::Dirs;
 use crate::errors::{SetupFailure, VfsError};
-use crate::metrics::*;
-use crate::Executor;
 use crate::Wora;
 use crate::{AsyncExecutor, WFS};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct UnixLike {
     pub dirs: Dirs,
 }
@@ -32,27 +30,7 @@ impl UnixLike {
     }
 }
 
-#[async_trait]
-impl MetricProcessor for UnixLike {
-    async fn setup(&mut self) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-    async fn add(&mut self, _m: &dyn MetricEncoder) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-    async fn end(&self) {
-    }
-}
-
-impl Executor for UnixLike {
-    fn id(&self) -> &'static str {
-        "unix-like"
-    }
-    fn dirs(&self) -> &Dirs {
-        &self.dirs
-    }
-}
-
+#[derive(Clone, Debug)]
 pub struct UnixLikeSystem {
     unix: UnixLike,
 }
@@ -65,42 +43,26 @@ impl UnixLikeSystem {
 }
 
 #[async_trait]
-impl MetricProcessor for UnixLikeSystem {
-    async fn setup(&mut self) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-    async fn add(&mut self, _m: &dyn MetricEncoder) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-    async fn end(&self) {
-    }
-}
-
-impl Executor for UnixLikeSystem {
+impl<AppEv, AppMetric> AsyncExecutor<AppEv, AppMetric> for UnixLikeSystem {
     fn id(&self) -> &'static str {
         "unix-like-system"
     }
-
     fn dirs(&self) -> &Dirs {
         &self.unix.dirs
     }
-}
 
-#[async_trait]
-impl<T> AsyncExecutor<T> for UnixLikeSystem {
-    type Setup = ();
-    async fn setup(&mut self, _wora: &Wora<T>, _fs: impl WFS, _metrics: &(dyn MetricProcessor + Send + Sync)) -> Result<Self::Setup, SetupFailure> {
+    async fn setup(&mut self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> Result<(), SetupFailure> {
         Ok(())
     }
 
-    async fn is_ready(&self, _wora: &Wora<T>, _metrics: &(dyn MetricProcessor + Send + Sync)) -> bool {
+    async fn is_ready(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> bool {
         true
     }
 
-    async fn end(&self, _wora: &Wora<T>, _metrics: &(dyn MetricProcessor + Send + Sync)) {
-    }
+    async fn end(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) {}
 }
 
+#[derive(Clone, Debug)]
 pub struct UnixLikeUser {
     unix: UnixLike,
 }
@@ -127,30 +89,15 @@ impl UnixLikeUser {
 }
 
 #[async_trait]
-impl MetricProcessor for UnixLikeUser {
-    async fn setup(&mut self) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-    async fn add(&mut self, _m: &dyn MetricEncoder) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-    async fn end(&self) {
-    }
-}
-
-impl Executor for UnixLikeUser {
+impl<AppEv: Send + Sync, AppMetric: Send + Sync> AsyncExecutor<AppEv, AppMetric> for UnixLikeUser {
     fn id(&self) -> &'static str {
         "unix-like-user"
     }
     fn dirs(&self) -> &Dirs {
         &self.unix.dirs
     }
-}
 
-#[async_trait]
-impl<T: Send + Sync> AsyncExecutor<T> for UnixLikeUser {
-    type Setup = ();
-    async fn setup(&mut self, wora: &Wora<T>, fs: impl WFS, _metrics: &(dyn MetricProcessor + Send + Sync)) -> Result<Self::Setup, SetupFailure> {
+    async fn setup(&mut self, wora: &Wora<AppEv, AppMetric>, fs: impl WFS) -> Result<(), SetupFailure> {
         let dirs = &wora.dirs;
 
         trace!("exec:setup:io:chdir({:?}): trying", &wora.dirs.root_dir);
@@ -175,14 +122,14 @@ impl<T: Send + Sync> AsyncExecutor<T> for UnixLikeUser {
         Ok(())
     }
 
-    async fn is_ready(&self, _wora: &Wora<T>, _metrics: &(dyn MetricProcessor + Send + Sync)) -> bool {
+    async fn is_ready(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> bool {
         true
     }
 
-    async fn end(&self, _wora: &Wora<T>, _metrics: &(dyn MetricProcessor + Send + Sync)) {
-    }
+    async fn end(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) {}
 }
 
+#[derive(Clone, Debug)]
 pub struct UnixLikeBare {
     unix: UnixLike,
 }
@@ -208,37 +155,22 @@ impl UnixLikeBare {
 }
 
 #[async_trait]
-impl MetricProcessor for UnixLikeBare {
-    async fn setup(&mut self) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-    async fn add(&mut self, _m: &dyn MetricEncoder) -> Result<(), SetupFailure> {
-        Ok(())
-    }
-    async fn end(&self) {
-    }
-}
-
-impl Executor for UnixLikeBare {
+impl<AppEv, AppMetric> AsyncExecutor<AppEv, AppMetric> for UnixLikeBare {
     fn id(&self) -> &'static str {
         "unix-like-bare"
     }
+
     fn dirs(&self) -> &Dirs {
         &self.unix.dirs
     }
-}
 
-#[async_trait]
-impl<T> AsyncExecutor<T> for UnixLikeBare {
-    type Setup = ();
-    async fn setup(&mut self, _wora: &Wora<T>, _fs: impl WFS, _metrics: &(dyn MetricProcessor + Send + Sync)) -> Result<Self::Setup, SetupFailure> {
+    async fn setup(&mut self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> Result<(), SetupFailure> {
         Ok(())
     }
 
-    async fn is_ready(&self, _wora: &Wora<T>, _metrics: &(dyn MetricProcessor + Send + Sync)) -> bool {
+    async fn is_ready(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> bool {
         true
     }
 
-    async fn end(&self, _wora: &Wora<T>, _metrics: &(dyn MetricProcessor + Send + Sync)) {
-    }
+    async fn end(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) {}
 }

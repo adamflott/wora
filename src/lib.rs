@@ -4,11 +4,9 @@
 //!
 //! Just like Java's claim, it really doesn't run everywhere. no_std or embedded environments are not supported.
 
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -17,9 +15,6 @@ use nix::unistd::getpid;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use proc_lock::try_lock;
 use serde::Serialize;
-use sysinfo::{
-    Networks, System,
-};
 use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -39,120 +34,33 @@ pub mod vfs;
 
 use crate::dirs::Dirs;
 use crate::errors::{MainEarlyReturn, WoraSetupError};
+use crate::metrics::{mefinish, meflush, meinit, mestatus, Host, HostStats, MetricEvent, MetricsProcessorOptions};
 use events::*;
 use exec::*;
-use metrics::*;
 use restart_policy::*;
 use vfs::*;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
 
-#[derive(Clone, Debug, Serialize)]
-pub enum SupportedOSes {
-    Linux,
-    OSX,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct HostInfo {
-    pub os_type: SupportedOSes,
-    pub os_name: String,
-    pub os_version: Option<String>,
-    pub kernel_version: Option<String>,
-    pub architecture: Option<String>,
-    pub hostname: Option<String>,
-    pub ncpus: usize,
-    pub maxcpus: usize,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct Cpu {
-    name: String,
-    brand: String,
-    freq: u64,
-    usage: f32,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct MemStats {
-    pub total: u64,
-    pub free: u64,
-    pub used: u64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct SwapStats {
-    pub total: u64,
-    pub used: u64,
-    pub free: u64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct LoadAvg {
-    pub one: f64,
-    pub five: f64,
-    pub fifteen: f64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct Disk {
-    pub name: String,
-    pub kind: String,
-    pub file_system: String,
-    pub mount_point: PathBuf,
-    pub total_space: u64,
-    pub available_space: u64,
-    pub is_removable: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct NetIO {
-    pub received: u64,
-    pub total_received: u64,
-    pub transmitted: u64,
-    pub total_transmitted: u64,
-    pub packets_received: u64,
-    pub total_packets_received: u64,
-    pub packets_transmitted: u64,
-    pub total_packets_transmitted: u64,
-    pub errors_on_received: u64,
-    pub total_errors_on_received: u64,
-    pub errors_on_transmitted: u64,
-    pub total_errors_on_transmitted: u64,
-}
-
-/// System stats/information from `sysinfo`
-#[derive(Clone, Debug, Serialize)]
-pub struct Stats {
-    pub host_info: HostInfo,
-    pub cpu: Vec<Cpu>,
-    pub memory: MemStats,
-    pub load: LoadAvg,
-    pub swap: SwapStats,
-    pub fs: Vec<Disk>,
-    pub net_io: HashMap<String, NetIO>,
-}
-
 /// All workloads will be able to access the WORA API
-pub struct Wora<T> {
+pub struct Wora<AppEv, AppMetric> {
     /// application name
     pub app_name: String,
     /// common directories for all executors
     pub dirs: Dirs,
     /// current directory where the process was invoked (an executor will likely override this)
     pub initial_working_dir: PathBuf,
-    /// sysinfo handle
-    pub si: Arc<sysinfo::System>,
-    /// last stat collection
-    pub stats: Stats,
+    /// host info/stats
+    pub host: Host,
     /// process id
     pid: nix::unistd::Pid,
     /// `Event` producer
-    pub sender: Sender<Event<T>>,
+    pub sender: Sender<Event<AppEv>>,
     /// `Event` receiver
-    pub receiver: Receiver<Event<T>>,
+    pub receiver: Receiver<Event<AppEv>>,
     /// leadership state
     pub leadership: Leadership,
+    pub metrics: MetricsProcessorOptions<AppMetric>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -172,8 +80,8 @@ pub enum HealthState {
 }
 
 /// WORA API
-impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
-    pub fn new(dirs: &Dirs, app_name: String, ev_buf_size: usize) -> Result<Wora<T>, WoraSetupError> {
+impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv, AppMetric> {
+    pub fn new(dirs: &Dirs, app_name: String, ev_buf_size: usize, mp: MetricsProcessorOptions<AppMetric>) -> Result<Wora<AppEv, AppMetric>, WoraSetupError> {
         trace!("checking executor directories exist...");
 
         for dir in [
@@ -188,85 +96,6 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
                 return Err(WoraSetupError::DirectoryDoesNotExistOnFilesystem(dir.clone()));
             }
         }
-
-        let mut sys = System::new_all();
-        sys.refresh_all();
-
-        let osinfo = os_info::get();
-
-        let mut cpus = vec![];
-        for cpu in sys.cpus() {
-            cpus.push(Cpu {
-                name: cpu.name().to_string(),
-                brand: cpu.brand().to_string(),
-                freq: cpu.frequency(),
-                usage: cpu.cpu_usage(),
-            })
-        }
-        let fs = vec![];
-
-        let mut net_io = HashMap::new();
-        let networks = Networks::new_with_refreshed_list();
-        for (if_name, net_data) in &networks {
-            net_io.insert(
-                if_name.to_string(),
-                NetIO {
-                    received: net_data.received(),
-                    total_received: net_data.total_received(),
-                    transmitted: net_data.transmitted(),
-                    total_transmitted: net_data.total_transmitted(),
-                    packets_received: net_data.packets_received(),
-                    total_packets_received: net_data.total_packets_received(),
-                    packets_transmitted: net_data.packets_transmitted(),
-                    total_packets_transmitted: net_data.total_packets_transmitted(),
-                    errors_on_received: net_data.errors_on_received(),
-                    total_errors_on_received: net_data.total_errors_on_received(),
-                    errors_on_transmitted: net_data.errors_on_transmitted(),
-                    total_errors_on_transmitted: net_data.total_errors_on_transmitted(),
-                },
-            );
-        }
-
-        let os_type = match System::distribution_id().as_str() {
-            "ubuntu" | "linux" | "macos" | "nixos" => SupportedOSes::Linux,
-            unsupported => {
-                error!("unsupported os type {}", unsupported);
-                return Err(WoraSetupError::UnsupportedOS(unsupported.to_string()));
-            }
-        };
-
-
-        let load_avg = System::load_average();
-        let stats = Stats {
-            host_info: HostInfo {
-                os_type,
-                os_name: System::distribution_id(),
-                os_version: System::os_version(),
-                kernel_version: System::kernel_version(),
-                architecture: osinfo.architecture().map(|v| v.to_string()),
-                hostname: System::host_name(),
-                ncpus: sys.physical_core_count().unwrap_or(0),
-                maxcpus: sys.cpus().len(),
-            },
-            cpu: cpus,
-            memory: MemStats {
-                total: sys.total_memory(),
-                free: sys.free_memory(),
-                used: sys.used_memory(),
-            },
-            load: LoadAvg {
-                one: load_avg.one,
-                five: load_avg.five,
-                fifteen: load_avg.fifteen,
-            },
-            swap: SwapStats {
-                total: sys.total_swap(),
-                used: sys.used_swap(),
-                free: sys.free_swap(),
-            },
-            fs,
-            net_io,
-        };
 
         let pid = getpid();
 
@@ -285,30 +114,32 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
             });
         }
 
+        let host = Host::new()?;
+
         let current_dir = std::env::current_dir()?;
 
         Ok(Wora {
             app_name,
             initial_working_dir: current_dir,
             dirs: dirs.clone(),
-            si: Arc::new(sys),
-            stats,
+            host,
             pid,
             sender: tx,
             receiver: rx,
             leadership: Leadership::Unknown,
+            metrics: mp,
         })
     }
 
-    pub fn stats_from_start(&self) -> &Stats {
-        &self.stats
+    pub fn stats_from_start(&self) -> &HostStats {
+        &self.host.stats
     }
 
     pub fn dirs(&self) -> &Dirs {
         &self.dirs
     }
 
-    pub async fn emit_event(&self, ev: Event<T>) {
+    pub async fn emit_event(&self, ev: Event<AppEv>) {
         match self.sender.send(ev).await {
             Ok(_) => {
                 debug!("event:sent");
@@ -320,40 +151,41 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> Wora<T> {
     }
 
     pub fn host_os_name(&self) -> &str {
-        &self.stats.host_info.os_name
+        &self.host.info.os_name
     }
     pub fn host_os_version(&self) -> Option<String> {
-        self.stats.host_info.os_version.clone()
+        self.host.info.os_version.clone()
     }
     pub fn host_architecture(&self) -> Option<String> {
-        self.stats.host_info.architecture.clone()
+        self.host.info.architecture.clone()
     }
     pub fn host_hostname(&self) -> Option<String> {
-        self.stats.host_info.hostname.clone()
+        self.host.info.hostname.clone()
     }
     pub fn host_cpu_count(&self) -> usize {
-        self.stats.host_info.ncpus
+        self.host.info.ncpus
     }
     pub fn host_cpu_max(&self) -> usize {
-        self.stats.host_info.maxcpus
+        self.host.info.maxcpus
     }
 
-    pub async fn schedule_event(&self, duration: tokio::time::Duration, ev: Event<T>) {
+    pub async fn schedule_event(&self, duration: tokio::time::Duration, ev: Event<AppEv>) {
         tokio::time::sleep(duration).await;
         self.emit_event(ev).await
     }
 
     pub async fn schedule_task<F, Fut>(&self, duration: tokio::time::Duration, future: F) -> JoinHandle<TaskOp>
     where
-        F: Fn() -> Fut + Send + 'static,
+        F: Fn(Sender<MetricEvent<AppMetric>>) -> Fut + Send + 'static,
         Fut: Future<Output = TaskOp> + Send,
     {
+        let tx = self.metrics.sender().clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(duration).await;
-                match future().await {
+                match future(tx.clone()).await {
                     TaskOp::Requeue => {
-                        debug!("wora:task action:requeue");
+                        trace!("wora:task action:requeue");
                     }
                     TaskOp::Abort => {
                         info!("wora:task action:abort");
@@ -388,11 +220,9 @@ impl Config for NoConfig {
     }
 }
 #[async_trait]
-pub trait App<T> {
-    type AppMetricsProducer: MetricProcessor;
+pub trait App<AppEv, AppMetric> {
     type AppConfig: Config;
     type Setup;
-
     fn name(&self) -> &'static str;
 
     fn allow_concurrent_executions(&self) -> bool {
@@ -401,23 +231,23 @@ pub trait App<T> {
 
     async fn setup(
         &mut self,
-        wora: &Wora<T>,
-        exec: &(dyn Executor + Send + Sync),
+        wora: &Wora<AppEv, AppMetric>,
+        exec: impl AsyncExecutor<AppEv, AppMetric>,
         fs: impl WFS,
-        metrics: &(dyn MetricProcessor + Send + Sync),
+        metrics: Sender<MetricEvent<AppMetric>>,
     ) -> Result<Self::Setup, Box<dyn std::error::Error>>;
 
     async fn main(
         &mut self,
-        wora: &mut Wora<T>,
-        exec: &(dyn Executor + Send + Sync),
+        wora: &mut Wora<AppEv, AppMetric>,
+        exec: impl AsyncExecutor<AppEv, AppMetric>,
         fs: impl WFS,
-        metrics: &mut (dyn MetricProcessor + Send + Sync),
+        metrics: Sender<MetricEvent<AppMetric>>,
     ) -> MainRetryAction;
 
     async fn is_healthy(&mut self) -> HealthState;
 
-    async fn end(&mut self, wora: &Wora<T>, exec: &(dyn Executor + Send + Sync), fs: impl WFS, metrics: &(dyn MetricProcessor + Send + Sync));
+    async fn end(&mut self, wora: &Wora<AppEv, AppMetric>, exec: impl AsyncExecutor<AppEv, AppMetric>, fs: impl WFS, metrics: Sender<MetricEvent<AppMetric>>);
 }
 
 fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)> {
@@ -437,14 +267,13 @@ fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Resul
 
 // TODOs
 // - create a non-file locking variant
-// - use WFS for file locking?
 
 /// Run apps via an `async` based executor
-pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
-    mut exec: impl AsyncExecutor<T> + Sync + Send + Executor,
-    mut app: impl App<T> + Sync + Send + 'static,
+pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static>(
+    mut exec: impl AsyncExecutor<AppEv, AppMetric>,
+    mut app: impl App<AppEv, AppMetric> + 'static,
     fs: impl WFS,
-    mut metrics: impl MetricProcessor + Sync + Send,
+    mp: MetricsProcessorOptions<AppMetric>,
 ) -> Result<(), MainEarlyReturn> {
     let mut lock_path = PathBuf::new();
     lock_path.push(&exec.dirs().runtime_root_dir);
@@ -458,26 +287,41 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
 
     lock_path.push(&lock_fp);
     let lock = proc_lock::LockPath::FullPath(&lock_path);
+
+    let metrics_tx = mp.sender().clone();
+
+    let _ = metrics_tx.send(meinit()).await;
+
     match try_lock(&lock) {
         Ok(guard) => {
             info!("exec:run:lock_file created:{:?}", &lock_path);
-            let mut wora = Wora::new(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE)?;
 
-            let mut exec_metrics = MetricExecutorTimings::default();
+            let metrics_sender = mp.sender().clone();
+            let status_interval = mp.status_interval().clone();
+            let flush_interval = mp.flush_interval().clone();
 
-            //metrics.add(&Metric::Counter("exec:run:setup:start".into()));
-            exec.setup(&wora, fs.clone(), &metrics)
-                .instrument(tracing::info_span!("exec:run:setup"))
-                .await?;
-            exec_metrics.setup_finish = Some(Utc::now());
-            //metrics.add(&Metric::Counter("exec:run:setup:finish".into()));
+            let mut wora = Wora::new(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE, mp)?;
+
+            wora.schedule_task(status_interval, move |tx| async move {
+                let cap = tx.capacity();
+                let max_cap = tx.max_capacity();
+                let _ = tx.send(mestatus(cap, max_cap)).await;
+                TaskOp::Requeue
+            })
+            .await;
+
+            wora.schedule_task(flush_interval, move |tx| async move {
+                let _ = tx.send(meflush()).await;
+                TaskOp::Requeue
+            })
+            .await;
+
+            exec.setup(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:setup")).await?;
 
             let mut rc = Err(MainEarlyReturn::UseExitCode(1));
 
-            let mut app_metrics = MetricAppTimings::default();
-            app_metrics.setup_finish = Some(Utc::now());
             match app
-                .setup(&wora, &exec, fs.clone(), &metrics)
+                .setup(&wora, exec.clone(), fs.clone(), metrics_sender.clone())
                 .instrument(tracing::info_span!("app:run:setup"))
                 .await
             {
@@ -523,9 +367,9 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
 
                     info!(process_id = wora.pid.to_string(), app_name = app.name());
 
-                    if exec.is_ready(&wora, &metrics).instrument(tracing::info_span!("exec:run:is_ready")).await {
+                    if exec.is_ready(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:is_ready")).await {
                         match app
-                            .main(&mut wora, &exec, fs.clone(), &mut metrics)
+                            .main(&mut wora, exec.clone(), fs.clone(), metrics_sender.clone())
                             .instrument(tracing::info_span!("app:run:main"))
                             .await
                         {
@@ -542,7 +386,7 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                                 rc = Err(MainEarlyReturn::UseExitCode(ec));
                             }
                             MainRetryAction::UseRestartPolicy => {
-                                app.main(&mut wora, &exec, fs.clone(), &mut metrics)
+                                app.main(&mut wora, exec.clone(), fs.clone(), metrics_sender.clone())
                                     .instrument(tracing::info_span!("app:run:main:retry"))
                                     .await;
                             }
@@ -552,18 +396,16 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                         warn!(comp = "exec", method = "run", is_ready = false);
                     }
 
-                    app.end(&wora, &exec, fs.clone(), &metrics).instrument(tracing::info_span!("app:run:end")).await;
+                    app.end(&wora, exec.clone(), fs.clone(), metrics_sender.clone())
+                        .instrument(tracing::info_span!("app:run:end"))
+                        .await;
                 }
                 Err(setup_err) => {
                     error!("{:?}", setup_err)
                 }
             }
 
-            exec_metrics.end_start = Some(Utc::now());
-            //metrics.add(&Metric::Counter("exec:run:end:start".into()));
-            exec.end(&wora, &metrics).instrument(tracing::info_span!("exec:run:end")).await;
-            exec_metrics.end_start = Some(Utc::now());
-            //metrics.add(&Metric::Counter("exec:run:end:finish".into()));
+            exec.end(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:end")).await;
 
             drop(guard);
 
@@ -575,6 +417,8 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                     error!("lock file:{:?} error:{}", &lock_path, rm_err);
                 }
             }
+
+            let _ = metrics_tx.send(mefinish()).await;
 
             rc
         }
@@ -589,6 +433,8 @@ pub async fn exec_async_runner<T: std::fmt::Debug + Send + Sync + 'static>(
                     error!("lock file:{:?} error:{}", &lock_path, rm_err);
                 }
             }
+
+            let _ = metrics_tx.send(mefinish()).await;
 
             return Err(MainEarlyReturn::UseExitCode(111)); // TODO fix print and return
         }
