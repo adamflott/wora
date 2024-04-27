@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use clap::{Parser, ValueEnum};
 use libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info, trace};
-use tracing_subscriber::fmt::format::FmtSpan;
-use tracing_subscriber::{filter, prelude::*, reload, Registry};
+use tokio::sync::mpsc::Sender;
+use tracing::{debug, error, info, Level};
+use tracing_subscriber::{prelude::*};
 
 use wora::prelude::*;
 
@@ -48,7 +48,6 @@ type DaemonSharedState = Arc<RwLock<DaemonState>>;
 struct DaemonApp {
     args: DaemonArgs,
     state: DaemonSharedState,
-    log_reload_handle: reload::Handle<filter::LevelFilter, Registry>,
     config: DaemonConfig,
 }
 
@@ -69,8 +68,7 @@ impl Config for DaemonConfig {
 }
 
 #[async_trait]
-impl App<()> for DaemonApp {
-    type AppMetricsProducer = MetricsProducerStdout;
+impl App<(), ()> for DaemonApp {
     type AppConfig = DaemonConfig;
     type Setup = ();
     fn name(&self) -> &'static str {
@@ -79,10 +77,10 @@ impl App<()> for DaemonApp {
 
     async fn setup(
         &mut self,
-        wora: &Wora<()>,
-        exec: &(dyn Executor + Send + Sync),
+        wora: &Wora<(), ()>,
+        exec: impl AsyncExecutor<(), ()>,
         _fs: impl WFS,
-        _metrics: &(dyn MetricProcessor + Send + Sync),
+        _metrics: Sender<MetricEvent<()>>,
     ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
         debug!("{:?}", wora.stats_from_start());
 
@@ -96,10 +94,10 @@ impl App<()> for DaemonApp {
 
     async fn main(
         &mut self,
-        wora: &mut Wora<()>,
-        _exec: &(dyn Executor + Send + Sync),
+        wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
         fs: impl WFS,
-        _metrics: &mut (dyn MetricProcessor + Send + Sync),
+        _metrics: Sender<MetricEvent<()>>,
     ) -> MainRetryAction {
         info!("waiting for events...");
         while let Some(ev) = wora.receiver.recv().await {
@@ -111,10 +109,6 @@ impl App<()> for DaemonApp {
                         info!("sighup!");
                     }
                     SIGUSR1 => {
-                        self.log_reload_handle.modify(|filter| {
-                            *filter = filter::LevelFilter::TRACE;
-                        });
-                        trace!("changed log level to trace");
                     }
                     _ => {}
                 },
@@ -160,30 +154,18 @@ impl App<()> for DaemonApp {
         HealthState::Ok
     }
 
-    async fn end(&mut self, _wora: &Wora<()>, _exec: &(dyn Executor + Send + Sync), _fs: impl WFS, _metrics: &(dyn MetricProcessor + Send + Sync)) {
+    async fn end(&mut self,
+                 _wora: &Wora<(), ()>,
+                 _exec: impl AsyncExecutor<(), ()>,
+                 _fs: impl WFS,
+                 _metrics: Sender<MetricEvent<()>>
+                 ) {
         ()
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), MainEarlyReturn> {
-    let filter = filter::LevelFilter::TRACE;
-    let (filter, reload_handle) = reload::Layer::new(filter);
-
-    let format = tracing_subscriber::fmt::format()
-        .with_file(true)
-        .with_line_number(true)
-        .with_level(true) // don't include levels in formatted output
-        .with_target(true) // don't include targets
-        .with_thread_ids(true) // include the thread ID of the current thread
-        .with_thread_names(true); // include the name of the current thread
-
-    let span_layer = tracing_subscriber::fmt::layer()
-        .event_format(format)
-        .with_span_events(FmtSpan::CLOSE | FmtSpan::ENTER);
-
-    tracing_subscriber::registry().with(filter).with(span_layer).init();
-
     let args = DaemonArgs::parse();
 
     let app_state = DaemonState {};
@@ -191,12 +173,54 @@ async fn main() -> Result<(), MainEarlyReturn> {
     let app = DaemonApp {
         args: args.clone(),
         state: Arc::new(RwLock::new(app_state)),
-        log_reload_handle: reload_handle,
         config: DaemonConfig::default(),
     };
 
-    let metrics = MetricsProducerStdout::new().await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<MetricEvent<()>>(10);
+    let _metrics_consumer_task = tokio::spawn(async move {
+        while let Some(res) = rx.recv().await {
+            match res.kind {
+                MetricEventKind::Status(cap, sz) => {
+                    println!("{}: status cap:{} max:{}", res.timestamp, cap, sz);
+                }
+                MetricEventKind::App(_metric) => {}
+                MetricEventKind::HostInfo(_hi) => {}
+                MetricEventKind::HostStats(_hs) => {}
+                MetricEventKind::Flush => {
+                    println!("{}: flush", res.timestamp);
+                }
+                MetricEventKind::Finish => {
+                    println!("{}: finish", res.timestamp);
+                }
+                MetricEventKind::Init => {
+                    println!("{}: init", res.timestamp);
+                }
+                MetricEventKind::Log(level, target, name) => {
+                    println!("{}: {} target:{} name:{}", res.timestamp, level, target, name);
+                }
+                MetricEventKind::Reconnect => {}
+            }
+        }
+    });
+
+    let wob = Observability {
+        tx: tx.clone(),
+        level: Level::INFO,
+    };
+
+    tracing_subscriber::registry().with(wob).init();
+
     let fs = PhysicalVFS::new();
+
+    let interval = std::time::Duration::from_secs(5);
+    let metrics = MetricsProcessorOptionsBuilder::default()
+        .sender(tx)
+        .flush_interval(interval.clone())
+        .status_interval(interval.clone())
+        .host_stats_interval(interval.clone())
+        .build()
+        .unwrap();
+
     match &args.run_mode {
         RunMode::Sys => {
             let exec = UnixLikeSystem::new(app.name()).await;
