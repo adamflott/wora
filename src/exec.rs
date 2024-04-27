@@ -13,15 +13,18 @@ use users::{get_effective_username, get_group_by_name, get_user_by_name, switch:
 
 use crate::dirs::Dirs;
 use crate::errors::SetupFailure;
-use crate::metrics::*;
 use crate::{Wora, WFS};
 
-/// Common methods for all `Executors`
-pub trait Executor {
+#[async_trait]
+pub trait AsyncExecutor<AppEv, AppMetric>: Send + Sync + Clone {
     /// Executor's unique identifier
     fn id(&self) -> &'static str;
-
+    /// Executor's set of directory paths
     fn dirs(&self) -> &Dirs;
+
+    async fn setup(&mut self, wora: &Wora<AppEv, AppMetric>, fs: impl WFS) -> Result<(), SetupFailure>;
+    async fn is_ready(&self, wora: &Wora<AppEv, AppMetric>, fs: impl WFS) -> bool;
+    async fn end(&self, wora: &Wora<AppEv, AppMetric>, fs: impl WFS);
 
     /// Disable memory limits
     fn disable_memory_limits(&self) -> Result<(), SetupFailure> {
@@ -67,12 +70,4 @@ pub trait Executor {
     fn is_running_as_root(&self) -> bool {
         get_effective_username().unwrap_or("".into()) == "root"
     }
-}
-
-#[async_trait]
-pub trait AsyncExecutor<T>: Executor {
-    type Setup;
-    async fn setup(&mut self, wora: &Wora<T>, fs: impl WFS, metrics: &(dyn MetricProcessor + Send + Sync)) -> Result<Self::Setup, SetupFailure>;
-    async fn is_ready(&self, wora: &Wora<T>, metrics: &(dyn MetricProcessor + Send + Sync)) -> bool;
-    async fn end(&self, wora: &Wora<T>, metrics: &(dyn MetricProcessor + Send + Sync));
 }
