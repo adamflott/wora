@@ -6,7 +6,7 @@ pub use crate::exec_async_runner;
 pub use crate::exec_unix::*;
 pub use crate::metrics::*;
 pub use crate::restart_policy::MainRetryAction;
-pub use crate::vfs::{PhysicalVFS, WFS};
+pub use crate::vfs::*;
 pub use crate::App;
 pub use crate::HealthState;
 pub use crate::Leadership;
