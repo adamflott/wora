@@ -1,4 +1,4 @@
-use crate::metrics::MetricError;
+use crate::metrics::O11yError;
 #[cfg(target_os = "linux")]
 use caps::errors::CapsError;
 use nix::errno::Errno;
@@ -24,7 +24,7 @@ pub enum WoraSetupError {
     #[error("dir missing")]
     DirectoryDoesNotExistOnFilesystem(std::path::PathBuf),
     #[error("metric {0}")]
-    Metric(#[from] MetricError),
+    O11y(#[from] O11yError),
 }
 
 #[derive(Clone, Error, Debug)]

@@ -34,7 +34,7 @@ pub mod vfs;
 
 use crate::dirs::Dirs;
 use crate::errors::{MainEarlyReturn, WoraSetupError};
-use crate::metrics::{mefinish, meflush, meinit, mestatus, Host, HostStats, MetricEvent, MetricsProcessorOptions};
+use crate::metrics::*;
 use events::*;
 use exec::*;
 use restart_policy::*;
@@ -60,7 +60,7 @@ pub struct Wora<AppEv, AppMetric> {
     pub receiver: Receiver<Event<AppEv>>,
     /// leadership state
     pub leadership: Leadership,
-    pub metrics: MetricsProcessorOptions<AppMetric>,
+    pub o11y: O11yProcessorOptions<AppMetric>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -81,7 +81,7 @@ pub enum HealthState {
 
 /// WORA API
 impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv, AppMetric> {
-    pub fn new(dirs: &Dirs, app_name: String, ev_buf_size: usize, mp: MetricsProcessorOptions<AppMetric>) -> Result<Wora<AppEv, AppMetric>, WoraSetupError> {
+    pub fn new(dirs: &Dirs, app_name: String, ev_buf_size: usize, o11y: O11yProcessorOptions<AppMetric>) -> Result<Wora<AppEv, AppMetric>, WoraSetupError> {
         trace!("checking executor directories exist...");
 
         for dir in [
@@ -127,7 +127,7 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
             sender: tx,
             receiver: rx,
             leadership: Leadership::Unknown,
-            metrics: mp,
+            o11y: o11y,
         })
     }
 
@@ -176,10 +176,10 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
 
     pub async fn schedule_task<F, Fut>(&self, duration: tokio::time::Duration, future: F) -> JoinHandle<TaskOp>
     where
-        F: Fn(Sender<MetricEvent<AppMetric>>) -> Fut + Send + 'static,
+        F: Fn(Sender<O11yEvent<AppMetric>>) -> Fut + Send + 'static,
         Fut: Future<Output = TaskOp> + Send,
     {
-        let tx = self.metrics.sender().clone();
+        let tx = self.o11y.sender().clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(duration).await;
@@ -234,7 +234,7 @@ pub trait App<AppEv, AppMetric> {
         wora: &Wora<AppEv, AppMetric>,
         exec: impl AsyncExecutor<AppEv, AppMetric>,
         fs: impl WFS,
-        metrics: Sender<MetricEvent<AppMetric>>,
+        metrics: Sender<O11yEvent<AppMetric>>,
     ) -> Result<Self::Setup, Box<dyn std::error::Error>>;
 
     async fn main(
@@ -242,12 +242,12 @@ pub trait App<AppEv, AppMetric> {
         wora: &mut Wora<AppEv, AppMetric>,
         exec: impl AsyncExecutor<AppEv, AppMetric>,
         fs: impl WFS,
-        metrics: Sender<MetricEvent<AppMetric>>,
+        metrics: Sender<O11yEvent<AppMetric>>,
     ) -> MainRetryAction;
 
     async fn is_healthy(&mut self) -> HealthState;
 
-    async fn end(&mut self, wora: &Wora<AppEv, AppMetric>, exec: impl AsyncExecutor<AppEv, AppMetric>, fs: impl WFS, metrics: Sender<MetricEvent<AppMetric>>);
+    async fn end(&mut self, wora: &Wora<AppEv, AppMetric>, exec: impl AsyncExecutor<AppEv, AppMetric>, fs: impl WFS, metrics: Sender<O11yEvent<AppMetric>>);
 }
 
 fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)> {
@@ -273,7 +273,7 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
     mut exec: impl AsyncExecutor<AppEv, AppMetric>,
     mut app: impl App<AppEv, AppMetric> + 'static,
     fs: impl WFS,
-    mp: MetricsProcessorOptions<AppMetric>,
+    o11y: O11yProcessorOptions<AppMetric>,
 ) -> Result<(), MainEarlyReturn> {
     let mut lock_path = PathBuf::new();
     lock_path.push(&exec.dirs().runtime_root_dir);
@@ -288,33 +288,43 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
     lock_path.push(&lock_fp);
     let lock = proc_lock::LockPath::FullPath(&lock_path);
 
-    let metrics_tx = mp.sender().clone();
+    let o11y_tx = o11y.sender().clone();
 
-    let _ = metrics_tx.send(meinit()).await;
+    let _ = o11y_tx.send(o11y_new_ev_init(exec.dirs().log_root_dir.clone())).await;
 
     match try_lock(&lock) {
         Ok(guard) => {
             info!("exec:run:lock_file created:{:?}", &lock_path);
 
-            let metrics_sender = mp.sender().clone();
-            let status_interval = mp.status_interval().clone();
-            let flush_interval = mp.flush_interval().clone();
+            let metrics_sender = o11y.sender().clone();
+            let status_interval = o11y.status_interval().clone();
+            let flush_interval = o11y.flush_interval().clone();
+            let hs_interval = o11y.host_stats_interval().clone();
 
-            let mut wora = Wora::new(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE, mp)?;
+            let mut wora = Wora::new(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE, o11y)?;
+
+            let _ = metrics_sender.send(o11y_new_ev_hostinfo(wora.host.info())).await;
 
             wora.schedule_task(status_interval, move |tx| async move {
                 let cap = tx.capacity();
                 let max_cap = tx.max_capacity();
-                let _ = tx.send(mestatus(cap, max_cap)).await;
+                let _ = tx.send(o11y_new_ev_status(cap, max_cap)).await;
                 TaskOp::Requeue
             })
             .await;
 
             wora.schedule_task(flush_interval, move |tx| async move {
-                let _ = tx.send(meflush()).await;
+                let _ = tx.send(o11y_new_ev_flush()).await;
                 TaskOp::Requeue
             })
             .await;
+
+            wora.schedule_task(hs_interval, move |tx| async move {
+                // TODO
+                //let _ = tx.send(mehs()).await;
+                TaskOp::Requeue
+            })
+                .await;
 
             exec.setup(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:setup")).await?;
 
@@ -418,7 +428,7 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
                 }
             }
 
-            let _ = metrics_tx.send(mefinish()).await;
+            let _ = o11y_tx.send(o11y_new_ev_finish()).await;
 
             rc
         }
@@ -434,7 +444,7 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
                 }
             }
 
-            let _ = metrics_tx.send(mefinish()).await;
+            let _ = o11y_tx.send(o11y_new_ev_finish()).await;
 
             return Err(MainEarlyReturn::UseExitCode(111)); // TODO fix print and return
         }

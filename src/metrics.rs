@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
 
 use chrono::{DateTime, Local};
@@ -11,105 +11,155 @@ use serde::Serialize;
 use sysinfo::{Networks, System};
 use thiserror::Error;
 use tokio::sync::mpsc::Sender;
-use tracing::{error, Level};
+use tracing::{error, Id, Level};
 use tracing_subscriber::Layer;
 
-pub struct MetricEvent<T> {
+#[derive(Debug)]
+pub struct O11yEvent<T> {
     pub timestamp: chrono::DateTime<chrono::Utc>,
-    pub kind: MetricEventKind<T>,
+    pub kind: O11yEventKind<T>,
 }
 
-pub fn meinit<T>() -> MetricEvent<T> {
-    MetricEvent {
+pub fn o11y_new_ev_init<T>(log_dir: PathBuf) -> O11yEvent<T> {
+    O11yEvent {
         timestamp: chrono::Utc::now(),
-        kind: MetricEventKind::Init,
+        kind: O11yEventKind::Init(log_dir),
     }
 }
-pub fn mefinish<T>() -> MetricEvent<T> {
-    MetricEvent {
+
+pub fn o11y_new_ev_finish<T>() -> O11yEvent<T> {
+    O11yEvent {
         timestamp: chrono::Utc::now(),
-        kind: MetricEventKind::Finish,
+        kind: O11yEventKind::Finish,
     }
 }
-pub fn meflush<T>() -> MetricEvent<T> {
-    MetricEvent {
+
+pub fn o11y_new_ev_flush<T>() -> O11yEvent<T> {
+    O11yEvent {
         timestamp: chrono::Utc::now(),
-        kind: MetricEventKind::Flush,
+        kind: O11yEventKind::Flush,
     }
 }
-pub fn mestatus<T>(cap: usize, max_cap: usize) -> MetricEvent<T> {
-    MetricEvent {
+
+pub fn o11y_new_ev_clear<T>() -> O11yEvent<T> {
+    O11yEvent {
         timestamp: chrono::Utc::now(),
-        kind: MetricEventKind::Status(cap, max_cap),
+        kind: O11yEventKind::Clear,
     }
 }
-pub fn melog<T>(lvl: Level, target: String, name: String) -> MetricEvent<T> {
-    MetricEvent {
+
+pub fn o11y_new_ev_reconnect<T>() -> O11yEvent<T> {
+    O11yEvent {
         timestamp: chrono::Utc::now(),
-        kind: MetricEventKind::Log(lvl, target, name),
+        kind: O11yEventKind::Reconnect,
     }
 }
-pub fn meapp<T>(m: T) -> MetricEvent<T> {
-    MetricEvent {
+
+pub fn o11y_new_ev_status<T>(cap: usize, max_cap: usize) -> O11yEvent<T> {
+    O11yEvent {
         timestamp: chrono::Utc::now(),
-        kind: MetricEventKind::App(m),
+        kind: O11yEventKind::Status(cap, max_cap),
     }
 }
-pub enum MetricEventKind<T> {
-    Init,
+
+pub fn o11y_new_ev_hostinfo<T>(hi: &HostInfo) -> O11yEvent<T> {
+    O11yEvent {
+        timestamp: chrono::Utc::now(),
+        kind: O11yEventKind::HostInfo(hi.clone()),
+    }
+}
+pub fn o11y_new_ev_hoststats<T>(hs: &HostStats) -> O11yEvent<T> {
+    O11yEvent {
+        timestamp: chrono::Utc::now(),
+        kind: O11yEventKind::HostStats(hs.clone()),
+    }
+}
+
+pub fn o11y_new_ev_span<T>(id: tracing::Id, kind: O11ySpanEventKind) -> O11yEvent<T> {
+    O11yEvent {
+        timestamp: chrono::Utc::now(),
+        kind: O11yEventKind::Span(id, kind),
+    }
+}
+
+pub fn o11y_new_ev_log<T>(lvl: Level, target: String, name: String) -> O11yEvent<T> {
+    O11yEvent {
+        timestamp: chrono::Utc::now(),
+        kind: O11yEventKind::Log(lvl, target, name),
+    }
+}
+
+pub fn o11y_new_ev_app<T>(m: T) -> O11yEvent<T> {
+    O11yEvent {
+        timestamp: chrono::Utc::now(),
+        kind: O11yEventKind::App(m),
+    }
+}
+
+#[derive(Debug)]
+pub enum O11ySpanEventKind {
+    Enter,
+    Exit,
+    Close
+}
+#[derive(Debug)]
+pub enum O11yEventKind<T> {
+    Init(PathBuf),
     Finish,
     Flush,
+    Clear,
     Reconnect,
     Status(usize, usize),
 
     HostInfo(HostInfo),
     HostStats(HostStats),
 
+    Span(Id, O11ySpanEventKind),
     Log(Level, String, String),
 
     App(T),
 }
 
 #[derive(Debug)]
-pub enum MetricValue {
+pub enum O11yMetricValue {
     Counter(u64),
 }
 
-impl Default for MetricValue {
+impl Default for O11yMetricValue {
     fn default() -> Self {
-        MetricValue::Counter(0)
+        O11yMetricValue::Counter(0)
     }
 }
 
-impl MetricValue {
+impl O11yMetricValue {
     pub fn inc(&mut self) {
         match self {
-            MetricValue::Counter(v) => *v += 1,
+            O11yMetricValue::Counter(v) => *v += 1,
         }
     }
 }
 
 #[derive(Debug, Builder, Getters)]
-pub struct MetricsProcessorOptions<T> {
-    sender: Sender<MetricEvent<T>>,
+pub struct O11yProcessorOptions<T> {
+    sender: Sender<O11yEvent<T>>,
     flush_interval: std::time::Duration,
     status_interval: std::time::Duration,
     host_stats_interval: std::time::Duration,
 }
 
-struct MEVisitor<T>(Level, Sender<MetricEvent<T>>);
+struct MEVisitor<T>(Level, Sender<O11yEvent<T>>);
 
 impl<T> tracing::field::Visit for MEVisitor<T> {
     fn record_error(&mut self, field: &tracing::field::Field, value: &(dyn std::error::Error + 'static)) {
-        let _ = self.1.try_send(melog(self.0, "".to_string(), format!("{} {:?}", field.name(), value)));
+        let _ = self.1.try_send(o11y_new_ev_log(self.0, "".to_string(), format!("{} {:?}", field.name(), value)));
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        let _ = self.1.try_send(melog(self.0, "".to_string(), format!("{} {:?}", field.name(), value)));
+        let _ = self.1.try_send(o11y_new_ev_log(self.0, "".to_string(), format!("{} {:?}", field.name(), value)));
     }
 }
 pub struct Observability<T> {
-    pub tx: Sender<MetricEvent<T>>,
+    pub tx: Sender<O11yEvent<T>>,
     pub level: Level,
 }
 
@@ -118,25 +168,42 @@ where
     S: tracing::Subscriber,
     S: for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
 {
+    fn on_record(&self, span: &tracing::Id, _values: &tracing::span::Record<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        println!("span id:{:?} {:?}", span, _values);
+    }
+    fn on_enter(&self, id: &tracing::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        match ctx.span(&id) {
+            None => {}
+            Some(span) => {
+                let _ = self.tx.try_send(o11y_new_ev_span(id.clone(), O11ySpanEventKind::Enter));
+            }
+        }
+    }
+    fn on_exit(&self, id: &tracing::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        match ctx.span(&id) {
+            None => {}
+            Some(span) => {
+                let _ = self.tx.try_send(o11y_new_ev_span(id.clone(), O11ySpanEventKind::Exit));
+            }
+        }
+    }
+    fn on_close(&self, id: tracing::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        match ctx.span(&id) {
+            None => {}
+            Some(span) => {
+                let _ = self.tx.try_send(o11y_new_ev_span(id.clone(), O11ySpanEventKind::Close));
+            }
+        }
+    }
     fn on_event(&self, event: &tracing::Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
-        // TODO support spans
-        if event.metadata().is_span() {
-            match ctx.event_span(event) {
-                None => {}
-                Some(_parent_span) => {}
-            }
+        // TODO add support for fields?
+        for _field in event.fields() {}
+        let lvl = event.metadata().level().clone();
 
-            match ctx.event_scope(event) {
-                None => {}
-                Some(scope) => for _span in scope.from_root() {},
-            }
-        } else {
-            // TODO add support for fields?
-            for _field in event.fields() {}
-            let lvl = event.metadata().level().clone();
+        if self.level >= lvl {
             let _ = self
                 .tx
-                .try_send(melog(lvl.clone(), event.metadata().target().to_string(), event.metadata().name().to_string()));
+                .try_send(o11y_new_ev_log(lvl.clone(), event.metadata().target().to_string(), event.metadata().name().to_string()));
 
             let mut visitor = MEVisitor(lvl, self.tx.clone());
             event.record(&mut visitor);
@@ -146,7 +213,7 @@ where
 
 #[derive(Error, Debug)]
 #[error(transparent)]
-pub enum MetricError {
+pub enum O11yError {
     #[error("procfs")]
     ProcFs(#[from] ProcError),
     #[error("unsupported os {0}")]
@@ -160,6 +227,15 @@ pub enum SupportedOSes {
     Unknown,
 }
 
+impl Display for SupportedOSes {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SupportedOSes::Linux => {write!(f, "linux")}
+            SupportedOSes::OSX => {write!(f, "osx")}
+            SupportedOSes::Unknown => {write!(f, "unknown")}
+        }
+    }
+}
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct Cpu {
     name: String,
@@ -224,7 +300,7 @@ pub struct Host {
 }
 
 impl Host {
-    pub fn new() -> Result<Self, MetricError> {
+    pub fn new() -> Result<Self, O11yError> {
         let mut sys = sysinfo::System::new_all();
         sys.refresh_all();
 
@@ -235,7 +311,7 @@ impl Host {
     }
 }
 /// System stats/information from `sysinfo`
-#[derive(Default, Debug, Serialize, Getters)]
+#[derive(Clone, Default, Debug, Serialize, Getters)]
 pub struct HostStats {
     pub cpu: Vec<Cpu>,
     pub memory: MemStats,
@@ -310,11 +386,11 @@ impl HostStats {
         }
     }
 
-    pub fn update(&mut self) -> Result<(), MetricError> {
+    pub fn update(&mut self) -> Result<(), O11yError> {
         Ok(())
     }
 }
-#[derive(Default, Debug, Serialize, Getters)]
+#[derive(Clone, Default, Debug, Serialize, Getters)]
 pub struct HostInfo {
     pub os_type: SupportedOSes,
     pub os_name: String,
@@ -337,10 +413,10 @@ pub struct HostInfo {
 }
 
 impl HostInfo {
-    pub fn new(sys: &System) -> Result<Self, MetricError> {
+    pub fn new(sys: &System) -> Result<Self, O11yError> {
         let os_type = match System::distribution_id().as_str() {
             "ubuntu" | "linux" | "macos" | "nixos" => SupportedOSes::Linux,
-            unsupported => return Err(MetricError::UnsupportedOS(unsupported.to_string())),
+            unsupported => return Err(O11yError::UnsupportedOS(unsupported.to_string())),
         };
 
         let osinfo = os_info::get();
@@ -379,7 +455,7 @@ impl HostInfo {
         })
     }
 
-    pub fn update(&mut self, sys: &System) -> Result<(), MetricError> {
+    pub fn update(&mut self, sys: &System) -> Result<(), O11yError> {
         self.ncpus = sys.physical_core_count().unwrap_or(0);
         self.maxcpus = sys.cpus().len();
         self.ticks_per_sec = procfs::ticks_per_second();
