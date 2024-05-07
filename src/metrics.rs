@@ -168,13 +168,13 @@ where
     S: tracing::Subscriber,
     S: for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
 {
-    fn on_record(&self, span: &tracing::Id, _values: &tracing::span::Record<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-        println!("span id:{:?} {:?}", span, _values);
+    fn on_record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        // TODO println!("span id:{:?} {:?}", span, _values);
     }
     fn on_enter(&self, id: &tracing::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
         match ctx.span(&id) {
             None => {}
-            Some(span) => {
+            Some(_span) => {
                 let _ = self.tx.try_send(o11y_new_ev_span(id.clone(), O11ySpanEventKind::Enter));
             }
         }
@@ -182,7 +182,7 @@ where
     fn on_exit(&self, id: &tracing::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
         match ctx.span(&id) {
             None => {}
-            Some(span) => {
+            Some(_span) => {
                 let _ = self.tx.try_send(o11y_new_ev_span(id.clone(), O11ySpanEventKind::Exit));
             }
         }
@@ -190,14 +190,12 @@ where
     fn on_close(&self, id: tracing::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
         match ctx.span(&id) {
             None => {}
-            Some(span) => {
+            Some(_span) => {
                 let _ = self.tx.try_send(o11y_new_ev_span(id.clone(), O11ySpanEventKind::Close));
             }
         }
     }
-    fn on_event(&self, event: &tracing::Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
-        // TODO add support for fields?
-        for _field in event.fields() {}
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
         let lvl = event.metadata().level().clone();
 
         if self.level >= lvl {

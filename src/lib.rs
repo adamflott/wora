@@ -319,7 +319,7 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
             })
             .await;
 
-            wora.schedule_task(hs_interval, move |tx| async move {
+            wora.schedule_task(hs_interval, move |_tx| async move {
                 // TODO
                 //let _ = tx.send(mehs()).await;
                 TaskOp::Requeue
