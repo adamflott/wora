@@ -38,13 +38,13 @@ impl App<(), ()> for BasicApp {
         _wora: &Wora<(), ()>,
         _exec: impl AsyncExecutor<(), ()>,
         _fs: impl WFS,
-        _metrics: Sender<MetricEvent<()>>,
+        _o11y: Sender<O11yEvent<()>>,
     ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
         debug!("command args: {:?}", self.args);
         Ok(())
     }
 
-    async fn main(&mut self, _wora: &mut Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS, _metrics: Sender<MetricEvent<()>>) -> MainRetryAction {
+    async fn main(&mut self, _wora: &mut Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS, _o11y: Sender<O11yEvent<()>>) -> MainRetryAction {
         trace!("Trace message");
         debug!("Debug message");
         info!("Info message");
@@ -59,36 +59,38 @@ impl App<(), ()> for BasicApp {
         HealthState::Ok
     }
 
-    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS, _metrics: Sender<MetricEvent<()>>) {
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS, _o11y: Sender<O11yEvent<()>>) {
         info!("Final count: {}", self.counter);
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), MainEarlyReturn> {
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<MetricEvent<()>>(10);
-    let _metrics_consumer_task = tokio::spawn(async move {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<O11yEvent<()>>(10);
+    let _o11y_consumer_task = tokio::spawn(async move {
         while let Some(res) = rx.recv().await {
             match res.kind {
-                MetricEventKind::Status(cap, sz) => {
+                O11yEventKind::Status(cap, sz) => {
                     println!("{}: status cap:{} max:{}", res.timestamp, cap, sz);
                 }
-                MetricEventKind::App(_metric) => {}
-                MetricEventKind::HostInfo(_hi) => {}
-                MetricEventKind::HostStats(_hs) => {}
-                MetricEventKind::Flush => {
+                O11yEventKind::App(_O11y) => {}
+                O11yEventKind::HostInfo(_hi) => {}
+                O11yEventKind::HostStats(_hs) => {}
+                O11yEventKind::Flush => {
                     println!("{}: flush", res.timestamp);
                 }
-                MetricEventKind::Finish => {
+                O11yEventKind::Finish => {
                     println!("{}: finish", res.timestamp);
                 }
-                MetricEventKind::Init => {
-                    println!("{}: init", res.timestamp);
+                O11yEventKind::Init(log_dir) => {
+                    println!("{}: init log_dir:{:?}", res.timestamp, log_dir);
                 }
-                MetricEventKind::Log(level, target, name) => {
+                O11yEventKind::Log(level, target, name) => {
                     println!("{}: {} target:{} name:{}", res.timestamp, level, target, name);
                 }
-                MetricEventKind::Reconnect => {}
+                O11yEventKind::Reconnect => {}
+                O11yEventKind::Clear => {}
+                O11yEventKind::Span(_, _) => {}
             }
         }
     });
@@ -109,7 +111,7 @@ async fn main() -> Result<(), MainEarlyReturn> {
     let fs = PhysicalVFS::new();
     let interval = std::time::Duration::from_secs(5);
 
-    let metrics = MetricsProcessorOptionsBuilder::default()
+    let o11y = O11yProcessorOptionsBuilder::default()
         .sender(tx)
         .flush_interval(interval.clone())
         .status_interval(interval.clone())
@@ -117,7 +119,7 @@ async fn main() -> Result<(), MainEarlyReturn> {
         .build()
         .unwrap();
     match UnixLikeUser::new(app_name, fs.clone()).await {
-        Ok(exec) => exec_async_runner(exec, app, fs.clone(), metrics).await?,
+        Ok(exec) => exec_async_runner(exec, app, fs.clone(), o11y).await?,
         Err(exec_err) => {
             error!("exec error:{}", exec_err);
             return Err(MainEarlyReturn::Vfs(exec_err));

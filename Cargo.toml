@@ -1,7 +1,7 @@
 [package]
 name = "wora"
 authors = [ "Adam Flott <adam@adamflott.com>" ]
-version = "0.0.7"
+version = "0.0.8"
 edition = "2021"
 rust-version = "1.67"
 description = "A framework for building applications (daemons, etc) that run in different environments (Linux, Kubernetes, etc)."

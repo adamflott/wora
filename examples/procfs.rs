@@ -1,4 +1,4 @@
-use wora::metrics::{Host, HostInfo};
+use wora::o11y::{Host, HostInfo};
 
 fn main() {
     let h = Host::new().unwrap();

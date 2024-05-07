@@ -4,7 +4,7 @@ use decimal_percentage::Percentage;
 use nix::unistd::Pid;
 use serde::{Serialize, Serializer};
 
-use crate::metrics::{Cpu, Disk, LoadAvg, MemStats, NetIO, SwapStats};
+use crate::o11y::{Cpu, Disk, LoadAvg, MemStats, NetIO, SwapStats};
 use crate::Leadership;
 
 /// Process Id (pid)

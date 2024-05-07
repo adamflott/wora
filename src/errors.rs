@@ -1,4 +1,4 @@
-use crate::metrics::O11yError;
+use crate::o11y::O11yError;
 #[cfg(target_os = "linux")]
 use caps::errors::CapsError;
 use nix::errno::Errno;

@@ -27,14 +27,14 @@ pub mod errors;
 pub mod events;
 pub mod exec;
 pub mod exec_unix;
-pub mod metrics;
+pub mod o11y;
 pub mod prelude;
 pub mod restart_policy;
 pub mod vfs;
 
 use crate::dirs::Dirs;
 use crate::errors::{MainEarlyReturn, WoraSetupError};
-use crate::metrics::*;
+use crate::o11y::*;
 use events::*;
 use exec::*;
 use restart_policy::*;

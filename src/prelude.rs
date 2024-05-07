@@ -4,7 +4,7 @@ pub use crate::events::Event;
 pub use crate::exec::*;
 pub use crate::exec_async_runner;
 pub use crate::exec_unix::*;
-pub use crate::metrics::*;
+pub use crate::o11y::*;
 pub use crate::restart_policy::MainRetryAction;
 pub use crate::vfs::*;
 pub use crate::App;

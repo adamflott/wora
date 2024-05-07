@@ -80,7 +80,7 @@ impl App<(), ()> for DaemonApp {
         wora: &Wora<(), ()>,
         exec: impl AsyncExecutor<(), ()>,
         _fs: impl WFS,
-        _metrics: Sender<MetricEvent<()>>,
+        _o11y: Sender<O11yEvent<()>>,
     ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
         debug!("{:?}", wora.stats_from_start());
 
@@ -97,7 +97,7 @@ impl App<(), ()> for DaemonApp {
         wora: &mut Wora<(), ()>,
         _exec: impl AsyncExecutor<(), ()>,
         fs: impl WFS,
-        _metrics: Sender<MetricEvent<()>>,
+        _o11y: Sender<O11yEvent<()>>,
     ) -> MainRetryAction {
         info!("waiting for events...");
         while let Some(ev) = wora.receiver.recv().await {
@@ -158,7 +158,7 @@ impl App<(), ()> for DaemonApp {
                  _wora: &Wora<(), ()>,
                  _exec: impl AsyncExecutor<(), ()>,
                  _fs: impl WFS,
-                 _metrics: Sender<MetricEvent<()>>
+                 _o11y: Sender<O11yEvent<()>>
                  ) {
         ()
     }
@@ -176,29 +176,31 @@ async fn main() -> Result<(), MainEarlyReturn> {
         config: DaemonConfig::default(),
     };
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<MetricEvent<()>>(10);
-    let _metrics_consumer_task = tokio::spawn(async move {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<O11yEvent<()>>(10);
+    let _o11y_consumer_task = tokio::spawn(async move {
         while let Some(res) = rx.recv().await {
             match res.kind {
-                MetricEventKind::Status(cap, sz) => {
+                O11yEventKind::Status(cap, sz) => {
                     println!("{}: status cap:{} max:{}", res.timestamp, cap, sz);
                 }
-                MetricEventKind::App(_metric) => {}
-                MetricEventKind::HostInfo(_hi) => {}
-                MetricEventKind::HostStats(_hs) => {}
-                MetricEventKind::Flush => {
+                O11yEventKind::App(_O11y) => {}
+                O11yEventKind::HostInfo(_hi) => {}
+                O11yEventKind::HostStats(_hs) => {}
+                O11yEventKind::Flush => {
                     println!("{}: flush", res.timestamp);
                 }
-                MetricEventKind::Finish => {
+                O11yEventKind::Finish => {
                     println!("{}: finish", res.timestamp);
                 }
-                MetricEventKind::Init => {
-                    println!("{}: init", res.timestamp);
+                O11yEventKind::Init(log_dir) => {
+                    println!("{}: init log_dir:{:?}", res.timestamp, log_dir);
                 }
-                MetricEventKind::Log(level, target, name) => {
+                O11yEventKind::Log(level, target, name) => {
                     println!("{}: {} target:{} name:{}", res.timestamp, level, target, name);
                 }
-                MetricEventKind::Reconnect => {}
+                O11yEventKind::Reconnect => {}
+                O11yEventKind::Clear => {}
+                O11yEventKind::Span(_, _) => {}
             }
         }
     });
@@ -213,7 +215,7 @@ async fn main() -> Result<(), MainEarlyReturn> {
     let fs = PhysicalVFS::new();
 
     let interval = std::time::Duration::from_secs(5);
-    let metrics = MetricsProcessorOptionsBuilder::default()
+    let O11y = O11yProcessorOptionsBuilder::default()
         .sender(tx)
         .flush_interval(interval.clone())
         .status_interval(interval.clone())
@@ -224,10 +226,10 @@ async fn main() -> Result<(), MainEarlyReturn> {
     match &args.run_mode {
         RunMode::Sys => {
             let exec = UnixLikeSystem::new(app.name()).await;
-            exec_async_runner(exec, app, fs, metrics).await?
+            exec_async_runner(exec, app, fs, O11y).await?
         }
         RunMode::User => match UnixLikeUser::new(app.name(), fs.clone()).await {
-            Ok(exec) => exec_async_runner(exec, app, fs.clone(), metrics).await?,
+            Ok(exec) => exec_async_runner(exec, app, fs.clone(), O11y).await?,
             Err(exec_err) => {
                 error!("exec error:{}", exec_err);
                 return Err(MainEarlyReturn::Vfs(exec_err));
