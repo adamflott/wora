@@ -13,7 +13,7 @@ use serde::Serialize;
 use sysinfo::{Networks, System};
 use thiserror::Error;
 use tokio::sync::mpsc::Sender;
-use tracing::{error, Id, Level};
+use tracing::{Id, Level, error};
 use tracing_subscriber::Layer;
 
 #[derive(Debug)]
@@ -102,7 +102,7 @@ pub fn o11y_new_ev_app<T>(m: T) -> O11yEvent<T> {
 pub enum O11ySpanEventKind {
     Enter,
     Exit,
-    Close
+    Close,
 }
 #[derive(Debug)]
 pub enum O11yEventKind<T> {
@@ -153,11 +153,15 @@ struct MEVisitor<T>(Level, Sender<O11yEvent<T>>);
 
 impl<T> tracing::field::Visit for MEVisitor<T> {
     fn record_error(&mut self, field: &tracing::field::Field, value: &(dyn std::error::Error + 'static)) {
-        let _ = self.1.try_send(o11y_new_ev_log(self.0, "".to_string(), format!("{} {:?}", field.name(), value)));
+        let _ = self
+            .1
+            .try_send(o11y_new_ev_log(self.0, "".to_string(), format!("{} {:?}", field.name(), value)));
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        let _ = self.1.try_send(o11y_new_ev_log(self.0, "".to_string(), format!("{} {:?}", field.name(), value)));
+        let _ = self
+            .1
+            .try_send(o11y_new_ev_log(self.0, "".to_string(), format!("{} {:?}", field.name(), value)));
     }
 }
 pub struct Observability<T> {
@@ -201,9 +205,11 @@ where
         let lvl = event.metadata().level().clone();
 
         if self.level >= lvl {
-            let _ = self
-                .tx
-                .try_send(o11y_new_ev_log(lvl.clone(), event.metadata().target().to_string(), event.metadata().name().to_string()));
+            let _ = self.tx.try_send(o11y_new_ev_log(
+                lvl.clone(),
+                event.metadata().target().to_string(),
+                event.metadata().name().to_string(),
+            ));
 
             let mut visitor = MEVisitor(lvl, self.tx.clone());
             event.record(&mut visitor);
@@ -231,9 +237,15 @@ pub enum SupportedOSes {
 impl Display for SupportedOSes {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            SupportedOSes::Linux => {write!(f, "linux")}
-            SupportedOSes::OSX => {write!(f, "osx")}
-            SupportedOSes::Unknown => {write!(f, "unknown")}
+            SupportedOSes::Linux => {
+                write!(f, "linux")
+            }
+            SupportedOSes::OSX => {
+                write!(f, "osx")
+            }
+            SupportedOSes::Unknown => {
+                write!(f, "unknown")
+            }
         }
     }
 }
@@ -491,7 +503,7 @@ impl HostInfo {
         let osinfo = os_info::get();
 
         let boot_time_epoch = sysinfo::System::boot_time();
-        let boot_time= DateTime::from_timestamp(boot_time_epoch as i64, 0).unwrap();
+        let boot_time = DateTime::from_timestamp(boot_time_epoch as i64, 0).unwrap();
 
         Ok(Self {
             os_type,

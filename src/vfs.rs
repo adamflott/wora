@@ -33,10 +33,10 @@ impl WFS for PhysicalVFS {
         tokio::fs::read_dir(path).await.map_err(VfsError::Io)
     }
 
-    async fn open_file<P: AsRef<Path>+ Send + Sync>(&self, path: P) -> Result<File, VfsError> {
+    async fn open_file<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<File, VfsError> {
         File::open(path).await.map_err(VfsError::Io)
     }
-    async fn create_file<P: AsRef<Path>+ Send + Sync>(&self, path: P) -> Result<File, VfsError> {
+    async fn create_file<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<File, VfsError> {
         File::create(path).await.map_err(VfsError::Io)
     }
     async fn read_to_string<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<String, VfsError> {

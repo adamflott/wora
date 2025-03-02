@@ -82,8 +82,6 @@ pub enum HealthState {
 /// WORA API
 impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv, AppMetric> {
     pub fn new(dirs: &Dirs, app_name: String, ev_buf_size: usize, o11y: O11yProcessorOptions<AppMetric>) -> Result<Wora<AppEv, AppMetric>, WoraSetupError> {
-
-
         let pid = getpid();
 
         let (tx, rx) = channel(ev_buf_size);
@@ -234,7 +232,13 @@ pub trait App<AppEv, AppMetric> {
 
     async fn is_healthy(&mut self) -> HealthState;
 
-    async fn end(&mut self, wora: &Wora<AppEv, AppMetric>, exec: impl AsyncExecutor<AppEv, AppMetric>, fs: impl WFS +'static, metrics: Sender<O11yEvent<AppMetric>>);
+    async fn end(
+        &mut self,
+        wora: &Wora<AppEv, AppMetric>,
+        exec: impl AsyncExecutor<AppEv, AppMetric>,
+        fs: impl WFS + 'static,
+        metrics: Sender<O11yEvent<AppMetric>>,
+    );
 }
 
 fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)> {
@@ -311,7 +315,7 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
                 //let _ = tx.send(mehs()).await;
                 TaskOp::Requeue
             })
-                .await;
+            .await;
 
             exec.setup(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:setup")).await?;
 
@@ -402,9 +406,7 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
                                     .instrument(tracing::info_span!("app:run:main:retry"))
                                     .await;
                             }
-                            MainRetryAction::Success => {
-                                rc = Ok(())
-                            }
+                            MainRetryAction::Success => rc = Ok(()),
                         }
                     } else {
                         warn!(comp = "exec", method = "run", is_ready = false);

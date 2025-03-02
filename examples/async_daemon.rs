@@ -7,8 +7,8 @@ use clap::{Parser, ValueEnum};
 use libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
-use tracing::{debug, error, info, Level};
-use tracing_subscriber::{prelude::*};
+use tracing::{Level, debug, error, info};
+use tracing_subscriber::prelude::*;
 
 use wora::prelude::*;
 
@@ -92,13 +92,7 @@ impl App<(), ()> for DaemonApp {
         Ok(())
     }
 
-    async fn main(
-        &mut self,
-        wora: &mut Wora<(), ()>,
-        _exec: impl AsyncExecutor<(), ()>,
-        fs: impl WFS,
-        _o11y: Sender<O11yEvent<()>>,
-    ) -> MainRetryAction {
+    async fn main(&mut self, wora: &mut Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, fs: impl WFS, _o11y: Sender<O11yEvent<()>>) -> MainRetryAction {
         info!("waiting for events...");
         while let Some(ev) = wora.receiver.recv().await {
             info!("event: {:?}", &ev);
@@ -108,8 +102,7 @@ impl App<(), ()> for DaemonApp {
                     SIGHUP => {
                         info!("sighup!");
                     }
-                    SIGUSR1 => {
-                    }
+                    SIGUSR1 => {}
                     _ => {}
                 },
                 Event::Shutdown(dt) => {
@@ -154,12 +147,7 @@ impl App<(), ()> for DaemonApp {
         HealthState::Ok
     }
 
-    async fn end(&mut self,
-                 _wora: &Wora<(), ()>,
-                 _exec: impl AsyncExecutor<(), ()>,
-                 _fs: impl WFS,
-                 _o11y: Sender<O11yEvent<()>>
-                 ) {
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS, _o11y: Sender<O11yEvent<()>>) {
         ()
     }
 }

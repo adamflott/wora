@@ -4,8 +4,8 @@ use caps::CapSet;
 #[cfg(target_os = "linux")]
 use libc::RLIM_INFINITY;
 use nix::sys::{
-    mman::{mlockall, MlockAllFlags},
-    resource::{setrlimit, Resource},
+    mman::{MlockAllFlags, mlockall},
+    resource::{Resource, setrlimit},
 };
 use tracing::info;
 use users::switch::set_both_gid;
@@ -13,7 +13,7 @@ use users::{get_effective_username, get_group_by_name, get_user_by_name, switch:
 
 use crate::dirs::Dirs;
 use crate::errors::SetupFailure;
-use crate::{Wora, WFS};
+use crate::{WFS, Wora};
 
 #[async_trait]
 pub trait AsyncExecutor<AppEv, AppMetric>: Send + Sync + Clone {

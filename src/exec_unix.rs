@@ -5,9 +5,9 @@ use directories::ProjectDirs;
 use nix::unistd::chdir;
 use tracing::{error, trace};
 
+use crate::Wora;
 use crate::dirs::Dirs;
 use crate::errors::{SetupFailure, VfsError};
-use crate::Wora;
 use crate::{AsyncExecutor, WFS};
 
 #[derive(Clone, Debug)]
