@@ -105,6 +105,7 @@ impl<AppEv: Send + Sync, AppMetric: Send + Sync> AsyncExecutor<AppEv, AppMetric>
         trace!("exec:setup:io:chdir({:?}): success", &wora.dirs.root_dir);
 
         for dir in [
+            &dirs.root_dir,
             &dirs.log_root_dir,
             &dirs.metadata_root_dir,
             &dirs.data_root_dir,

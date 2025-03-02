@@ -82,20 +82,7 @@ pub enum HealthState {
 /// WORA API
 impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv, AppMetric> {
     pub fn new(dirs: &Dirs, app_name: String, ev_buf_size: usize, o11y: O11yProcessorOptions<AppMetric>) -> Result<Wora<AppEv, AppMetric>, WoraSetupError> {
-        trace!("checking executor directories exist...");
 
-        for dir in [
-            &dirs.root_dir,
-            &dirs.log_root_dir,
-            &dirs.metadata_root_dir,
-            &dirs.data_root_dir,
-            &dirs.cache_root_dir,
-        ] {
-            if !dir.exists() {
-                error!("directory {:?} does not exist", dir);
-                return Err(WoraSetupError::DirectoryDoesNotExistOnFilesystem(dir.clone()));
-            }
-        }
 
         let pid = getpid();
 
@@ -233,7 +220,7 @@ pub trait App<AppEv, AppMetric> {
         &mut self,
         wora: &Wora<AppEv, AppMetric>,
         exec: impl AsyncExecutor<AppEv, AppMetric>,
-        fs: impl WFS,
+        fs: impl WFS + 'static,
         metrics: Sender<O11yEvent<AppMetric>>,
     ) -> Result<Self::Setup, Box<dyn std::error::Error>>;
 
@@ -241,13 +228,13 @@ pub trait App<AppEv, AppMetric> {
         &mut self,
         wora: &mut Wora<AppEv, AppMetric>,
         exec: impl AsyncExecutor<AppEv, AppMetric>,
-        fs: impl WFS,
+        fs: impl WFS + 'static,
         metrics: Sender<O11yEvent<AppMetric>>,
     ) -> MainRetryAction;
 
     async fn is_healthy(&mut self) -> HealthState;
 
-    async fn end(&mut self, wora: &Wora<AppEv, AppMetric>, exec: impl AsyncExecutor<AppEv, AppMetric>, fs: impl WFS, metrics: Sender<O11yEvent<AppMetric>>);
+    async fn end(&mut self, wora: &Wora<AppEv, AppMetric>, exec: impl AsyncExecutor<AppEv, AppMetric>, fs: impl WFS +'static, metrics: Sender<O11yEvent<AppMetric>>);
 }
 
 fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)> {
@@ -272,7 +259,7 @@ fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Resul
 pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static>(
     mut exec: impl AsyncExecutor<AppEv, AppMetric>,
     mut app: impl App<AppEv, AppMetric> + 'static,
-    fs: impl WFS,
+    fs: impl WFS + 'static,
     o11y: O11yProcessorOptions<AppMetric>,
 ) -> Result<(), MainEarlyReturn> {
     let mut lock_path = PathBuf::new();
@@ -336,6 +323,21 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
                 .await
             {
                 Ok(_) => {
+                    trace!("checking executor directories exist...");
+
+                    for dir in [
+                        &wora.dirs.root_dir,
+                        &wora.dirs.log_root_dir,
+                        &wora.dirs.metadata_root_dir,
+                        &wora.dirs.data_root_dir,
+                        &wora.dirs.cache_root_dir,
+                    ] {
+                        if !dir.exists() {
+                            error!("directory {:?} does not exist", dir);
+                            return Err(MainEarlyReturn::WoraSetup(WoraSetupError::DirectoryDoesNotExistOnFilesystem(dir.clone())));
+                        }
+                    }
+
                     info!(
                         host.hostname = wora.host_hostname(),
                         host.platform = wora.host_architecture(),
@@ -400,7 +402,9 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
                                     .instrument(tracing::info_span!("app:run:main:retry"))
                                     .await;
                             }
-                            MainRetryAction::Success => {}
+                            MainRetryAction::Success => {
+                                rc = Ok(())
+                            }
                         }
                     } else {
                         warn!(comp = "exec", method = "run", is_ready = false);

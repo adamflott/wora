@@ -14,6 +14,7 @@ pub trait WFS: Debug + Clone + Send + Sync {
     async fn open_file<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<File, VfsError>;
     async fn create_file<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<File, VfsError>;
     async fn read_to_string<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<String, VfsError>;
+    async fn dir_exists<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<bool, VfsError>;
 }
 
 #[derive(Debug, Clone)]
@@ -40,5 +41,9 @@ impl WFS for PhysicalVFS {
     }
     async fn read_to_string<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<String, VfsError> {
         tokio::fs::read_to_string(path).await.map_err(VfsError::Io)
+    }
+
+    async fn dir_exists<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<bool, VfsError> {
+        tokio::fs::try_exists(path).await.map_err(VfsError::Io)
     }
 }
