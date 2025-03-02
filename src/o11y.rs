@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use chrono::{DateTime, Local};
 use derive_builder::Builder;
 use derive_getters::Getters;
+#[cfg(target_os = "linux")]
 use procfs;
+#[cfg(target_os = "linux")]
 use procfs::ProcError;
 use serde::Serialize;
 use sysinfo::{Networks, System};
@@ -212,6 +214,7 @@ where
 #[derive(Error, Debug)]
 #[error(transparent)]
 pub enum O11yError {
+    #[cfg(target_os = "linux")]
     #[error("procfs")]
     ProcFs(#[from] ProcError),
     #[error("unsupported os {0}")]
@@ -398,25 +401,39 @@ pub struct HostInfo {
     pub hostname: Option<String>,
     pub ncpus: usize,
     pub maxcpus: usize,
-    pub boot_time: DateTime<Local>,
+    pub boot_time: DateTime<Utc>,
+    #[cfg(target_os = "linux")]
     pub boot_kernel_cmd: Option<Vec<String>>,
+    #[cfg(target_os = "linux")]
     pub ticks_per_sec: u64,
+    #[cfg(target_os = "linux")]
     pub current_process_arp_entries: Vec<procfs::net::ARPEntry>,
+    #[cfg(target_os = "linux")]
     pub current_process_routes: Vec<procfs::net::RouteEntry>,
+    #[cfg(target_os = "linux")]
     pub current_process_tcp: Vec<procfs::net::TcpNetEntry>,
+    #[cfg(target_os = "linux")]
     pub current_process_tcp6: Vec<procfs::net::TcpNetEntry>,
+    #[cfg(target_os = "linux")]
     pub current_process_udp: Vec<procfs::net::UdpNetEntry>,
+    #[cfg(target_os = "linux")]
     pub current_process_udp6: Vec<procfs::net::UdpNetEntry>,
+    #[cfg(target_os = "linux")]
     pub current_process_unix: Vec<procfs::net::UnixNetEntry>,
 }
 
-impl HostInfo {
-    pub fn new(sys: &System) -> Result<Self, O11yError> {
-        let os_type = match System::distribution_id().as_str() {
-            "ubuntu" | "linux" | "macos" | "nixos" => SupportedOSes::Linux,
-            unsupported => return Err(O11yError::UnsupportedOS(unsupported.to_string())),
-        };
+fn os_type() -> Result<SupportedOSes, O11yError> {
+    let os_type = match System::distribution_id().as_str() {
+        "ubuntu" | "linux" | "macos" | "nixos" => SupportedOSes::Linux,
+        unsupported => return Err(O11yError::UnsupportedOS(unsupported.to_string())),
+    };
+    Ok(os_type)
+}
 
+impl HostInfo {
+    #[cfg(target_os = "linux")]
+    pub fn new(sys: &System) -> Result<Self, O11yError> {
+        let os_type = os_type()?;
         let osinfo = os_info::get();
 
         let boot_time = procfs::boot_time()?;
@@ -453,6 +470,7 @@ impl HostInfo {
         })
     }
 
+    #[cfg(target_os = "linux")]
     pub fn update(&mut self, sys: &System) -> Result<(), O11yError> {
         self.ncpus = sys.physical_core_count().unwrap_or(0);
         self.maxcpus = sys.cpus().len();
@@ -464,6 +482,35 @@ impl HostInfo {
         self.current_process_udp = procfs::net::udp()?;
         self.current_process_udp6 = procfs::net::udp6()?;
         self.current_process_unix = procfs::net::unix()?;
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn new(sys: &System) -> Result<Self, O11yError> {
+        let os_type = os_type()?;
+        let osinfo = os_info::get();
+
+        let boot_time_epoch = sysinfo::System::boot_time();
+        let boot_time= DateTime::from_timestamp(boot_time_epoch as i64, 0).unwrap();
+
+        Ok(Self {
+            os_type,
+            os_name: System::distribution_id(),
+            os_version: System::os_version(),
+            kernel_version: System::kernel_version(),
+            architecture: osinfo.architecture().map(|v| v.to_string()),
+            hostname: System::host_name(),
+            ncpus: sys.physical_core_count().unwrap_or(0),
+            maxcpus: sys.cpus().len(),
+            boot_time,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn update(&mut self, sys: &System) -> Result<(), O11yError> {
+        self.ncpus = sys.physical_core_count().unwrap_or(0);
+        self.maxcpus = sys.cpus().len();
 
         Ok(())
     }
