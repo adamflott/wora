@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Utc};
 use derive_builder::Builder;
 use derive_getters::Getters;
 #[cfg(target_os = "linux")]
@@ -435,8 +435,7 @@ impl HostInfo {
     pub fn new(sys: &System) -> Result<Self, O11yError> {
         let os_type = os_type()?;
         let osinfo = os_info::get();
-
-        let boot_time = procfs::boot_time()?;
+        let boot_time = procfs::boot_time()?.to_utc();
         let boot_kernel_cmd = procfs::cmdline()?;
         let ticks_per_sec = procfs::ticks_per_second();
 
