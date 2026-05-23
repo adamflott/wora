@@ -1,6 +1,6 @@
 //! Write Once Run Anywhere (WORA)
 //!
-//! A framework for building applications (daemons, etc) that run in different environments (Linux, Kubernetes, etc).
+//! A framework for building applications (daemons, etc.) that run in different environments (Linux, Kubernetes, etc.).
 //!
 //! Just like Java's claim, it really doesn't run everywhere. no_std or embedded environments are not supported.
 
@@ -112,7 +112,7 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
             sender: tx,
             receiver: rx,
             leadership: Leadership::Unknown,
-            o11y: o11y,
+            o11y,
         })
     }
 
@@ -479,7 +479,7 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
 
             let _ = o11y_tx.send(o11y_new_ev_finish()).await;
 
-            return Err(MainEarlyReturn::UseExitCode(111)); // TODO fix print and return
+            Err(MainEarlyReturn::UseExitCode(111)) // TODO fix print and return
         }
     }
 }
