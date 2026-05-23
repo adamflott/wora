@@ -13,7 +13,7 @@ use serde::Serialize;
 use sysinfo::{Networks, System};
 use thiserror::Error;
 use tokio::sync::mpsc::Sender;
-use tracing::{Id, Level, error};
+use tracing::{Id, Level};
 use tracing_subscriber::Layer;
 
 #[derive(Debug)]

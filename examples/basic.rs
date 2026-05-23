@@ -74,7 +74,7 @@ async fn main() -> Result<(), MainEarlyReturn> {
                 O11yEventKind::Status(cap, sz) => {
                     println!("{}: status cap:{} max:{}", res.timestamp, cap, sz);
                 }
-                O11yEventKind::App(_O11y) => {}
+                O11yEventKind::App(_o11y) => {}
                 O11yEventKind::HostInfo(_hi) => {}
                 O11yEventKind::HostStats(_hs) => {}
                 O11yEventKind::Flush => {
