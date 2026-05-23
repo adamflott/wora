@@ -10,7 +10,7 @@ use procfs;
 #[cfg(target_os = "linux")]
 use procfs::ProcError;
 use serde::Serialize;
-use sysinfo::{Networks, System};
+use sysinfo::{Disks, Networks, System};
 use thiserror::Error;
 use tokio::sync::mpsc::Sender;
 use tracing::{Id, Level};
@@ -404,7 +404,19 @@ impl HostStats {
                 usage: cpu.cpu_usage(),
             })
         }
-        let fs = vec![];
+        let mut fs = vec![];
+        let disks = Disks::new_with_refreshed_list();
+        for disk in &disks {
+            fs.push(Disk {
+                name: disk.name().to_string_lossy().to_string(),
+                kind: format!("{:?}", disk.kind()),
+                file_system: disk.file_system().to_string_lossy().to_string(),
+                mount_point: disk.mount_point().to_path_buf(),
+                total_space: disk.total_space(),
+                available_space: disk.available_space(),
+                is_removable: disk.is_removable(),
+            });
+        }
 
         let mut net_io = HashMap::new();
         let networks = Networks::new_with_refreshed_list();
