@@ -544,7 +544,7 @@ impl HostInfo {
             kernel_version: System::kernel_version(),
             architecture: osinfo.architecture().map(|v| v.to_string()),
             hostname: System::host_name(),
-            ncpus: sys.physical_core_count().unwrap_or(0),
+            ncpus: sysinfo::System::physical_core_count().unwrap_or(0),
             maxcpus: sys.cpus().len(),
             boot_time,
             boot_kernel_cmd: Some(boot_kernel_cmd),
@@ -562,7 +562,7 @@ impl HostInfo {
     #[cfg(target_os = "linux")]
     /// Refresh Linux host information fields that may change at runtime.
     pub fn update(&mut self, sys: &System) -> Result<(), O11yError> {
-        self.ncpus = sys.physical_core_count().unwrap_or(0);
+        self.ncpus = sysinfo::System::physical_core_count().unwrap_or(0);
         self.maxcpus = sys.cpus().len();
         self.ticks_per_sec = procfs::ticks_per_second();
         self.current_process_arp_entries = procfs::net::arp()?;
