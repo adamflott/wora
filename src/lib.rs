@@ -342,8 +342,7 @@ async fn run_app_main_with_restart_policy<AppEv, AppMetric, A, E, F>(
     exec: E,
     fs: F,
     metrics_sender: Sender<O11yEvent<AppMetric>>,
-    restart_policy: WorkloadRestartPolicy,
-    restart_pause: std::time::Duration,
+    restart_options: RestartPolicyOptions,
 ) -> Result<(), MainEarlyReturn>
 where
     AppEv: Send + Sync + 'static,
@@ -362,21 +361,30 @@ where
         {
             MainRetryAction::UseExitCode(ec) => return Err(MainEarlyReturn::UseExitCode(ec)),
             MainRetryAction::Success => return Ok(()),
-            MainRetryAction::UseRestartPolicy => match restart_policy {
+            MainRetryAction::UseRestartPolicy => match restart_options.policy {
                 WorkloadRestartPolicy::ExitWithWorkloadReturn => return Err(MainEarlyReturn::UseExitCode(1)),
                 WorkloadRestartPolicy::RetryInstantly => {
+                    if !restart_options.can_retry(retry_count) {
+                        return Err(MainEarlyReturn::UseExitCode(1));
+                    }
                     retry_count = retry_count.saturating_add(1);
                     info!("app:run:restart policy:retry_instantly retry:{}", retry_count);
                 }
                 WorkloadRestartPolicy::RetryPause => {
+                    if !restart_options.can_retry(retry_count) {
+                        return Err(MainEarlyReturn::UseExitCode(1));
+                    }
                     retry_count = retry_count.saturating_add(1);
-                    info!("app:run:restart policy:retry_pause retry:{}", retry_count);
-                    tokio::time::sleep(restart_pause).await;
+                    let pause = restart_options.pause_for_retry(retry_count);
+                    info!("app:run:restart policy:retry_pause retry:{} pause:{:?}", retry_count, pause);
+                    tokio::time::sleep(pause).await;
                 }
                 WorkloadRestartPolicy::ExponentialBackoff => {
+                    if !restart_options.can_retry(retry_count) {
+                        return Err(MainEarlyReturn::UseExitCode(1));
+                    }
                     retry_count = retry_count.saturating_add(1);
-                    let multiplier = 2u32.saturating_pow(retry_count.min(10));
-                    let pause = restart_pause.saturating_mul(multiplier);
+                    let pause = restart_options.pause_for_retry(retry_count);
                     info!("app:run:restart policy:exponential_backoff retry:{} pause:{:?}", retry_count, pause);
                     tokio::time::sleep(pause).await;
                 }
@@ -396,27 +404,42 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
     o11y: O11yProcessorOptions<AppMetric>,
     maybe_boot_dir: Option<PathBuf>,
 ) -> Result<(), MainEarlyReturn> {
-    exec_async_runner_with_restart_policy(
-        exec,
-        app,
-        fs,
-        o11y,
-        maybe_boot_dir,
-        WorkloadRestartPolicy::default(),
-        std::time::Duration::from_secs(1),
-    )
-    .await
+    exec_async_runner_with_restart_options(exec, app, fs, o11y, maybe_boot_dir, RestartPolicyOptions::default()).await
 }
 
 /// Run apps via an `async` based executor with an explicit restart policy.
 pub async fn exec_async_runner_with_restart_policy<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static>(
-    mut exec: impl AsyncExecutor<AppEv, AppMetric>,
-    mut app: impl App<AppEv, AppMetric> + Send + 'static,
+    exec: impl AsyncExecutor<AppEv, AppMetric>,
+    app: impl App<AppEv, AppMetric> + Send + 'static,
     fs: impl WFS + 'static,
     o11y: O11yProcessorOptions<AppMetric>,
     maybe_boot_dir: Option<PathBuf>,
     restart_policy: WorkloadRestartPolicy,
     restart_pause: std::time::Duration,
+) -> Result<(), MainEarlyReturn> {
+    exec_async_runner_with_restart_options(
+        exec,
+        app,
+        fs,
+        o11y,
+        maybe_boot_dir,
+        RestartPolicyOptions {
+            policy: restart_policy,
+            pause: restart_pause,
+            ..RestartPolicyOptions::default()
+        },
+    )
+    .await
+}
+
+/// Run apps via an `async` based executor with explicit restart options.
+pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static>(
+    mut exec: impl AsyncExecutor<AppEv, AppMetric>,
+    mut app: impl App<AppEv, AppMetric> + Send + 'static,
+    fs: impl WFS + 'static,
+    o11y: O11yProcessorOptions<AppMetric>,
+    maybe_boot_dir: Option<PathBuf>,
+    restart_options: RestartPolicyOptions,
 ) -> Result<(), MainEarlyReturn> {
     let mut lock_path = PathBuf::new();
     lock_path.push(&exec.dirs().runtime_root_dir);
@@ -558,16 +581,8 @@ pub async fn exec_async_runner_with_restart_policy<AppEv: Send + Sync + 'static,
                     info!(process_id = wora.pid.to_string(), app_name = app.name());
 
                     if exec.is_ready(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:is_ready")).await {
-                        rc = run_app_main_with_restart_policy(
-                            &mut app,
-                            &mut wora,
-                            exec.clone(),
-                            fs.clone(),
-                            metrics_sender.clone(),
-                            restart_policy.clone(),
-                            restart_pause,
-                        )
-                        .await;
+                        rc = run_app_main_with_restart_policy(&mut app, &mut wora, exec.clone(), fs.clone(), metrics_sender.clone(), restart_options.clone())
+                            .await;
 
                         if matches!(rc, Err(MainEarlyReturn::UseExitCode(_))) {
                             remove_lock_file(&lock_path).await;

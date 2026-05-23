@@ -23,6 +23,18 @@ fn test_dirs(root: PathBuf) -> Dirs {
     }
 }
 
+fn test_o11y() -> Result<O11yProcessorOptions<()>, Box<dyn std::error::Error>> {
+    let (tx, _rx) = tokio::sync::mpsc::channel::<O11yEvent<()>>(16);
+    let interval = Duration::from_secs(60);
+    O11yProcessorOptionsBuilder::default()
+        .sender(tx)
+        .flush_interval(interval)
+        .status_interval(interval)
+        .host_stats_interval(interval)
+        .build()
+        .map_err(|err| std::io::Error::other(err.to_string()).into())
+}
+
 #[tokio::test]
 async fn physical_vfs_creates_nested_directories() -> Result<(), Box<dyn std::error::Error>> {
     let root = unique_test_dir("vfs");
@@ -90,6 +102,52 @@ impl Config for TestConfig {
 struct ConfiguredRestartApp {
     configured: bool,
     calls: Arc<Mutex<u8>>,
+}
+
+struct AlwaysRestartApp {
+    name: &'static str,
+    calls: Arc<Mutex<u8>>,
+}
+
+#[async_trait]
+impl App<(), ()> for AlwaysRestartApp {
+    type AppConfig = NoConfig;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    async fn setup(
+        &mut self,
+        _wora: &Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    async fn main(
+        &mut self,
+        _wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
+        let Ok(mut calls) = self.calls.lock() else {
+            return MainRetryAction::UseExitCode(3);
+        };
+        *calls += 1;
+        MainRetryAction::UseRestartPolicy
+    }
+
+    async fn is_healthy(&mut self) -> HealthState {
+        HealthState::Ok
+    }
+
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
 }
 
 #[async_trait]
@@ -161,15 +219,7 @@ async fn runner_loads_initial_config_and_applies_restart_policy() -> Result<(), 
     };
     let exec = TestExec { dirs };
     let fs = PhysicalVFS::new();
-    let (tx, _rx) = tokio::sync::mpsc::channel::<O11yEvent<()>>(16);
-    let interval = Duration::from_secs(60);
-    let o11y = O11yProcessorOptionsBuilder::default()
-        .sender(tx)
-        .flush_interval(interval)
-        .status_interval(interval)
-        .host_stats_interval(interval)
-        .build()
-        .map_err(|err| std::io::Error::other(err.to_string()))?;
+    let o11y = test_o11y()?;
 
     exec_async_runner_with_restart_policy(
         exec,
@@ -185,5 +235,109 @@ async fn runner_loads_initial_config_and_applies_restart_policy() -> Result<(), 
 
     let calls = calls.lock().map_err(|err| std::io::Error::other(err.to_string()))?;
     assert_eq!(*calls, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn retry_instantly_stops_at_max_retries() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("retry-instantly");
+    let dirs = test_dirs(root.clone());
+    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+
+    let calls = Arc::new(Mutex::new(0));
+    let app = AlwaysRestartApp {
+        name: "retry_instantly_limit",
+        calls: calls.clone(),
+    };
+    let rc = exec_async_runner_with_restart_options(
+        TestExec { dirs },
+        app,
+        PhysicalVFS::new(),
+        test_o11y()?,
+        Some(root.join("boot")),
+        RestartPolicyOptions {
+            policy: WorkloadRestartPolicy::RetryInstantly,
+            max_retries: Some(2),
+            ..RestartPolicyOptions::default()
+        },
+    )
+    .await;
+
+    assert!(matches!(rc, Err(MainEarlyReturn::UseExitCode(1))));
+    let calls = calls.lock().map_err(|err| std::io::Error::other(err.to_string()))?;
+    assert_eq!(*calls, 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn retry_pause_stops_at_max_retries() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("retry-pause");
+    let dirs = test_dirs(root.clone());
+    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+
+    let calls = Arc::new(Mutex::new(0));
+    let app = AlwaysRestartApp {
+        name: "retry_pause_limit",
+        calls: calls.clone(),
+    };
+    let rc = exec_async_runner_with_restart_options(
+        TestExec { dirs },
+        app,
+        PhysicalVFS::new(),
+        test_o11y()?,
+        Some(root.join("boot")),
+        RestartPolicyOptions {
+            policy: WorkloadRestartPolicy::RetryPause,
+            pause: Duration::ZERO,
+            max_retries: Some(1),
+            ..RestartPolicyOptions::default()
+        },
+    )
+    .await;
+
+    assert!(matches!(rc, Err(MainEarlyReturn::UseExitCode(1))));
+    let calls = calls.lock().map_err(|err| std::io::Error::other(err.to_string()))?;
+    assert_eq!(*calls, 2);
+    Ok(())
+}
+
+#[test]
+fn exponential_backoff_respects_max_backoff() {
+    let options = RestartPolicyOptions {
+        policy: WorkloadRestartPolicy::ExponentialBackoff,
+        pause: Duration::from_secs(5),
+        max_backoff: Some(Duration::from_secs(12)),
+        ..RestartPolicyOptions::default()
+    };
+
+    assert_eq!(options.pause_for_retry(1), Duration::from_secs(5));
+    assert_eq!(options.pause_for_retry(2), Duration::from_secs(10));
+    assert_eq!(options.pause_for_retry(3), Duration::from_secs(12));
+}
+
+#[tokio::test]
+async fn exit_with_workload_return_exits_immediately() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("exit-with-workload-return");
+    let dirs = test_dirs(root.clone());
+    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+
+    let calls = Arc::new(Mutex::new(0));
+    let app = AlwaysRestartApp {
+        name: "exit_with_workload_return",
+        calls: calls.clone(),
+    };
+    let rc = exec_async_runner_with_restart_options(
+        TestExec { dirs },
+        app,
+        PhysicalVFS::new(),
+        test_o11y()?,
+        Some(root.join("boot")),
+        RestartPolicyOptions::new(WorkloadRestartPolicy::ExitWithWorkloadReturn),
+    )
+    .await;
+
+    assert!(matches!(rc, Err(MainEarlyReturn::UseExitCode(1))));
+    let calls = calls.lock().map_err(|err| std::io::Error::other(err.to_string()))?;
+    assert_eq!(*calls, 1);
     Ok(())
 }
