@@ -215,7 +215,7 @@ where
         // TODO println!("span id:{:?} {:?}", span, _values);
     }
     fn on_enter(&self, id: &tracing::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
-        match ctx.span(&id) {
+        match ctx.span(id) {
             None => {}
             Some(_span) => {
                 let _ = self.tx.try_send(o11y_new_ev_span(id.clone(), O11ySpanEventKind::Enter));
@@ -223,7 +223,7 @@ where
         }
     }
     fn on_exit(&self, id: &tracing::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
-        match ctx.span(&id) {
+        match ctx.span(id) {
             None => {}
             Some(_span) => {
                 let _ = self.tx.try_send(o11y_new_ev_span(id.clone(), O11ySpanEventKind::Exit));
@@ -239,14 +239,12 @@ where
         }
     }
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-        let lvl = event.metadata().level().clone();
+        let lvl = *event.metadata().level();
 
         if self.level >= lvl {
-            let _ = self.tx.try_send(o11y_new_ev_log(
-                lvl.clone(),
-                event.metadata().target().to_string(),
-                event.metadata().name().to_string(),
-            ));
+            let _ = self
+                .tx
+                .try_send(o11y_new_ev_log(lvl, event.metadata().target().to_string(), event.metadata().name().to_string()));
 
             let mut visitor = MEVisitor(lvl, self.tx.clone());
             event.record(&mut visitor);

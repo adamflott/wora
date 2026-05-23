@@ -339,9 +339,9 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
             info!("exec:run:lock_file created:{:?}", &lock_path);
 
             let metrics_sender = o11y.sender().clone();
-            let status_interval = o11y.status_interval().clone();
-            let flush_interval = o11y.flush_interval().clone();
-            let hs_interval = o11y.host_stats_interval().clone();
+            let status_interval = *o11y.status_interval();
+            let flush_interval = *o11y.flush_interval();
+            let hs_interval = *o11y.host_stats_interval();
 
             let mut wora = Wora::new(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE, o11y)?;
 
