@@ -4,12 +4,11 @@ Write Once Run Anywhere (WORA): A Rust framework for building applications (daem
 
 ## Status
 
-This crate is an early-stage async framework. The main public API is usable, but several pieces are still skeletal:
+This crate is an early-stage async framework. The main public API is usable, with Unix-like platforms as the primary target.
 
-- restart policies are modeled but not fully executed
-- host stats refresh is stubbed
-- integration tests are not present
-- Unix-like platforms are the primary target
+- restart policies can be applied by `exec_async_runner_with_restart_policy`
+- initial metadata config can be loaded through `App::configure`
+- integration tests cover basic runtime wiring
 
 ## Feature Tour
 
@@ -65,6 +64,10 @@ Run checks:
 cargo fmt --check
 cargo test
 ```
+
+## AI Disclosure
+
+OpenAPI Codex is used to write documentation/tests and find issues. Everything is reviewed by me and I vouch for these AI-generated changes.
 
 ## Versioning
 
