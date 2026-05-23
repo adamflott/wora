@@ -3,7 +3,6 @@ use clap::Parser;
 use log::{debug, error, info, trace, warn};
 use tokio::sync::mpsc::Sender;
 use tracing::Level;
-use tracing_subscriber;
 
 use wora::prelude::*;
 
@@ -107,16 +106,16 @@ async fn main() -> Result<(), MainEarlyReturn> {
 
     let args = BasicAppOpts::parse();
 
-    let app = BasicApp { args: args, counter: 1 };
+    let app = BasicApp { args, counter: 1 };
 
     let fs = PhysicalVFS::new();
     let interval = std::time::Duration::from_secs(5);
 
     let o11y = O11yProcessorOptionsBuilder::default()
         .sender(tx)
-        .flush_interval(interval.clone())
-        .status_interval(interval.clone())
-        .host_stats_interval(interval.clone())
+        .flush_interval(interval)
+        .status_interval(interval)
+        .host_stats_interval(interval)
         .build()
         .map_err(|err| MainEarlyReturn::WoraSetup(WoraSetupError::Str(err.to_string())))?;
     match UnixLikeUser::new(app_name, fs.clone()).await {

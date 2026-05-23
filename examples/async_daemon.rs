@@ -29,12 +29,14 @@ pub struct DaemonArgs {
 }
 
 #[derive(Default, Deserialize)]
+#[allow(dead_code)]
 struct Obj {
     t_or_f: bool,
     list: Vec<String>,
 }
 
 #[derive(Default, Deserialize)]
+#[allow(dead_code)]
 pub struct DaemonConfig {
     str: String,
     num: Option<u16>,
@@ -47,6 +49,7 @@ struct DaemonState {}
 type DaemonSharedState = Arc<RwLock<DaemonState>>;
 struct DaemonApp {
     args: DaemonArgs,
+    #[allow(dead_code)]
     state: DaemonSharedState,
     config: DaemonConfig,
 }
@@ -113,8 +116,8 @@ impl App<(), ()> for DaemonApp {
                 Event::SystemResource(_) => {}
                 Event::ConfigChange(event) => {
                     for pathbuf in event.paths {
-                        match fs.read_to_string(pathbuf).await {
-                            Ok(data) => match DaemonConfig::parse_main_config_file(data) {
+                        if let Ok(data) = fs.read_to_string(pathbuf).await {
+                            match DaemonConfig::parse_main_config_file(data) {
                                 Ok(cfg) => {
                                     info!("config changed");
                                     self.config = cfg;
@@ -122,8 +125,7 @@ impl App<(), ()> for DaemonApp {
                                 Err(err) => {
                                     error!("failed to parse config{:?}", err);
                                 }
-                            },
-                            Err(_) => {}
+                            }
                         }
                     }
                 }
@@ -148,9 +150,7 @@ impl App<(), ()> for DaemonApp {
         HealthState::Ok
     }
 
-    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS, _o11y: Sender<O11yEvent<()>>) {
-        ()
-    }
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS, _o11y: Sender<O11yEvent<()>>) {}
 }
 
 #[tokio::main]
@@ -206,9 +206,9 @@ async fn main() -> Result<(), MainEarlyReturn> {
     let interval = std::time::Duration::from_secs(5);
     let o11y = O11yProcessorOptionsBuilder::default()
         .sender(tx)
-        .flush_interval(interval.clone())
-        .status_interval(interval.clone())
-        .host_stats_interval(interval.clone())
+        .flush_interval(interval)
+        .status_interval(interval)
+        .host_stats_interval(interval)
         .build()
         .map_err(|err| MainEarlyReturn::WoraSetup(WoraSetupError::Str(err.to_string())))?;
 
