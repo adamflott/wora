@@ -436,7 +436,8 @@ pub struct HostInfo {
 
 fn os_type() -> Result<SupportedOSes, O11yError> {
     let os_type = match System::distribution_id().as_str() {
-        "ubuntu" | "linux" | "macos" | "nixos" => SupportedOSes::Linux,
+        "ubuntu" | "linux" | "nixos" => SupportedOSes::Linux,
+        "macos" => SupportedOSes::OSX,
         unsupported => return Err(O11yError::UnsupportedOS(unsupported.to_string())),
     };
     Ok(os_type)
