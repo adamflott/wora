@@ -67,7 +67,7 @@ cargo test
 
 ## AI Disclosure
 
-OpenAPI Codex is used to write documentation/tests and find issues. Everything is reviewed by me and I vouch for these AI-generated changes.
+OpenAI Codex is used to write documentation/tests and find issues. Everything is reviewed by me and I vouch for these AI-generated changes.
 
 ## Versioning
 
