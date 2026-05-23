@@ -295,7 +295,9 @@ fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Resul
     let watcher = RecommendedWatcher::new(
         move |res| {
             futures::executor::block_on(async {
-                tx.send(res).await.unwrap();
+                if tx.send(res).await.is_err() {
+                    error!("notify:watch:send failed");
+                }
             })
         },
         notify::Config::default(),

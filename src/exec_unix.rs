@@ -82,7 +82,7 @@ pub struct UnixLikeUser {
 impl UnixLikeUser {
     /// Create a per-user Unix executor for `app_name`.
     pub async fn new(app_name: &str, _fs: impl WFS) -> Result<Self, VfsError> {
-        let proj_dirs = ProjectDirs::from("com", "wora", app_name).unwrap();
+        let proj_dirs = ProjectDirs::from("com", "wora", app_name).ok_or_else(|| VfsError::ProjectDirsUnavailable(app_name.to_string()))?;
 
         let dirs = Dirs {
             root_dir: PathBuf::from("/"),
@@ -126,10 +126,10 @@ impl<AppEv: Send + Sync, AppMetric: Send + Sync> AsyncExecutor<AppEv, AppMetric>
             &dirs.cache_root_dir,
         ] {
             trace!("exec:setup:io:create dir:{:?}: trying", dir);
-            let _ = fs.create_dir(dir.to_str().unwrap()).await.map_err(|err| {
+            fs.create_dir(dir).await.map_err(|err| {
                 error!("exec:setup:io:create dir:{:?}: error:{}", dir, err);
-                // directory may already exist, in which case this is not a terminating error
-            });
+                SetupFailure::Vfs(err)
+            })?;
             trace!("exec:setup:io:create dir:{:?}: success", dir);
         }
 

@@ -45,6 +45,8 @@ impl From<std::env::VarError> for NewWorkloadError {
 pub enum VfsError {
     #[error("io")]
     Io(#[from] std::io::Error),
+    #[error("project directories unavailable for app {0}")]
+    ProjectDirsUnavailable(String),
 }
 
 #[derive(Debug, Error)]
@@ -66,6 +68,10 @@ pub enum SetupFailure {
     Capability(#[from] CapsError),
     #[error("JSON parsing error")]
     JSON(#[from] serde_json::Error),
+    #[error("setup: vfs")]
+    Vfs(#[from] VfsError),
+    #[error("setup: path is not valid UTF-8: {0:?}")]
+    NonUtf8Path(std::path::PathBuf),
 }
 
 #[derive(Debug, Error)]

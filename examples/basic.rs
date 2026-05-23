@@ -118,7 +118,7 @@ async fn main() -> Result<(), MainEarlyReturn> {
         .status_interval(interval.clone())
         .host_stats_interval(interval.clone())
         .build()
-        .unwrap();
+        .map_err(|err| MainEarlyReturn::WoraSetup(WoraSetupError::Str(err.to_string())))?;
     match UnixLikeUser::new(app_name, fs.clone()).await {
         Ok(exec) => exec_async_runner(exec, app, fs.clone(), o11y, None).await?,
         Err(exec_err) => {

@@ -261,6 +261,8 @@ pub enum O11yError {
     #[cfg(target_os = "linux")]
     #[error("procfs")]
     ProcFs(#[from] ProcError),
+    #[error("invalid boot time {0}")]
+    InvalidBootTime(u64),
     #[error("unsupported os {0}")]
     UnsupportedOS(String),
 }
@@ -562,7 +564,7 @@ impl HostInfo {
         let osinfo = os_info::get();
 
         let boot_time_epoch = sysinfo::System::boot_time();
-        let boot_time = DateTime::from_timestamp(boot_time_epoch as i64, 0).unwrap();
+        let boot_time = DateTime::from_timestamp(boot_time_epoch as i64, 0).ok_or(O11yError::InvalidBootTime(boot_time_epoch))?;
 
         Ok(Self {
             os_type,

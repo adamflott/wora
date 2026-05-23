@@ -210,7 +210,7 @@ async fn main() -> Result<(), MainEarlyReturn> {
         .status_interval(interval.clone())
         .host_stats_interval(interval.clone())
         .build()
-        .unwrap();
+        .map_err(|err| MainEarlyReturn::WoraSetup(WoraSetupError::Str(err.to_string())))?;
 
     match &args.run_mode {
         RunMode::Sys => {
