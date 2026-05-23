@@ -512,7 +512,7 @@ impl HostInfo {
             kernel_version: System::kernel_version(),
             architecture: osinfo.architecture().map(|v| v.to_string()),
             hostname: System::host_name(),
-            ncpus: sys.physical_core_count().unwrap_or(0),
+            ncpus: System::physical_core_count().unwrap_or(0),
             maxcpus: sys.cpus().len(),
             boot_time,
         })
@@ -520,7 +520,7 @@ impl HostInfo {
 
     #[cfg(target_os = "macos")]
     pub fn update(&mut self, sys: &System) -> Result<(), O11yError> {
-        self.ncpus = sys.physical_core_count().unwrap_or(0);
+        self.ncpus = System::physical_core_count().unwrap_or(0);
         self.maxcpus = sys.cpus().len();
 
         Ok(())

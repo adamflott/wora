@@ -20,7 +20,7 @@ fn main() {
             cpu.cpu_usage()
         );
     }
-    println!("physical core count: {:?}", sys.physical_core_count());
+    println!("physical core count: {:?}", sysinfo::System::physical_core_count());
     println!("architecture: {:?}", osinfo.architecture());
     println!("os type: {:?}", osinfo.os_type());
     println!("os version: {:?}", osinfo.version());
