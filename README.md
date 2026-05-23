@@ -1,16 +1,41 @@
 # wora
 
-Write Once Run Anywhere (WORA): A Rust framework for building applications (daemons, etc) that run in different environments (Linux, Kubernetes, etc). Just like Java's claim, it really doesn't run everywhere. no_std or embedded environments are not supported.
+Write Once Run Anywhere (WORA): A Rust framework for building applications (daemons, etc.) that run in different environments (Linux, Kubernetes, etc.). Just like Java's claim, it really doesn't run everywhere. no_std or embedded environments are not supported.
 
-Feature Tour:
+## Status
+
+This crate is an early-stage async framework. The main public API is usable, but several pieces are still skeletal:
+
+- restart policies are modeled but not fully executed
+- host stats refresh is stubbed
+- integration tests are not present
+- Unix-like platforms are the primary target
+
+## Feature Tour
 
 - abstracts over common boilerplate with an API
 - execute the same code in different executors (with or without recompiling)
+- forwards Unix signals into the application event channel
+- watches metadata/config directories and emits configuration-change events
+- exposes host information and basic observability events
 
-Supports:
+## Supported Environments
 
-- async based apps
+- async-based apps
 - Unix-like environments
+  - Linux-specific host details through `procfs`
+  - macOS host details through `sysinfo`
+
+## Architecture
+
+WORA has four main pieces:
+
+- `App`: the workload lifecycle trait. Applications implement `setup`, `main`, `is_healthy`, and `end`.
+- `AsyncExecutor`: the environment adapter. Executors provide directories, setup, readiness, and teardown behavior.
+- `Wora`: the runtime context passed to apps. It carries directories, host data, event channels, leadership state, and observability options.
+- `WFS`: the virtual filesystem abstraction. `PhysicalVFS` is the host filesystem implementation.
+
+`exec_async_runner` wires those pieces together by creating a lock file, initializing observability, building the `Wora` context, running executor and app setup, watching the metadata directory, invoking `App::main`, and then running teardown.
 
 ## Getting Started
 
@@ -22,7 +47,24 @@ These instructions will get you a copy of the project up and running on your loc
 
 ## Usage
 
-See `examples/basic.rs`
+Run the basic example:
+
+```sh
+cargo run --example basic
+```
+
+Run the daemon-style event loop example:
+
+```sh
+cargo run --example async_daemon -- --run-mode user
+```
+
+Run checks:
+
+```sh
+cargo fmt --check
+cargo test
+```
 
 ## Versioning
 
