@@ -39,6 +39,7 @@ impl App<(), ()> for BasicApp {
         _exec: impl AsyncExecutor<(), ()>,
         _fs: impl WFS,
         _o11y: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
     ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
         debug!("command args: {:?}", self.args);
         Ok(())
@@ -119,7 +120,7 @@ async fn main() -> Result<(), MainEarlyReturn> {
         .build()
         .unwrap();
     match UnixLikeUser::new(app_name, fs.clone()).await {
-        Ok(exec) => exec_async_runner(exec, app, fs.clone(), o11y).await?,
+        Ok(exec) => exec_async_runner(exec, app, fs.clone(), o11y, None).await?,
         Err(exec_err) => {
             error!("exec error:{}", exec_err);
             return Err(MainEarlyReturn::Vfs(exec_err));

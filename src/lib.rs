@@ -220,6 +220,7 @@ pub trait App<AppEv, AppMetric> {
         exec: impl AsyncExecutor<AppEv, AppMetric>,
         fs: impl WFS + 'static,
         metrics: Sender<O11yEvent<AppMetric>>,
+        is_first_boot: bool,
     ) -> Result<Self::Setup, Box<dyn std::error::Error>>;
 
     async fn main(
@@ -265,6 +266,7 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
     mut app: impl App<AppEv, AppMetric> + 'static,
     fs: impl WFS + 'static,
     o11y: O11yProcessorOptions<AppMetric>,
+    maybe_boot_dir: Option<PathBuf>,
 ) -> Result<(), MainEarlyReturn> {
     let mut lock_path = PathBuf::new();
     lock_path.push(&exec.dirs().runtime_root_dir);
@@ -317,12 +319,37 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
             })
             .await;
 
+            let mut boot_dir = match maybe_boot_dir {
+                None => {
+                    #[cfg(target_os = "linux")]
+                    let fp = PathBuf::from("//var/run");
+                    #[cfg(target_os = "macos")]
+                    let fp = PathBuf::from("/tmp/");
+                    fp
+                }
+                Some(fp) => {
+                    fp
+                }
+            };
+            boot_dir.push(format!(".{}_booted", app.name()));
+
+            let mut is_first_boot = false;
+            match fs.create_dir(&boot_dir).await {
+                Ok(_) => {
+                    is_first_boot = true;
+                    debug!("dir:first_boot:created dir:{} is_first_boot:{}", boot_dir.display(), is_first_boot);
+                }
+                Err(_) => {
+                    debug!("dir:first_boot dir:{} is_first_boot:{}", boot_dir.display(), is_first_boot);
+                }
+            }
+
             exec.setup(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:setup")).await?;
 
             let mut rc = Err(MainEarlyReturn::UseExitCode(1));
 
             match app
-                .setup(&wora, exec.clone(), fs.clone(), metrics_sender.clone())
+                .setup(&wora, exec.clone(), fs.clone(), metrics_sender.clone(), is_first_boot)
                 .instrument(tracing::info_span!("app:run:setup"))
                 .await
             {

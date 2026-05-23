@@ -81,6 +81,7 @@ impl App<(), ()> for DaemonApp {
         exec: impl AsyncExecutor<(), ()>,
         _fs: impl WFS,
         _o11y: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
     ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
         debug!("{:?}", wora.stats_from_start());
 
@@ -203,7 +204,7 @@ async fn main() -> Result<(), MainEarlyReturn> {
     let fs = PhysicalVFS::new();
 
     let interval = std::time::Duration::from_secs(5);
-    let O11y = O11yProcessorOptionsBuilder::default()
+    let o11y = O11yProcessorOptionsBuilder::default()
         .sender(tx)
         .flush_interval(interval.clone())
         .status_interval(interval.clone())
@@ -214,10 +215,10 @@ async fn main() -> Result<(), MainEarlyReturn> {
     match &args.run_mode {
         RunMode::Sys => {
             let exec = UnixLikeSystem::new(app.name()).await;
-            exec_async_runner(exec, app, fs, O11y).await?
+            exec_async_runner(exec, app, fs, o11y, None).await?
         }
         RunMode::User => match UnixLikeUser::new(app.name(), fs.clone()).await {
-            Ok(exec) => exec_async_runner(exec, app, fs.clone(), O11y).await?,
+            Ok(exec) => exec_async_runner(exec, app, fs.clone(), o11y, None).await?,
             Err(exec_err) => {
                 error!("exec error:{}", exec_err);
                 return Err(MainEarlyReturn::Vfs(exec_err));
