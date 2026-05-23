@@ -10,12 +10,15 @@ use crate::dirs::Dirs;
 use crate::errors::{SetupFailure, VfsError};
 use crate::{AsyncExecutor, WFS};
 
+/// Shared Unix-like directory layout.
 #[derive(Clone, Debug)]
 pub struct UnixLike {
+    /// Directories used by the executor.
     pub dirs: Dirs,
 }
 
 impl UnixLike {
+    /// Build a system-style Unix layout.
     pub async fn new(_app_name: &str) -> Self {
         let dirs = Dirs {
             root_dir: PathBuf::from("/"),
@@ -30,12 +33,17 @@ impl UnixLike {
     }
 }
 
+/// Executor for system-level Unix deployments.
+///
+/// This executor uses paths such as `/var/log`, `/etc`, and `/run` and expects
+/// the process to have permission to use them.
 #[derive(Clone, Debug)]
 pub struct UnixLikeSystem {
     unix: UnixLike,
 }
 
 impl UnixLikeSystem {
+    /// Create a system-level Unix executor.
     pub async fn new(app_name: &str) -> Self {
         let unix = UnixLike::new(app_name).await;
         UnixLikeSystem { unix }
@@ -62,12 +70,17 @@ impl<AppEv, AppMetric> AsyncExecutor<AppEv, AppMetric> for UnixLikeSystem {
     async fn end(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) {}
 }
 
+/// Executor for per-user Unix deployments.
+///
+/// Directories are derived from `directories::ProjectDirs`, making this the
+/// safer default for examples and local development.
 #[derive(Clone, Debug)]
 pub struct UnixLikeUser {
     unix: UnixLike,
 }
 
 impl UnixLikeUser {
+    /// Create a per-user Unix executor for `app_name`.
     pub async fn new(app_name: &str, _fs: impl WFS) -> Result<Self, VfsError> {
         let proj_dirs = ProjectDirs::from("com", "wora", app_name).unwrap();
 
@@ -130,12 +143,17 @@ impl<AppEv: Send + Sync, AppMetric: Send + Sync> AsyncExecutor<AppEv, AppMetric>
     async fn end(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) {}
 }
 
+/// Executor that maps every directory to `/tmp`.
+///
+/// Useful for smoke tests or constrained environments where the normal system
+/// and user directory layouts are not available.
 #[derive(Clone, Debug)]
 pub struct UnixLikeBare {
     unix: UnixLike,
 }
 
 impl UnixLikeBare {
+    /// Create a bare Unix executor.
     pub async fn new(app_name: &str) -> Self {
         let tmp = PathBuf::from("/tmp");
         let dirs = Dirs {

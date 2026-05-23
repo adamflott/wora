@@ -16,12 +16,16 @@ use tokio::sync::mpsc::Sender;
 use tracing::{Id, Level};
 use tracing_subscriber::Layer;
 
+/// Timestamped observability event emitted by WORA or an application.
 #[derive(Debug)]
 pub struct O11yEvent<T> {
+    /// Event creation time.
     pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Event payload.
     pub kind: O11yEventKind<T>,
 }
 
+/// Build an observability initialization event.
 pub fn o11y_new_ev_init<T>(log_dir: PathBuf) -> O11yEvent<T> {
     O11yEvent {
         timestamp: chrono::Utc::now(),
@@ -29,6 +33,7 @@ pub fn o11y_new_ev_init<T>(log_dir: PathBuf) -> O11yEvent<T> {
     }
 }
 
+/// Build an observability finish event.
 pub fn o11y_new_ev_finish<T>() -> O11yEvent<T> {
     O11yEvent {
         timestamp: chrono::Utc::now(),
@@ -36,6 +41,7 @@ pub fn o11y_new_ev_finish<T>() -> O11yEvent<T> {
     }
 }
 
+/// Build a request to flush observability state.
 pub fn o11y_new_ev_flush<T>() -> O11yEvent<T> {
     O11yEvent {
         timestamp: chrono::Utc::now(),
@@ -43,6 +49,7 @@ pub fn o11y_new_ev_flush<T>() -> O11yEvent<T> {
     }
 }
 
+/// Build a request to clear observability state.
 pub fn o11y_new_ev_clear<T>() -> O11yEvent<T> {
     O11yEvent {
         timestamp: chrono::Utc::now(),
@@ -50,6 +57,7 @@ pub fn o11y_new_ev_clear<T>() -> O11yEvent<T> {
     }
 }
 
+/// Build a request to reconnect observability outputs.
 pub fn o11y_new_ev_reconnect<T>() -> O11yEvent<T> {
     O11yEvent {
         timestamp: chrono::Utc::now(),
@@ -57,6 +65,7 @@ pub fn o11y_new_ev_reconnect<T>() -> O11yEvent<T> {
     }
 }
 
+/// Build a queue status event.
 pub fn o11y_new_ev_status<T>(cap: usize, max_cap: usize) -> O11yEvent<T> {
     O11yEvent {
         timestamp: chrono::Utc::now(),
@@ -64,12 +73,14 @@ pub fn o11y_new_ev_status<T>(cap: usize, max_cap: usize) -> O11yEvent<T> {
     }
 }
 
+/// Build a host information event.
 pub fn o11y_new_ev_hostinfo<T>(hi: &HostInfo) -> O11yEvent<T> {
     O11yEvent {
         timestamp: chrono::Utc::now(),
         kind: O11yEventKind::HostInfo(hi.clone()),
     }
 }
+/// Build a host statistics event.
 pub fn o11y_new_ev_hoststats<T>(hs: &HostStats) -> O11yEvent<T> {
     O11yEvent {
         timestamp: chrono::Utc::now(),
@@ -77,6 +88,7 @@ pub fn o11y_new_ev_hoststats<T>(hs: &HostStats) -> O11yEvent<T> {
     }
 }
 
+/// Build a tracing span lifecycle event.
 pub fn o11y_new_ev_span<T>(id: tracing::Id, kind: O11ySpanEventKind) -> O11yEvent<T> {
     O11yEvent {
         timestamp: chrono::Utc::now(),
@@ -84,6 +96,7 @@ pub fn o11y_new_ev_span<T>(id: tracing::Id, kind: O11ySpanEventKind) -> O11yEven
     }
 }
 
+/// Build a tracing log event.
 pub fn o11y_new_ev_log<T>(lvl: Level, target: String, name: String) -> O11yEvent<T> {
     O11yEvent {
         timestamp: chrono::Utc::now(),
@@ -91,6 +104,7 @@ pub fn o11y_new_ev_log<T>(lvl: Level, target: String, name: String) -> O11yEvent
     }
 }
 
+/// Build an application-defined observability event.
 pub fn o11y_new_ev_app<T>(m: T) -> O11yEvent<T> {
     O11yEvent {
         timestamp: chrono::Utc::now(),
@@ -98,32 +112,50 @@ pub fn o11y_new_ev_app<T>(m: T) -> O11yEvent<T> {
     }
 }
 
+/// Tracing span lifecycle action.
 #[derive(Debug)]
 pub enum O11ySpanEventKind {
+    /// Span was entered.
     Enter,
+    /// Span was exited.
     Exit,
+    /// Span was closed.
     Close,
 }
+/// Observability event payload.
 #[derive(Debug)]
 pub enum O11yEventKind<T> {
+    /// Observability pipeline was initialized with the given log directory.
     Init(PathBuf),
+    /// Observability pipeline is finishing.
     Finish,
+    /// Flush buffered state.
     Flush,
+    /// Clear buffered state.
     Clear,
+    /// Reconnect outputs.
     Reconnect,
+    /// Queue capacity status.
     Status(usize, usize),
 
+    /// Static host information.
     HostInfo(HostInfo),
+    /// Host resource statistics.
     HostStats(HostStats),
 
+    /// Tracing span event.
     Span(Id, O11ySpanEventKind),
+    /// Tracing log event.
     Log(Level, String, String),
 
+    /// Application-defined metric or event.
     App(T),
 }
 
+/// Basic metric value representation.
 #[derive(Debug)]
 pub enum O11yMetricValue {
+    /// Monotonic counter.
     Counter(u64),
 }
 
@@ -134,6 +166,7 @@ impl Default for O11yMetricValue {
 }
 
 impl O11yMetricValue {
+    /// Increment the metric value by one when supported.
     pub fn inc(&mut self) {
         match self {
             O11yMetricValue::Counter(v) => *v += 1,
@@ -141,6 +174,7 @@ impl O11yMetricValue {
     }
 }
 
+/// Options used by the runner to schedule and send observability events.
 #[derive(Debug, Builder, Getters)]
 pub struct O11yProcessorOptions<T> {
     sender: Sender<O11yEvent<T>>,
@@ -164,8 +198,11 @@ impl<T> tracing::field::Visit for MEVisitor<T> {
             .try_send(o11y_new_ev_log(self.0, "".to_string(), format!("{} {:?}", field.name(), value)));
     }
 }
+/// `tracing_subscriber` layer that forwards spans and events into WORA.
 pub struct Observability<T> {
+    /// Destination for generated observability events.
     pub tx: Sender<O11yEvent<T>>,
+    /// Minimum tracing level to forward.
     pub level: Level,
 }
 
@@ -219,6 +256,7 @@ where
 
 #[derive(Error, Debug)]
 #[error(transparent)]
+/// Observability setup or collection error.
 pub enum O11yError {
     #[cfg(target_os = "linux")]
     #[error("procfs")]
@@ -226,10 +264,14 @@ pub enum O11yError {
     #[error("unsupported os {0}")]
     UnsupportedOS(String),
 }
+/// Operating systems recognized by WORA host metadata.
 #[derive(Default, Clone, Debug, Serialize)]
 pub enum SupportedOSes {
+    /// Linux distributions.
     Linux,
+    /// macOS.
     OSX,
+    /// Unknown operating system.
     #[default]
     Unknown,
 }
@@ -250,6 +292,7 @@ impl Display for SupportedOSes {
     }
 }
 #[derive(Clone, Default, Debug, Serialize)]
+/// CPU information captured from `sysinfo`.
 pub struct Cpu {
     name: String,
     brand: String,
@@ -258,6 +301,7 @@ pub struct Cpu {
 }
 
 #[derive(Clone, Default, Debug, Serialize)]
+/// Memory statistics captured from `sysinfo`.
 pub struct MemStats {
     pub total: u64,
     pub free: u64,
@@ -265,6 +309,7 @@ pub struct MemStats {
 }
 
 #[derive(Clone, Default, Debug, Serialize)]
+/// Swap statistics captured from `sysinfo`.
 pub struct SwapStats {
     pub total: u64,
     pub used: u64,
@@ -272,6 +317,7 @@ pub struct SwapStats {
 }
 
 #[derive(Clone, Default, Debug, Serialize)]
+/// Load average statistics.
 pub struct LoadAvg {
     pub one: f64,
     pub five: f64,
@@ -279,6 +325,7 @@ pub struct LoadAvg {
 }
 
 #[derive(Clone, Debug, Serialize)]
+/// Filesystem disk information.
 pub struct Disk {
     pub name: String,
     pub kind: String,
@@ -290,6 +337,7 @@ pub struct Disk {
 }
 
 #[derive(Clone, Debug, Serialize)]
+/// Network I/O counters.
 pub struct NetIO {
     pub received: u64,
     pub total_received: u64,
@@ -306,6 +354,7 @@ pub struct NetIO {
 }
 
 #[derive(Debug, Getters)]
+/// Host metadata and resource snapshot.
 pub struct Host {
     sys: System,
     pub info: HostInfo,
@@ -313,6 +362,7 @@ pub struct Host {
 }
 
 impl Host {
+    /// Collect host information and resource statistics.
     pub fn new() -> Result<Self, O11yError> {
         let mut sys = sysinfo::System::new_all();
         sys.refresh_all();
@@ -335,6 +385,7 @@ pub struct HostStats {
 }
 
 impl HostStats {
+    /// Collect host resource statistics from `sysinfo`.
     pub fn new(sys: &System) -> Self {
         let mut cpus = vec![];
         for cpu in sys.cpus() {
@@ -399,11 +450,15 @@ impl HostStats {
         }
     }
 
+    /// Refresh host resource statistics.
+    ///
+    /// This is currently a stub and does not mutate the snapshot.
     pub fn update(&mut self) -> Result<(), O11yError> {
         Ok(())
     }
 }
 #[derive(Clone, Default, Debug, Serialize, Getters)]
+/// Static and semi-static host information.
 pub struct HostInfo {
     pub os_type: SupportedOSes,
     pub os_name: String,
@@ -445,6 +500,7 @@ fn os_type() -> Result<SupportedOSes, O11yError> {
 
 impl HostInfo {
     #[cfg(target_os = "linux")]
+    /// Collect Linux host information.
     pub fn new(sys: &System) -> Result<Self, O11yError> {
         let os_type = os_type()?;
         let osinfo = os_info::get();
@@ -483,6 +539,7 @@ impl HostInfo {
     }
 
     #[cfg(target_os = "linux")]
+    /// Refresh Linux host information fields that may change at runtime.
     pub fn update(&mut self, sys: &System) -> Result<(), O11yError> {
         self.ncpus = sys.physical_core_count().unwrap_or(0);
         self.maxcpus = sys.cpus().len();
@@ -499,6 +556,7 @@ impl HostInfo {
     }
 
     #[cfg(target_os = "macos")]
+    /// Collect macOS host information.
     pub fn new(sys: &System) -> Result<Self, O11yError> {
         let os_type = os_type()?;
         let osinfo = os_info::get();
@@ -520,6 +578,7 @@ impl HostInfo {
     }
 
     #[cfg(target_os = "macos")]
+    /// Refresh macOS host information fields that may change at runtime.
     pub fn update(&mut self, sys: &System) -> Result<(), O11yError> {
         self.ncpus = System::physical_core_count().unwrap_or(0);
         self.maxcpus = sys.cpus().len();

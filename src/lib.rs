@@ -42,7 +42,10 @@ use vfs::*;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
 
-/// All workloads will be able to access the WORA API
+/// Runtime context passed to applications.
+///
+/// `Wora` gives app lifecycle hooks access to executor directories, host
+/// information, event channels, leadership state, and observability settings.
 pub struct Wora<AppEv, AppMetric> {
     /// application name
     pub app_name: String,
@@ -60,27 +63,39 @@ pub struct Wora<AppEv, AppMetric> {
     pub receiver: Receiver<Event<AppEv>>,
     /// leadership state
     pub leadership: Leadership,
+    /// Observability channel and scheduling options.
     pub o11y: O11yProcessorOptions<AppMetric>,
 }
 
+/// Current leadership role for a workload.
 #[derive(Clone, Debug, Serialize)]
 pub enum Leadership {
+    /// This process is currently the active leader.
     Leader,
+    /// This process is currently a follower.
     Follower,
+    /// Leadership has not been established.
     Unknown,
 }
 
+/// Health state reported by an application.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum HealthState {
+    /// The application is healthy.
     Ok,
+    /// The application is intentionally suspended.
     Suspended,
+    /// Health could not be determined yet and should be retried.
     TryAgain,
+    /// The application is unhealthy.
     Failed,
+    /// Health has not been reported.
     Unknown,
 }
 
 /// WORA API
 impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv, AppMetric> {
+    /// Create a new runtime context and register Unix signal forwarding.
     pub fn new(dirs: &Dirs, app_name: String, ev_buf_size: usize, o11y: O11yProcessorOptions<AppMetric>) -> Result<Wora<AppEv, AppMetric>, WoraSetupError> {
         let pid = getpid();
 
@@ -116,14 +131,17 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
         })
     }
 
+    /// Return the host statistics captured when the runtime started.
     pub fn stats_from_start(&self) -> &HostStats {
         &self.host.stats
     }
 
+    /// Return the executor directory layout.
     pub fn dirs(&self) -> &Dirs {
         &self.dirs
     }
 
+    /// Emit an event onto the application event channel.
     pub async fn emit_event(&self, ev: Event<AppEv>) {
         match self.sender.send(ev).await {
             Ok(_) => {
@@ -135,30 +153,42 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
         }
     }
 
+    /// Return the host operating system identifier.
     pub fn host_os_name(&self) -> &str {
         &self.host.info.os_name
     }
+    /// Return the host operating system version, when available.
     pub fn host_os_version(&self) -> Option<String> {
         self.host.info.os_version.clone()
     }
+    /// Return the host architecture, when available.
     pub fn host_architecture(&self) -> Option<String> {
         self.host.info.architecture.clone()
     }
+    /// Return the host name, when available.
     pub fn host_hostname(&self) -> Option<String> {
         self.host.info.hostname.clone()
     }
+    /// Return the number of physical CPU cores detected at startup.
     pub fn host_cpu_count(&self) -> usize {
         self.host.info.ncpus
     }
+    /// Return the number of logical CPUs detected at startup.
     pub fn host_cpu_max(&self) -> usize {
         self.host.info.maxcpus
     }
 
+    /// Sleep for `duration`, then emit `ev`.
     pub async fn schedule_event(&self, duration: tokio::time::Duration, ev: Event<AppEv>) {
         tokio::time::sleep(duration).await;
         self.emit_event(ev).await
     }
 
+    /// Spawn a periodic background task.
+    ///
+    /// The task receives a clone of the observability sender. Returning
+    /// `TaskOp::Requeue` schedules the next run; returning `TaskOp::Abort`
+    /// stops the loop.
     pub async fn schedule_task<F, Fut>(&self, duration: tokio::time::Duration, future: F) -> JoinHandle<TaskOp>
     where
         F: Fn(Sender<O11yEvent<AppMetric>>) -> Fut + Send + 'static,
@@ -182,21 +212,29 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
     }
 }
 
+/// Result from a scheduled background task.
 #[derive(Debug, Clone)]
 pub enum TaskOp {
+    /// Continue scheduling the task.
     Requeue,
+    /// Stop scheduling the task.
     Abort,
 }
 
+/// Application configuration parser.
 pub trait Config {
+    /// Parsed configuration type used by the application.
     type ConfigT: Default;
+    /// Parse the main configuration file.
     fn parse_main_config_file(data: String) -> Result<Self::ConfigT, Box<dyn std::error::Error>>;
 
+    /// Parse a supplemental configuration file.
     fn parse_supplemental_config_file(_file_path: PathBuf, _data: String) -> Result<Self::ConfigT, Box<dyn std::error::Error>> {
         Ok(Self::ConfigT::default())
     }
 }
 
+/// Empty configuration implementation for apps that do not use config files.
 pub struct NoConfig;
 impl Config for NoConfig {
     type ConfigT = ();
@@ -205,15 +243,21 @@ impl Config for NoConfig {
     }
 }
 #[async_trait]
+/// Application lifecycle implemented by WORA workloads.
 pub trait App<AppEv, AppMetric> {
+    /// Configuration parser for the app.
     type AppConfig: Config;
+    /// Setup artifact type returned by `setup`.
     type Setup;
+    /// Stable application name used for directories, locks, and logging.
     fn name(&self) -> &'static str;
 
+    /// Return whether multiple instances may run concurrently.
     fn allow_concurrent_executions(&self) -> bool {
         false
     }
 
+    /// Initialize application state after executor setup and before `main`.
     async fn setup(
         &mut self,
         wora: &Wora<AppEv, AppMetric>,
@@ -223,6 +267,7 @@ pub trait App<AppEv, AppMetric> {
         is_first_boot: bool,
     ) -> Result<Self::Setup, Box<dyn std::error::Error>>;
 
+    /// Run the primary application loop.
     async fn main(
         &mut self,
         wora: &mut Wora<AppEv, AppMetric>,
@@ -231,8 +276,10 @@ pub trait App<AppEv, AppMetric> {
         metrics: Sender<O11yEvent<AppMetric>>,
     ) -> MainRetryAction;
 
+    /// Report application health.
     async fn is_healthy(&mut self) -> HealthState;
 
+    /// Clean up application state after `main` returns.
     async fn end(
         &mut self,
         wora: &Wora<AppEv, AppMetric>,

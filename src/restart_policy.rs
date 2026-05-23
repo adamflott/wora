@@ -14,9 +14,13 @@ pub enum WorkloadRestartPolicy {
     RetryPause,
 }
 
+/// Action returned by `App::main` to tell the runner what to do next.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum MainRetryAction {
+    /// Terminate the runner with the given exit code.
     UseExitCode(i8),
+    /// Ask the runner to apply its restart policy.
     UseRestartPolicy,
+    /// Complete successfully.
     Success,
 }

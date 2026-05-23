@@ -15,6 +15,11 @@ use crate::dirs::Dirs;
 use crate::errors::SetupFailure;
 use crate::{WFS, Wora};
 
+/// Runtime environment adapter used by `exec_async_runner`.
+///
+/// Implementations provide directory layout, setup, readiness, and teardown
+/// behavior for a target environment. The built-in executors cover Unix-like
+/// system, user, and bare `/tmp` layouts.
 #[async_trait]
 pub trait AsyncExecutor<AppEv, AppMetric>: Send + Sync + Clone {
     /// Executor's unique identifier
@@ -22,8 +27,11 @@ pub trait AsyncExecutor<AppEv, AppMetric>: Send + Sync + Clone {
     /// Executor's set of directory paths
     fn dirs(&self) -> &Dirs;
 
+    /// Prepare the target environment before application setup runs.
     async fn setup(&mut self, wora: &Wora<AppEv, AppMetric>, fs: impl WFS) -> Result<(), SetupFailure>;
+    /// Report whether the executor is ready for application main execution.
     async fn is_ready(&self, wora: &Wora<AppEv, AppMetric>, fs: impl WFS) -> bool;
+    /// Clean up executor state after the application lifecycle completes.
     async fn end(&self, wora: &Wora<AppEv, AppMetric>, fs: impl WFS);
 
     /// Disable memory limits
@@ -34,21 +42,21 @@ pub trait AsyncExecutor<AppEv, AppMetric>: Send + Sync + Clone {
         Ok(())
     }
 
-    //  Disable paging memory to swap
+    /// Disable paging memory to swap.
     fn disable_paging_mem_to_swap(&self) -> Result<(), SetupFailure> {
         info!("disabling paging memory to swap");
         mlockall(MlockAllFlags::all())?;
         Ok(())
     }
 
-    //  Disable core files
+    /// Disable core files.
     fn disable_core_dumps(&self) -> Result<(), SetupFailure> {
         info!("disabling core dumps");
         setrlimit(Resource::RLIMIT_CORE, 0, 0)?;
         Ok(())
     }
 
-    // Switch to a non-root user
+    /// Switch to a non-root user and group.
     fn run_as_user_and_group(&self, user_name: &str, group_name: &str) -> Result<(), SetupFailure> {
         let new_group = get_group_by_name(group_name).ok_or(SetupFailure::UnknownSystemUser(user_name.to_string()))?;
         set_both_gid(new_group.gid(), new_group.gid())?;
@@ -62,11 +70,13 @@ pub trait AsyncExecutor<AppEv, AppMetric>: Send + Sync + Clone {
     }
 
     #[cfg(target_os = "linux")]
+    /// Return whether the current process has no effective Linux capabilities.
     fn has_no_caps(&self) -> Result<bool, SetupFailure> {
         let effective = caps::read(None, CapSet::Effective)?;
         Ok(effective.is_empty())
     }
 
+    /// Return whether the current effective user is root.
     fn is_running_as_root(&self) -> bool {
         get_effective_username().unwrap_or("".into()) == "root"
     }
