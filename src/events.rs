@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::{Debug, Display, Formatter};
 
 use decimal_percentage::Percentage;
 use nix::unistd::Pid;
@@ -64,8 +65,8 @@ pub enum Event<T> {
     App(T),
 }
 
-impl<T: std::fmt::Debug> ToString for Event<T> {
-    fn to_string(&self) -> String {
-        format!("{:?}", self)
+impl<T: Debug> Display for Event<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
     }
 }
