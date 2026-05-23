@@ -43,3 +43,10 @@ procfs = { version = "0.18.0", features = ["serde1"] }
 
 [build-dependencies]
 pkg-config = "0.3.33"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
