@@ -12,3 +12,4 @@ Cargo.lock
 tmp/
 
 /.idea/
+.DS_Store
