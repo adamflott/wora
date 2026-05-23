@@ -224,7 +224,7 @@ pub enum TaskOp {
 /// Application configuration parser.
 pub trait Config {
     /// Parsed configuration type used by the application.
-    type ConfigT: Default;
+    type ConfigT: Default + Send + 'static;
     /// Parse the main configuration file.
     fn parse_main_config_file(data: String) -> Result<Self::ConfigT, Box<dyn std::error::Error>>;
 
@@ -255,6 +255,11 @@ pub trait App<AppEv, AppMetric> {
     /// Return whether multiple instances may run concurrently.
     fn allow_concurrent_executions(&self) -> bool {
         false
+    }
+
+    /// Apply an initially loaded application configuration.
+    async fn configure(&mut self, _config: <Self::AppConfig as Config>::ConfigT) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
     }
 
     /// Initialize application state after executor setup and before `main`.
@@ -304,6 +309,31 @@ fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Resul
     )?;
 
     Ok((watcher, rx))
+}
+
+async fn configure_app_from_metadata<AppEv, AppMetric, A>(app: &mut A, wora: &Wora<AppEv, AppMetric>, fs: impl WFS + 'static) -> Result<(), MainEarlyReturn>
+where
+    AppEv: Send + Sync + 'static,
+    AppMetric: Send + Sync + 'static,
+    A: App<AppEv, AppMetric> + Send,
+{
+    let config_path = wora.dirs.metadata_root_dir.join(format!("{}.toml", app.name()));
+
+    match fs.read_to_string(&config_path).await {
+        Ok(data) => {
+            let config = A::AppConfig::parse_main_config_file(data)
+                .map_err(|err| WoraSetupError::Str(format!("failed to parse config {}: {}", config_path.display(), err)))?;
+            app.configure(config)
+                .instrument(tracing::info_span!("app:run:configure"))
+                .await
+                .map_err(|err| WoraSetupError::Str(format!("failed to apply config {}: {}", config_path.display(), err)))?;
+            Ok(())
+        }
+        Err(err) => {
+            debug!("config:init:skip path:{} error:{}", config_path.display(), err);
+            Ok(())
+        }
+    }
 }
 
 async fn run_app_main_with_restart_policy<AppEv, AppMetric, A, E, F>(
@@ -461,6 +491,8 @@ pub async fn exec_async_runner_with_restart_policy<AppEv: Send + Sync + 'static,
             }
 
             exec.setup(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:setup")).await?;
+
+            configure_app_from_metadata(&mut app, &wora, fs.clone()).await?;
 
             let mut rc = Err(MainEarlyReturn::UseExitCode(1));
 

@@ -15,7 +15,7 @@ use crate::errors::VfsError;
 pub trait WFS: Debug + Clone + Send + Sync {
     /// Construct a new filesystem handle.
     fn new() -> Self;
-    /// Create a single directory at `path`.
+    /// Create a directory and any missing parents at `path`.
     async fn create_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<(), VfsError>;
     /// Read the entries in `path`.
     async fn read_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<ReadDir, VfsError>;
@@ -40,7 +40,7 @@ impl WFS for PhysicalVFS {
     }
 
     async fn create_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<(), VfsError> {
-        tokio::fs::create_dir(path).await.map_err(VfsError::Io)
+        tokio::fs::create_dir_all(path).await.map_err(VfsError::Io)
     }
     async fn read_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<ReadDir, VfsError> {
         tokio::fs::read_dir(path).await.map_err(VfsError::Io)
