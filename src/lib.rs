@@ -34,11 +34,11 @@ pub mod vfs;
 
 use crate::dirs::Dirs;
 use crate::errors::{MainEarlyReturn, WoraSetupError};
+use crate::events::*;
+use crate::exec::*;
 use crate::o11y::*;
-use events::*;
-use exec::*;
-use restart_policy::*;
-use vfs::*;
+use crate::restart_policy::*;
+use crate::vfs::*;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
 
