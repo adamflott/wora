@@ -372,6 +372,14 @@ impl Host {
 
         Ok(Self { sys, info, stats })
     }
+
+    /// Refresh host information and resource statistics.
+    pub fn update(&mut self) -> Result<(), O11yError> {
+        self.sys.refresh_all();
+        self.info.update(&self.sys)?;
+        self.stats.update()?;
+        Ok(())
+    }
 }
 /// System stats/information from `sysinfo`
 #[derive(Clone, Default, Debug, Serialize, Getters)]
@@ -451,9 +459,10 @@ impl HostStats {
     }
 
     /// Refresh host resource statistics.
-    ///
-    /// This is currently a stub and does not mutate the snapshot.
     pub fn update(&mut self) -> Result<(), O11yError> {
+        let mut sys = System::new_all();
+        sys.refresh_all();
+        *self = HostStats::new(&sys);
         Ok(())
     }
 }
