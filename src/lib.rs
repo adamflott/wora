@@ -374,9 +374,7 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
                     let fp = PathBuf::from("/tmp/");
                     fp
                 }
-                Some(fp) => {
-                    fp
-                }
+                Some(fp) => fp,
             };
             boot_dir.push(format!(".{}_booted", app.name()));
 
