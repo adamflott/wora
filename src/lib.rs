@@ -286,7 +286,7 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
     let _ = o11y_tx.send(o11y_new_ev_init(exec.dirs().log_root_dir.clone())).await;
 
     match try_lock(&lock) {
-        Ok(guard) => {
+        Ok(lock_guard) => {
             info!("exec:run:lock_file created:{:?}", &lock_path);
 
             let metrics_sender = o11y.sender().clone();
@@ -417,15 +417,7 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
                             .await
                         {
                             MainRetryAction::UseExitCode(ec) => {
-                                match std::fs::remove_file(&lock_path) {
-                                    Ok(_) => {
-                                        debug!("lock:removed file:{:?}", &lock_path);
-                                    }
-                                    Err(rm_err) => {
-                                        error!("lock file:{:?} error:{}", &lock_path, rm_err);
-                                    }
-                                }
-
+                                remove_lock_file(&lock_path).await;
                                 rc = Err(MainEarlyReturn::UseExitCode(ec));
                             }
                             MainRetryAction::UseRestartPolicy => {
@@ -450,16 +442,8 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
 
             exec.end(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:end")).await;
 
-            drop(guard);
-
-            match std::fs::remove_file(&lock_path) {
-                Ok(_) => {
-                    debug!("lock:removed file:{:?}", &lock_path);
-                }
-                Err(rm_err) => {
-                    error!("lock file:{:?} error:{}", &lock_path, rm_err);
-                }
-            }
+            drop(lock_guard);
+            remove_lock_file(&lock_path).await;
 
             let _ = o11y_tx.send(o11y_new_ev_finish()).await;
 
@@ -468,18 +452,20 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
         Err(err) => {
             error!("lock file:{:?} error:{:?}", &lock_path, err);
 
-            match std::fs::remove_file(&lock_path) {
-                Ok(_) => {
-                    debug!("lock:removed file:{:?}", &lock_path);
-                }
-                Err(rm_err) => {
-                    error!("lock file:{:?} error:{}", &lock_path, rm_err);
-                }
-            }
-
             let _ = o11y_tx.send(o11y_new_ev_finish()).await;
 
             Err(MainEarlyReturn::UseExitCode(111)) // TODO fix print and return
+        }
+    }
+}
+
+async fn remove_lock_file(lock_path: &PathBuf) {
+    match tokio::fs::remove_file(lock_path).await {
+        Ok(_) => {
+            debug!("lock:removed file:{:?}", lock_path);
+        }
+        Err(rm_err) => {
+            error!("lock file:{:?} error:{}", lock_path, rm_err);
         }
     }
 }
