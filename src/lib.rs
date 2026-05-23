@@ -470,13 +470,12 @@ pub async fn exec_async_runner_with_restart_policy<AppEv: Send + Sync + 'static,
             .await;
 
             let mut boot_dir = maybe_boot_dir.unwrap_or_else(|| {
-                    #[cfg(target_os = "linux")]
-                    let fp = PathBuf::from("//var/run");
-                    #[cfg(target_os = "macos")]
-                    let fp = PathBuf::from("/tmp/");
-                    fp
-                }
-            );
+                #[cfg(target_os = "linux")]
+                let fp = PathBuf::from("//var/run");
+                #[cfg(target_os = "macos")]
+                let fp = PathBuf::from("/tmp/");
+                fp
+            });
             boot_dir.push(format!(".{}_booted", app.name()));
 
             let mut is_first_boot = false;
