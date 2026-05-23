@@ -108,9 +108,9 @@ jobs:
           tar xf cross-x86_64-unknown-linux-musl.tar.gz
       - name: Basic build
         run: cross build --all --verbose --target ${{ matrix.target }}
-      - name: Run subset of tests
-        run: cross test --verbose --test integration --target ${{ matrix.target }}
       - name: Run tests
+        run: cross test --verbose --target ${{ matrix.target }}
+      - name: Run lib tests
         run: cross test --verbose --lib --target ${{ matrix.target }}
 
   # Tests that everything is formatted correctly.
