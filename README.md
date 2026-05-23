@@ -18,7 +18,7 @@ These instructions will get you a copy of the project up and running on your loc
 
 ### Prerequisites
 
-* Rust >= 1.67
+* Rust >= 1.95
 
 ## Usage
 
