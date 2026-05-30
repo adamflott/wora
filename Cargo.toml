@@ -20,7 +20,7 @@ derive_builder = "0.20.2"
 directories = "6.0.0"
 futures = "0.3.32"
 libc = "0.2.186"
-log = "0.4.29"
+log = "0.4.30"
 nix = { version = "0.31.3", features = ["process", "mman", "resource", "fs"]}
 notify = { version = "8.2.0", features = ["serde"] }
 opentelemetry = "0.32.0"
