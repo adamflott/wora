@@ -12,7 +12,7 @@ categories = ["development-tools"]
 
 [dependencies]
 async-trait = "0.1.89"
-chrono = { version = "0.4.44", features = ["serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.1", features = ["derive", "env", "cargo" ] }
 decimal-percentage = "0.1.4"
 derive-getters = "0.5.0"
