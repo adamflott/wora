@@ -36,6 +36,12 @@ fn test_o11y() -> Result<O11yProcessorOptions<()>, Box<dyn std::error::Error>> {
         .map_err(|err| std::io::Error::other(err.to_string()).into())
 }
 
+#[cfg(target_family = "unix")]
+fn unique_socket_path(name: &str) -> PathBuf {
+    let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    std::env::temp_dir().join(format!("wora-{}-{}.sock", name.replace('_', "-"), suffix))
+}
+
 #[tokio::test]
 async fn physical_vfs_creates_nested_directories() -> Result<(), Box<dyn std::error::Error>> {
     let root = unique_test_dir("vfs");
@@ -343,6 +349,83 @@ async fn executor_runtime_event_sources_can_drive_control_flow() -> Result<(), B
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
+
+    Ok(())
+}
+
+#[cfg(target_family = "unix")]
+#[tokio::test]
+async fn systemd_executor_sends_ready_and_stopping_notifications() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::net::UnixDatagram;
+
+    let root = unique_test_dir("systemd-notify");
+    std::fs::create_dir_all(&root)?;
+    let socket_path = unique_socket_path("systemd-notify");
+    let receiver = UnixDatagram::bind(&socket_path)?;
+    receiver.set_read_timeout(Some(Duration::from_secs(1)))?;
+
+    let exec = SystemdExecutor::system("notify_app")
+        .await
+        .with_notify_socket(socket_path.to_string_lossy().to_string());
+    let wora = Wora::new(
+        <SystemdExecutor as AsyncExecutor<(), ()>>::dirs(&exec),
+        "notify_app".to_string(),
+        16,
+        test_o11y()?,
+    )?;
+
+    <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_ready(&exec, &wora, PhysicalVFS::new()).await?;
+    let mut buf = [0u8; 256];
+    let ready_size = receiver.recv(&mut buf)?;
+    let ready_message = std::str::from_utf8(&buf[..ready_size])?;
+    assert!(ready_message.contains("READY=1"));
+    assert!(ready_message.contains("notify_app ready"));
+
+    <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_stopping(&exec, &wora, PhysicalVFS::new()).await?;
+    let stopping_size = receiver.recv(&mut buf)?;
+    let stopping_message = std::str::from_utf8(&buf[..stopping_size])?;
+    assert!(stopping_message.contains("STOPPING=1"));
+    assert!(stopping_message.contains("notify_app stopping"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn container_executor_manages_readiness_and_termination_files() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("container-exec");
+    let readiness_path = root.join("status").join("ready");
+    let termination_path = root.join("status").join("termination.log");
+    let exec = ContainerExecutor::new("container_app")
+        .await
+        .with_readiness_file(&readiness_path)
+        .with_termination_log(&termination_path);
+    let wora = Wora::new(
+        <ContainerExecutor as AsyncExecutor<(), ()>>::dirs(&exec),
+        "container_app".to_string(),
+        16,
+        test_o11y()?,
+    )?;
+
+    <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_ready(&exec, &wora, PhysicalVFS::new()).await?;
+    assert!(readiness_path.is_file());
+    assert_eq!(std::fs::read_to_string(&readiness_path)?, "ready:container_app\n");
+
+    <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_stopping(&exec, &wora, PhysicalVFS::new()).await?;
+    assert!(!readiness_path.exists());
+    assert_eq!(std::fs::read_to_string(&termination_path)?, "stopping:container_app\n");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn launchd_agent_constructor_produces_distinct_layout() -> Result<(), Box<dyn std::error::Error>> {
+    let exec = LaunchdExecutor::agent("launchd_app").await?;
+
+    assert_eq!(<LaunchdExecutor as AsyncExecutor<(), ()>>::id(&exec), "launchd-agent");
+    assert!(
+        <LaunchdExecutor as AsyncExecutor<(), ()>>::dirs(&exec).metadata_root_dir != <LaunchdExecutor as AsyncExecutor<(), ()>>::dirs(&exec).runtime_root_dir
+    );
+    assert!(<LaunchdExecutor as AsyncExecutor<(), ()>>::dirs(&exec).cache_root_dir != <LaunchdExecutor as AsyncExecutor<(), ()>>::dirs(&exec).secrets_root_dir);
 
     Ok(())
 }

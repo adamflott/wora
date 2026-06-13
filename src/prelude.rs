@@ -9,6 +9,7 @@ pub use crate::exec::*;
 pub use crate::exec_async_runner;
 pub use crate::exec_async_runner_with_restart_options;
 pub use crate::exec_async_runner_with_restart_policy;
+pub use crate::exec_env::*;
 pub use crate::exec_unix::*;
 pub use crate::o11y::*;
 pub use crate::restart_policy::{MainRetryAction, RestartPolicyOptions, WorkloadRestartPolicy};

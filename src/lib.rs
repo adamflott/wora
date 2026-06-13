@@ -24,6 +24,7 @@ pub mod dirs;
 pub mod errors;
 pub mod events;
 pub mod exec;
+pub mod exec_env;
 pub mod exec_unix;
 pub mod o11y;
 pub mod prelude;
@@ -544,6 +545,10 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
                     info!("dirs.cache: {:?}", wora.dirs.cache_root_dir);
                     info!("dirs.secrets: {:?}", wora.dirs.secrets_root_dir);
 
+                    exec.on_runtime_ready(&wora, fs.clone())
+                        .instrument(tracing::info_span!("exec:run:on_runtime_ready"))
+                        .await?;
+
                     let (mut watcher, mut watch_rx) = async_watcher()?;
 
                     info!("notify:watch:dir: {:?}", &wora.dirs.metadata_root_dir);
@@ -579,6 +584,10 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
                     } else {
                         warn!(comp = "exec", method = "run", is_ready = false);
                     }
+
+                    exec.on_runtime_stopping(&wora, fs.clone())
+                        .instrument(tracing::info_span!("exec:run:on_runtime_stopping"))
+                        .await?;
 
                     app.end(&wora, exec.clone(), fs.clone(), metrics_sender.clone())
                         .instrument(tracing::info_span!("app:run:end"))

@@ -47,7 +47,7 @@ impl UnixLike {
         }
     }
 
-    async fn spawn_runtime_event_sources<AppEv: Send + 'static>(&self, sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+    pub(crate) async fn spawn_runtime_event_sources<AppEv: Send + 'static>(&self, sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
         let mut tasks = Vec::new();
 
         for &signum in [SIGHUP, SIGTERM, SIGQUIT, SIGUSR1, SIGUSR2, SIGINT].iter() {
@@ -71,6 +71,34 @@ impl UnixLike {
         }
 
         Ok(tasks)
+    }
+
+    pub(crate) async fn create_directories(&self, fs: impl WFS) -> Result<(), SetupFailure> {
+        for dir in [
+            &self.dirs.root_dir,
+            &self.dirs.log_root_dir,
+            &self.dirs.metadata_root_dir,
+            &self.dirs.data_root_dir,
+            &self.dirs.runtime_root_dir,
+            &self.dirs.cache_root_dir,
+            &self.dirs.secrets_root_dir,
+        ] {
+            trace!("exec:setup:io:create dir:{:?}: trying", dir);
+            fs.create_dir(dir).await.map_err(|err| {
+                error!("exec:setup:io:create dir:{:?}: error:{}", dir, err);
+                SetupFailure::Vfs(err)
+            })?;
+            trace!("exec:setup:io:create dir:{:?}: success", dir);
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn chdir_root(&self) -> Result<(), SetupFailure> {
+        trace!("exec:setup:io:chdir({:?}): trying", &self.dirs.root_dir);
+        chdir(&self.dirs.root_dir)?;
+        trace!("exec:setup:io:chdir({:?}): success", &self.dirs.root_dir);
+        Ok(())
     }
 }
 
@@ -155,29 +183,9 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
         &self.unix.dirs
     }
 
-    async fn setup(&mut self, wora: &Wora<AppEv, AppMetric>, fs: impl WFS) -> Result<(), SetupFailure> {
-        let dirs = &wora.dirs;
-
-        trace!("exec:setup:io:chdir({:?}): trying", &wora.dirs.root_dir);
-        chdir(&wora.dirs.root_dir)?;
-        trace!("exec:setup:io:chdir({:?}): success", &wora.dirs.root_dir);
-
-        for dir in [
-            &dirs.root_dir,
-            &dirs.log_root_dir,
-            &dirs.metadata_root_dir,
-            &dirs.data_root_dir,
-            &dirs.runtime_root_dir,
-            &dirs.cache_root_dir,
-        ] {
-            trace!("exec:setup:io:create dir:{:?}: trying", dir);
-            fs.create_dir(dir).await.map_err(|err| {
-                error!("exec:setup:io:create dir:{:?}: error:{}", dir, err);
-                SetupFailure::Vfs(err)
-            })?;
-            trace!("exec:setup:io:create dir:{:?}: success", dir);
-        }
-
+    async fn setup(&mut self, _wora: &Wora<AppEv, AppMetric>, fs: impl WFS) -> Result<(), SetupFailure> {
+        self.unix.chdir_root()?;
+        self.unix.create_directories(fs).await?;
         Ok(())
     }
 
