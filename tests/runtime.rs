@@ -419,13 +419,26 @@ async fn container_executor_manages_readiness_and_termination_files() -> Result<
 
 #[tokio::test]
 async fn launchd_agent_constructor_produces_distinct_layout() -> Result<(), Box<dyn std::error::Error>> {
-    let exec = LaunchdExecutor::agent("launchd_app").await?;
+    let exec = LaunchdExecutor::agent("launchd_app").await?.with_socket_name("listener");
 
     assert_eq!(<LaunchdExecutor as AsyncExecutor<(), ()>>::id(&exec), "launchd-agent");
     assert!(
         <LaunchdExecutor as AsyncExecutor<(), ()>>::dirs(&exec).metadata_root_dir != <LaunchdExecutor as AsyncExecutor<(), ()>>::dirs(&exec).runtime_root_dir
     );
     assert!(<LaunchdExecutor as AsyncExecutor<(), ()>>::dirs(&exec).cache_root_dir != <LaunchdExecutor as AsyncExecutor<(), ()>>::dirs(&exec).secrets_root_dir);
+    assert_eq!(exec.socket_names(), &["listener".to_string()]);
+
+    #[cfg(target_os = "macos")]
+    {
+        let job = exec.launchd_job("com.example.launchd-app", "/usr/local/bin/launchd-app", vec!["--foreground".to_string()])?;
+        let mut xml = Vec::new();
+        job.to_writer_xml(&mut xml)?;
+        let xml = String::from_utf8(xml)?;
+        assert!(xml.contains("com.example.launchd-app"));
+        assert!(xml.contains("WORA_EXECUTOR"));
+        assert!(xml.contains("listener"));
+        assert!(xml.contains("stdout.log"));
+    }
 
     Ok(())
 }

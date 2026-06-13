@@ -3,12 +3,21 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use directories::ProjectDirs;
+#[cfg(target_os = "macos")]
+use launchd::Launchd;
+#[cfg(target_os = "macos")]
+use launchd::sockets::{Socket, SocketFamily, SocketOptions, SocketType, Sockets};
+#[cfg(target_os = "linux")]
+use sd_notify::NotifyState;
 #[cfg(target_os = "linux")]
 use std::os::linux::net::SocketAddrExt;
+#[cfg(target_os = "macos")]
+use std::os::unix::io::RawFd;
 #[cfg(all(target_family = "unix", target_os = "linux"))]
 use std::os::unix::net::SocketAddr;
 #[cfg(target_family = "unix")]
 use std::os::unix::net::UnixDatagram;
+use thiserror::Error;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 use tracing::{debug, trace};
@@ -57,6 +66,16 @@ fn send_unix_datagram(socket: &str, payload: &str) -> Result<(), SetupFailure> {
 #[cfg(not(target_family = "unix"))]
 fn send_unix_datagram(_socket: &str, _payload: &str) -> Result<(), SetupFailure> {
     Ok(())
+}
+
+/// launchd executor API error.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Error)]
+pub enum LaunchdExecutorError {
+    #[error("launchd plist")]
+    Plist(#[from] launchd::Error),
+    #[error("launchd socket activation")]
+    SocketActivation(#[from] raunch::Error),
 }
 
 /// Service-manager scope for systemd executors.
@@ -146,12 +165,42 @@ impl SystemdExecutor {
     }
 
     fn send_notify_message(&self, payload: String) -> Result<(), SetupFailure> {
-        match &self.notify_socket {
-            Some(socket) => {
-                debug!("systemd:notify socket:{} payload:{}", socket, payload.replace('\n', ";"));
-                send_unix_datagram(socket, &payload)
+        #[cfg(target_os = "linux")]
+        {
+            match &self.notify_socket {
+                Some(socket) => {
+                    debug!("systemd:notify socket:{} payload:{}", socket, payload.replace('\n', ";"));
+                    send_unix_datagram(socket, &payload)
+                }
+                None => {
+                    let mut states = Vec::new();
+                    for line in payload.lines() {
+                        if let Some(message) = line.strip_prefix("STATUS=") {
+                            states.push(NotifyState::Status(message));
+                        } else if line == "READY=1" {
+                            states.push(NotifyState::Ready);
+                        } else if line == "STOPPING=1" {
+                            states.push(NotifyState::Stopping);
+                        } else if let Some(pid) = line.strip_prefix("MAINPID=") {
+                            states.push(NotifyState::MainPid(pid.parse()?));
+                        } else {
+                            states.push(NotifyState::Custom(line));
+                        }
+                    }
+                    sd_notify::notify(&states).map_err(SetupFailure::IO)
+                }
             }
-            None => Ok(()),
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            match &self.notify_socket {
+                Some(socket) => {
+                    debug!("systemd:notify socket:{} payload:{}", socket, payload.replace('\n', ";"));
+                    send_unix_datagram(socket, &payload)
+                }
+                None => Ok(()),
+            }
         }
     }
 }
@@ -218,6 +267,7 @@ pub enum LaunchdScope {
 pub struct LaunchdExecutor {
     unix: UnixLike,
     scope: LaunchdScope,
+    socket_names: Vec<String>,
 }
 
 impl LaunchdExecutor {
@@ -237,6 +287,7 @@ impl LaunchdExecutor {
         Ok(Self {
             unix,
             scope: LaunchdScope::Agent,
+            socket_names: vec![],
         })
     }
 
@@ -255,7 +306,50 @@ impl LaunchdExecutor {
         Self {
             unix,
             scope: LaunchdScope::Daemon,
+            socket_names: vec![],
         }
+    }
+
+    /// Register a launchd socket activation name for generated plist output.
+    pub fn with_socket_name(mut self, socket_name: impl Into<String>) -> Self {
+        self.socket_names.push(socket_name.into());
+        self
+    }
+
+    /// Return the configured launchd socket activation names.
+    pub fn socket_names(&self) -> &[String] {
+        &self.socket_names
+    }
+
+    /// Build a launchd plist job description for this executor.
+    #[cfg(target_os = "macos")]
+    pub fn launchd_job<P: AsRef<Path>>(&self, label: &str, program: P, program_arguments: Vec<String>) -> Result<Launchd, LaunchdExecutorError> {
+        let mut job = Launchd::new(label, program)?
+            .with_program_arguments(program_arguments)
+            .with_working_directory(&self.unix.dirs.data_root_dir)?
+            .with_standard_out_path(self.unix.dirs.log_root_dir.join("stdout.log"))?
+            .with_standard_error_path(self.unix.dirs.log_root_dir.join("stderr.log"))?
+            .with_environment_variables(std::collections::HashMap::from([(
+                "WORA_EXECUTOR".to_string(),
+                match self.scope {
+                    LaunchdScope::Agent => "launchd-agent".to_string(),
+                    LaunchdScope::Daemon => "launchd-daemon".to_string(),
+                },
+            )]))
+            .run_at_load();
+
+        for socket_name in &self.socket_names {
+            let socket = Socket::new(socket_name, SocketOptions::new().with_type(SocketType::Stream).with_family(SocketFamily::Unix));
+            job = job.with_socket(Sockets::from(socket));
+        }
+
+        Ok(job)
+    }
+
+    /// Activate a launchd-managed socket by name.
+    #[cfg(target_os = "macos")]
+    pub fn activate_socket(&self, socket_name: &str) -> Result<Vec<RawFd>, LaunchdExecutorError> {
+        Ok(raunch::activate_socket(socket_name)?)
     }
 }
 
