@@ -7,12 +7,15 @@ use nix::sys::{
     mman::{MlockAllFlags, mlockall},
     resource::{Resource, setrlimit},
 };
+use tokio::sync::mpsc::Sender;
+use tokio::task::JoinHandle;
 use tracing::info;
 use users::switch::set_both_gid;
 use users::{get_effective_username, get_group_by_name, get_user_by_name, switch::set_both_uid};
 
 use crate::dirs::Dirs;
 use crate::errors::SetupFailure;
+use crate::events::Event;
 use crate::{WFS, Wora};
 
 /// Runtime environment adapter used by `exec_async_runner`.
@@ -21,7 +24,7 @@ use crate::{WFS, Wora};
 /// behavior for a target environment. The built-in executors cover Unix-like
 /// system, user, and bare `/tmp` layouts.
 #[async_trait]
-pub trait AsyncExecutor<AppEv, AppMetric>: Send + Sync + Clone {
+pub trait AsyncExecutor<AppEv: Send + 'static, AppMetric>: Send + Sync + Clone {
     /// Executor's unique identifier
     fn id(&self) -> &'static str;
     /// Executor's set of directory paths
@@ -29,6 +32,14 @@ pub trait AsyncExecutor<AppEv, AppMetric>: Send + Sync + Clone {
 
     /// Prepare the target environment before application setup runs.
     async fn setup(&mut self, wora: &Wora<AppEv, AppMetric>, fs: impl WFS) -> Result<(), SetupFailure>;
+    /// Start environment-specific runtime event sources.
+    ///
+    /// Executors use this hook to translate platform-specific controls such as
+    /// signals, service-manager notifications, or admin APIs into WORA events.
+    /// The default implementation does nothing.
+    async fn spawn_runtime_event_sources(&self, _sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        Ok(vec![])
+    }
     /// Report whether the executor is ready for application main execution.
     async fn is_ready(&self, wora: &Wora<AppEv, AppMetric>, fs: impl WFS) -> bool;
     /// Clean up executor state after the application lifecycle completes.

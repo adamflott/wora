@@ -101,8 +101,23 @@ impl App<(), ()> for DaemonApp {
         while let Some(ev) = wora.receiver.recv().await {
             info!("event: {:?}", &ev);
             match ev {
+                Event::Control(control) => match control {
+                    ControlEvent::ReloadConfiguration => {
+                        info!("control: reload configuration");
+                    }
+                    ControlEvent::Shutdown(dt) => {
+                        info!("shutting down at {:?}", dt);
+                        return MainRetryAction::Success;
+                    }
+                    ControlEvent::Suspend(dt) => {
+                        info!("suspending at {:?}", dt);
+                    }
+                    ControlEvent::LogRotation => {
+                        info!("rotating log");
+                    }
+                },
                 Event::UnixSignal(signum) => match signum {
-                    SIGTERM | SIGINT | SIGQUIT => return MainRetryAction::UseExitCode(1),
+                    SIGTERM | SIGINT | SIGQUIT => {}
                     SIGHUP => {
                         info!("sighup!");
                     }
@@ -112,6 +127,9 @@ impl App<(), ()> for DaemonApp {
                 Event::Shutdown(dt) => {
                     info!("shutting down at {:?}", dt);
                     return MainRetryAction::Success;
+                }
+                Event::ReloadConfiguration => {
+                    info!("reload configuration");
                 }
                 Event::SystemResource(_) => {}
                 Event::ConfigChange(event) => {

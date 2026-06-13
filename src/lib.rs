@@ -10,12 +10,10 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2};
 use nix::unistd::getpid;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use proc_lock::try_lock;
 use serde::Serialize;
-use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
@@ -95,24 +93,11 @@ pub enum HealthState {
 
 /// WORA API
 impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv, AppMetric> {
-    /// Create a new runtime context and register Unix signal forwarding.
+    /// Create a new runtime context.
     pub fn new(dirs: &Dirs, app_name: String, ev_buf_size: usize, o11y: O11yProcessorOptions<AppMetric>) -> Result<Wora<AppEv, AppMetric>, WoraSetupError> {
         let pid = getpid();
 
         let (tx, rx) = channel(ev_buf_size);
-
-        for &signum in [SIGHUP, SIGTERM, SIGQUIT, SIGUSR1, SIGUSR2, SIGINT].iter() {
-            let send = tx.clone();
-            let mut sig = tokio::signal::unix::signal(SignalKind::from_raw(signum))?;
-            tokio::spawn(async move {
-                loop {
-                    sig.recv().await;
-                    if send.send(Event::UnixSignal(signum)).await.is_err() {
-                        break;
-                    };
-                }
-            });
-        }
 
         let host = Host::new()?;
 
@@ -244,7 +229,7 @@ impl Config for NoConfig {
 }
 #[async_trait]
 /// Application lifecycle implemented by WORA workloads.
-pub trait App<AppEv, AppMetric> {
+pub trait App<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> {
     /// Configuration parser for the app.
     type AppConfig: Config;
     /// Setup artifact type returned by `setup`.
@@ -468,6 +453,10 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
             let hs_interval = *o11y.host_stats_interval();
 
             let mut wora = Wora::new(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE, o11y)?;
+            let runtime_event_tasks = exec
+                .spawn_runtime_event_sources(wora.sender.clone())
+                .instrument(tracing::info_span!("exec:run:event_sources"))
+                .await?;
 
             let _ = metrics_sender.send(o11y_new_ev_hostinfo(wora.host.info())).await;
 
@@ -601,6 +590,10 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
             }
 
             exec.end(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:end")).await;
+
+            for task in runtime_event_tasks {
+                task.abort();
+            }
 
             drop(lock_guard);
             remove_lock_file(&lock_path).await;

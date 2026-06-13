@@ -4,7 +4,7 @@ pub use crate::Leadership;
 pub use crate::Wora;
 pub use crate::dirs::Dirs;
 pub use crate::errors::*;
-pub use crate::events::Event;
+pub use crate::events::{ControlEvent, Event};
 pub use crate::exec::*;
 pub use crate::exec_async_runner;
 pub use crate::exec_async_runner_with_restart_options;

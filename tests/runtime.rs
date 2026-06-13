@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use tokio::sync::mpsc::Sender;
+use tokio::task::JoinHandle;
 use wora::prelude::*;
 
 fn unique_test_dir(name: &str) -> PathBuf {
@@ -109,6 +110,50 @@ struct AlwaysRestartApp {
     calls: Arc<Mutex<u8>>,
 }
 
+#[derive(Clone, Debug)]
+struct ControlEventExec {
+    dirs: Dirs,
+}
+
+#[async_trait]
+impl AsyncExecutor<(), ()> for ControlEventExec {
+    fn id(&self) -> &'static str {
+        "control-event"
+    }
+
+    fn dirs(&self) -> &Dirs {
+        &self.dirs
+    }
+
+    async fn setup(&mut self, _wora: &Wora<(), ()>, fs: impl WFS) -> Result<(), SetupFailure> {
+        for dir in [
+            &self.dirs.root_dir,
+            &self.dirs.log_root_dir,
+            &self.dirs.metadata_root_dir,
+            &self.dirs.data_root_dir,
+            &self.dirs.runtime_root_dir,
+            &self.dirs.cache_root_dir,
+            &self.dirs.secrets_root_dir,
+        ] {
+            fs.create_dir(dir).await?;
+        }
+        Ok(())
+    }
+
+    async fn spawn_runtime_event_sources(&self, sender: Sender<Event<()>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        Ok(vec![tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let _ = sender.send(Event::Control(ControlEvent::Shutdown(None))).await;
+        })])
+    }
+
+    async fn is_ready(&self, _wora: &Wora<(), ()>, _fs: impl WFS) -> bool {
+        true
+    }
+
+    async fn end(&self, _wora: &Wora<(), ()>, _fs: impl WFS) {}
+}
+
 #[async_trait]
 impl App<(), ()> for AlwaysRestartApp {
     type AppConfig = NoConfig;
@@ -204,6 +249,51 @@ impl App<(), ()> for ConfiguredRestartApp {
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
 }
 
+struct ControlDrivenApp;
+
+#[async_trait]
+impl App<(), ()> for ControlDrivenApp {
+    type AppConfig = NoConfig;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        "control_driven"
+    }
+
+    async fn setup(
+        &mut self,
+        _wora: &Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    async fn main(
+        &mut self,
+        wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
+        while let Some(event) = wora.receiver.recv().await {
+            if matches!(event, Event::Control(ControlEvent::Shutdown(_))) {
+                return MainRetryAction::Success;
+            }
+        }
+
+        MainRetryAction::UseExitCode(9)
+    }
+
+    async fn is_healthy(&mut self) -> HealthState {
+        HealthState::Ok
+    }
+
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
+}
+
 #[tokio::test]
 async fn runner_loads_initial_config_and_applies_restart_policy() -> Result<(), Box<dyn std::error::Error>> {
     let root = unique_test_dir("runner");
@@ -235,6 +325,25 @@ async fn runner_loads_initial_config_and_applies_restart_policy() -> Result<(), 
 
     let calls = calls.lock().map_err(|err| std::io::Error::other(err.to_string()))?;
     assert_eq!(*calls, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn executor_runtime_event_sources_can_drive_control_flow() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("control-event-source");
+    let dirs = test_dirs(root.clone());
+    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+
+    exec_async_runner(
+        ControlEventExec { dirs },
+        ControlDrivenApp,
+        PhysicalVFS::new(),
+        test_o11y()?,
+        Some(root.join("boot")),
+    )
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
+
     Ok(())
 }
 

@@ -2,12 +2,17 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use directories::ProjectDirs;
+use libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2};
 use nix::unistd::chdir;
+use tokio::signal::unix::SignalKind;
+use tokio::sync::mpsc::Sender;
+use tokio::task::JoinHandle;
 use tracing::{error, trace};
 
 use crate::Wora;
 use crate::dirs::Dirs;
 use crate::errors::{SetupFailure, VfsError};
+use crate::events::{ControlEvent, Event};
 use crate::{AsyncExecutor, WFS};
 
 /// Shared Unix-like directory layout.
@@ -31,6 +36,42 @@ impl UnixLike {
         };
         UnixLike { dirs }
     }
+
+    fn control_event_for_signal(signum: i32) -> Option<ControlEvent> {
+        match signum {
+            SIGHUP => Some(ControlEvent::ReloadConfiguration),
+            SIGTERM | SIGINT | SIGQUIT => Some(ControlEvent::Shutdown(Some(chrono::Utc::now().naive_utc()))),
+            SIGUSR1 => Some(ControlEvent::LogRotation),
+            SIGUSR2 => None,
+            _ => None,
+        }
+    }
+
+    async fn spawn_runtime_event_sources<AppEv: Send + 'static>(&self, sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        let mut tasks = Vec::new();
+
+        for &signum in [SIGHUP, SIGTERM, SIGQUIT, SIGUSR1, SIGUSR2, SIGINT].iter() {
+            let send = sender.clone();
+            let mut sig = tokio::signal::unix::signal(SignalKind::from_raw(signum))?;
+            tasks.push(tokio::spawn(async move {
+                loop {
+                    sig.recv().await;
+
+                    if let Some(control_event) = UnixLike::control_event_for_signal(signum) {
+                        if send.send(Event::Control(control_event)).await.is_err() {
+                            break;
+                        }
+                    }
+
+                    if send.send(Event::UnixSignal(signum)).await.is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+
+        Ok(tasks)
+    }
 }
 
 /// Executor for system-level Unix deployments.
@@ -51,7 +92,7 @@ impl UnixLikeSystem {
 }
 
 #[async_trait]
-impl<AppEv, AppMetric> AsyncExecutor<AppEv, AppMetric> for UnixLikeSystem {
+impl<AppEv: Send + 'static, AppMetric> AsyncExecutor<AppEv, AppMetric> for UnixLikeSystem {
     fn id(&self) -> &'static str {
         "unix-like-system"
     }
@@ -61,6 +102,10 @@ impl<AppEv, AppMetric> AsyncExecutor<AppEv, AppMetric> for UnixLikeSystem {
 
     async fn setup(&mut self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> Result<(), SetupFailure> {
         Ok(())
+    }
+
+    async fn spawn_runtime_event_sources(&self, sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        self.unix.spawn_runtime_event_sources(sender).await
     }
 
     async fn is_ready(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> bool {
@@ -102,7 +147,7 @@ impl UnixLikeUser {
 }
 
 #[async_trait]
-impl<AppEv: Send + Sync, AppMetric: Send + Sync> AsyncExecutor<AppEv, AppMetric> for UnixLikeUser {
+impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, AppMetric> for UnixLikeUser {
     fn id(&self) -> &'static str {
         "unix-like-user"
     }
@@ -134,6 +179,10 @@ impl<AppEv: Send + Sync, AppMetric: Send + Sync> AsyncExecutor<AppEv, AppMetric>
         }
 
         Ok(())
+    }
+
+    async fn spawn_runtime_event_sources(&self, sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        self.unix.spawn_runtime_event_sources(sender).await
     }
 
     async fn is_ready(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> bool {
@@ -174,7 +223,7 @@ impl UnixLikeBare {
 }
 
 #[async_trait]
-impl<AppEv, AppMetric> AsyncExecutor<AppEv, AppMetric> for UnixLikeBare {
+impl<AppEv: Send + 'static, AppMetric> AsyncExecutor<AppEv, AppMetric> for UnixLikeBare {
     fn id(&self) -> &'static str {
         "unix-like-bare"
     }
@@ -185,6 +234,10 @@ impl<AppEv, AppMetric> AsyncExecutor<AppEv, AppMetric> for UnixLikeBare {
 
     async fn setup(&mut self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> Result<(), SetupFailure> {
         Ok(())
+    }
+
+    async fn spawn_runtime_event_sources(&self, sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        self.unix.spawn_runtime_event_sources(sender).await
     }
 
     async fn is_ready(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> bool {

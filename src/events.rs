@@ -32,10 +32,29 @@ pub enum SystemResourceStat {
     Swap(SwapStats),
 }
 
+/// Platform-neutral runtime control request.
+///
+/// Executors should translate environment-specific lifecycle inputs into these
+/// events so applications can react without depending on a specific OS signal
+/// or control mechanism.
+#[derive(Clone, Debug, Serialize)]
+pub enum ControlEvent {
+    /// Request configuration reload.
+    ReloadConfiguration,
+    /// Request graceful suspension.
+    Suspend(Option<chrono::NaiveDateTime>),
+    /// Request graceful shutdown.
+    Shutdown(Option<chrono::NaiveDateTime>),
+    /// Request log rotation or log sink reopen.
+    LogRotation,
+}
+
 /// wora and system based events
 ///
 #[derive(Clone, Debug, Serialize)]
 pub enum Event<T> {
+    /// platform-neutral lifecycle or operator control request
+    Control(ControlEvent),
     // system
     /// when a Unix signal arrives
     UnixSignal(i32),
@@ -51,14 +70,26 @@ pub enum Event<T> {
     ConfigChange(notify::Event),
 
     // workload operations
+    /// workload is being requested to reload configuration
+    ///
+    /// Prefer `Event::Control(ControlEvent::ReloadConfiguration)` for new
+    /// code. This variant remains for compatibility with earlier APIs.
+    #[allow(dead_code)]
+    ReloadConfiguration,
     /// workload is being requested to suspend
+    ///
+    /// Prefer `Event::Control(ControlEvent::Suspend(_))` for new code.
     Suspended(Option<chrono::NaiveDateTime>),
     /// workload is being requested to shutdown
+    ///
+    /// Prefer `Event::Control(ControlEvent::Shutdown(_))` for new code.
     Shutdown(Option<chrono::NaiveDateTime>),
     /// workload is being requested to change leadership role
     LeadershipChange(Leadership, Leadership),
 
     /// workload is being requested to rotate logging
+    ///
+    /// Prefer `Event::Control(ControlEvent::LogRotation)` for new code.
     LogRotation,
 
     /// custom workload/app events
