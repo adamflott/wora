@@ -17,6 +17,7 @@ use nix::unistd::getpid;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use proc_lock::try_lock;
 use serde::Serialize;
+use sysinfo::System;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::watch;
@@ -474,6 +475,9 @@ pub trait App<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> {
     }
 
     /// Apply an initially loaded application configuration.
+    ///
+    /// For event-driven apps, runtime config reloads usually flow through
+    /// `reload_config` instead of this hook directly.
     async fn configure(&mut self, _config: <Self::AppConfig as Config>::ConfigT) -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     }
@@ -1017,22 +1021,57 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
             let runtime_app_name = wora.app_name.clone();
             let runtime_leadership = wora.leadership.clone();
             let runtime_metrics_restart_counter = restart_counter.clone();
+            let host_sampler = Arc::new(std::sync::Mutex::new(Host::new().ok()));
+            let process_sampler = Arc::new(std::sync::Mutex::new(System::new_all()));
             wora.schedule_task(hs_interval, move |tx| {
                 let runtime_status = runtime_status.clone();
                 let runtime_app_name = runtime_app_name.clone();
                 let runtime_leadership = runtime_leadership.clone();
                 let runtime_metrics_restart_counter = runtime_metrics_restart_counter.clone();
+                let host_sampler = host_sampler.clone();
+                let process_sampler = process_sampler.clone();
                 async move {
-                    match Host::new() {
-                        Ok(host) => {
-                            let _ = tx.send(o11y_new_ev_hoststats(host.stats())).await;
+                    let host_stats = match host_sampler.lock() {
+                        Ok(mut guard) => match guard.as_mut() {
+                            Some(host) => match host.update() {
+                                Ok(()) => Some(host.stats().clone()),
+                                Err(err) => {
+                                    error!("o11y:host stats refresh error: {}", err);
+                                    None
+                                }
+                            },
+                            None => match Host::new() {
+                                Ok(host) => {
+                                    let stats = host.stats().clone();
+                                    *guard = Some(host);
+                                    Some(stats)
+                                }
+                                Err(err) => {
+                                    error!("o11y:host stats refresh error: {}", err);
+                                    None
+                                }
+                            },
+                        },
+                        Err(_) => {
+                            error!("o11y:host stats sampler poisoned");
+                            None
                         }
-                        Err(err) => {
-                            error!("o11y:host stats refresh error: {}", err);
-                        }
+                    };
+                    if let Some(host_stats) = host_stats {
+                        let _ = tx.send(o11y_new_ev_hoststats(&host_stats)).await;
                     }
 
-                    if let Some(process_stats) = ProcessStats::current() {
+                    let process_stats = match process_sampler.lock() {
+                        Ok(mut sys) => {
+                            sys.refresh_all();
+                            ProcessStats::from_system(&sys, std::process::id())
+                        }
+                        Err(_) => {
+                            error!("o11y:process stats sampler poisoned");
+                            None
+                        }
+                    };
+                    if let Some(process_stats) = process_stats {
                         let _ = tx.send(o11y_new_ev_processstats(&process_stats)).await;
                     }
 

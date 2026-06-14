@@ -14,7 +14,7 @@ use serde::Serialize;
 use sysinfo::{Disks, Networks, Pid, System};
 use thiserror::Error;
 use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 use tracing::{Id, Level};
@@ -188,16 +188,27 @@ pub enum O11yMetricValue {
 /// Current process resource statistics.
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct ProcessStats {
+    /// Process identifier.
     pub pid: u32,
+    /// Resident memory usage in bytes.
     pub memory: u64,
+    /// Virtual memory usage in bytes.
     pub virtual_memory: u64,
+    /// CPU usage percentage reported by `sysinfo`.
     pub cpu_usage: f32,
+    /// Accumulated CPU time in milliseconds.
     pub accumulated_cpu_time: u64,
+    /// Process runtime in seconds.
     pub run_time: u64,
+    /// Process start time in seconds since epoch.
     pub start_time: u64,
+    /// Bytes read since the previous refresh.
     pub read_bytes: u64,
+    /// Total bytes read.
     pub total_read_bytes: u64,
+    /// Bytes written since the previous refresh.
     pub written_bytes: u64,
+    /// Total bytes written.
     pub total_written_bytes: u64,
 }
 
@@ -232,13 +243,21 @@ impl ProcessStats {
 /// Runtime state and counters exported as observability metrics.
 #[derive(Clone, Debug, Serialize)]
 pub struct RuntimeMetrics {
+    /// Stable application name.
     pub app_name: String,
+    /// Current process identifier.
     pub pid: u32,
+    /// Current leadership role.
     pub leadership: Leadership,
+    /// Latest reported health state.
     pub health: HealthState,
+    /// Latest reported readiness state.
     pub readiness: ReadinessState,
+    /// Number of restarts applied by the runner.
     pub restart_count: u32,
+    /// Current remaining event channel capacity.
     pub event_backlog_capacity: usize,
+    /// Maximum event channel capacity.
     pub event_backlog_max_capacity: usize,
 }
 
@@ -317,12 +336,17 @@ struct JsonLine<'a> {
 pub struct O11yJsonLinesSink {
     path: PathBuf,
     sink_name: Option<String>,
+    writer: Option<BufWriter<tokio::fs::File>>,
 }
 
 impl O11yJsonLinesSink {
     /// Create a JSON-lines sink writing to `path`.
     pub fn new(path: PathBuf) -> Self {
-        Self { path, sink_name: None }
+        Self {
+            path,
+            sink_name: None,
+            writer: None,
+        }
     }
 
     /// Add a static sink name to emitted records.
@@ -341,10 +365,22 @@ impl<T: Debug + Send + Sync + 'static> O11ySink<T> for O11yJsonLinesSink {
             payload: format!("{:?}", event.kind),
             sink: self.sink_name.as_deref(),
         };
-        let mut file = OpenOptions::new().create(true).append(true).open(&self.path).await?;
-        file.write_all(serde_json::to_string(&line)?.as_bytes()).await?;
-        file.write_all(b"\n").await?;
-        file.flush().await?;
+        if self.writer.is_none() {
+            let file = OpenOptions::new().create(true).append(true).open(&self.path).await?;
+            self.writer = Some(BufWriter::new(file));
+        }
+        let Some(writer) = self.writer.as_mut() else {
+            return Err(O11ySinkError::Io(std::io::Error::other("json-lines writer was not initialized")));
+        };
+        writer.write_all(serde_json::to_string(&line)?.as_bytes()).await?;
+        writer.write_all(b"\n").await?;
+        Ok(())
+    }
+
+    async fn flush(&mut self) -> Result<(), O11ySinkError> {
+        if let Some(writer) = self.writer.as_mut() {
+            writer.flush().await?;
+        }
         Ok(())
     }
 }
@@ -375,6 +411,9 @@ impl<T: Sync> O11yProcessor<T> {
     pub async fn run(mut self, mut receiver: Receiver<O11yEvent<T>>) -> Result<(), O11ySinkError> {
         while let Some(event) = receiver.recv().await {
             self.process_event(&event).await?;
+        }
+        for sink in &mut self.sinks {
+            sink.flush().await?;
         }
         Ok(())
     }

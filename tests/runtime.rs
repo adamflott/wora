@@ -864,6 +864,26 @@ async fn o11y_processor_fans_out_to_memory_and_json_sinks() -> Result<(), Box<dy
 }
 
 #[tokio::test]
+async fn o11y_processor_flushes_buffered_json_lines_on_channel_close() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("o11y-close-flush");
+    std::fs::create_dir_all(&root)?;
+    let json_path = root.join("o11y.jsonl");
+    let processor = O11yProcessor::new(vec![Box::new(O11yJsonLinesSink::new(json_path.clone()).with_name("test"))]);
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    let task = processor.spawn(rx);
+
+    tx.send(o11y_new_ev_status::<()>(1, 8)).await?;
+    drop(tx);
+
+    task.await.map_err(|err| std::io::Error::other(err.to_string()))??;
+
+    let file = std::fs::read_to_string(json_path)?;
+    assert!(file.contains("\"kind\":\"status\""));
+    assert!(file.contains("\"sink\":\"test\""));
+    Ok(())
+}
+
+#[tokio::test]
 async fn runner_emits_host_process_and_runtime_metrics() -> Result<(), Box<dyn std::error::Error>> {
     let root = unique_test_dir("o11y-metrics");
     let dirs = test_dirs(root.clone());
@@ -899,6 +919,86 @@ async fn runner_emits_host_process_and_runtime_metrics() -> Result<(), Box<dyn s
     assert!(saw_host_stats);
     assert!(saw_process_stats);
     assert!(saw_runtime_metrics);
+    Ok(())
+}
+
+#[derive(Default)]
+struct MissingSecretsApp {
+    reloaded_secret_count: usize,
+}
+
+struct MissingSecretsParser;
+
+impl Secrets for MissingSecretsParser {
+    type SecretT = String;
+
+    fn parse_secret_file(_file_path: PathBuf, data: Vec<u8>) -> Result<Self::SecretT, Box<dyn std::error::Error>> {
+        Ok(String::from_utf8(data)?)
+    }
+}
+
+#[async_trait]
+impl App<(), ()> for MissingSecretsApp {
+    type AppConfig = TestConfig;
+    type AppSecrets = MissingSecretsParser;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        "missing_secrets"
+    }
+
+    async fn reload_secrets(&mut self, reload: SecretReload<String>) -> Result<(), Box<dyn std::error::Error>> {
+        self.reloaded_secret_count += reload.files.len();
+        Ok(())
+    }
+
+    async fn setup(
+        &mut self,
+        _wora: &Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    async fn main(
+        &mut self,
+        _wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
+        assert_eq!(self.reloaded_secret_count, 0);
+        MainRetryAction::Success
+    }
+
+    async fn is_healthy(&mut self) -> HealthState {
+        HealthState::Ok
+    }
+
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
+}
+
+#[tokio::test]
+async fn initial_secret_load_skips_missing_secret_directory() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("missing-secrets");
+    let dirs = test_dirs(root.clone());
+    std::fs::create_dir_all(&dirs.metadata_root_dir)?;
+    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+    std::fs::write(dirs.metadata_root_dir.join("missing_secrets.toml"), "enabled = true")?;
+
+    exec_async_runner(
+        TestExec { dirs },
+        MissingSecretsApp::default(),
+        PhysicalVFS::new(),
+        test_o11y()?,
+        Some(root.join("boot")),
+    )
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
+
     Ok(())
 }
 

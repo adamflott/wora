@@ -49,6 +49,14 @@ raunch = "1.0.1"
 [build-dependencies]
 pkg-config = "0.3.33"
 
+[[example]]
+name = "onboarding"
+path = "examples/onboarding.rs"
+
+[[example]]
+name = "systemd_daemon"
+path = "examples/systemd_daemon.rs"
+
 [lints.rust]
 unsafe_code = "forbid"
 
