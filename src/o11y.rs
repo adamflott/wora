@@ -240,6 +240,83 @@ impl ProcessStats {
     }
 }
 
+/// Provider for runtime host and process telemetry.
+pub trait RuntimeEnvironment: Clone + Send + Sync + 'static {
+    /// Collect the initial host snapshot used to build `Wora`.
+    fn initial_host(&self) -> Result<Host, O11yError>;
+
+    /// Collect initial process statistics, if available.
+    fn initial_process_stats(&self) -> Option<ProcessStats>;
+
+    /// Refresh host statistics, if available.
+    fn refresh_host_stats(&self) -> Result<Option<HostStats>, O11yError>;
+
+    /// Refresh process statistics, if available.
+    fn refresh_process_stats(&self) -> Option<ProcessStats>;
+}
+
+/// Default runtime environment backed by `sysinfo` and host OS APIs.
+#[derive(Clone, Debug)]
+pub struct SystemRuntimeEnvironment {
+    host_sampler: Arc<std::sync::Mutex<Option<Host>>>,
+    process_sampler: Arc<std::sync::Mutex<System>>,
+}
+
+impl Default for SystemRuntimeEnvironment {
+    fn default() -> Self {
+        Self {
+            host_sampler: Arc::new(std::sync::Mutex::new(None)),
+            process_sampler: Arc::new(std::sync::Mutex::new(System::new_all())),
+        }
+    }
+}
+
+impl RuntimeEnvironment for SystemRuntimeEnvironment {
+    fn initial_host(&self) -> Result<Host, O11yError> {
+        let mut guard = self
+            .host_sampler
+            .lock()
+            .map_err(|_| O11yError::RuntimeEnvironment("host sampler poisoned".to_string()))?;
+        if let Some(host) = guard.as_ref() {
+            return Ok(Host::from_parts(host.info.clone(), host.stats.clone()));
+        }
+
+        let host = Host::new()?;
+        let snapshot = Host::from_parts(host.info.clone(), host.stats.clone());
+        *guard = Some(host);
+        Ok(snapshot)
+    }
+
+    fn initial_process_stats(&self) -> Option<ProcessStats> {
+        self.refresh_process_stats()
+    }
+
+    fn refresh_host_stats(&self) -> Result<Option<HostStats>, O11yError> {
+        let mut guard = self
+            .host_sampler
+            .lock()
+            .map_err(|_| O11yError::RuntimeEnvironment("host sampler poisoned".to_string()))?;
+        match guard.as_mut() {
+            Some(host) => {
+                host.update()?;
+                Ok(Some(host.stats().clone()))
+            }
+            None => {
+                let host = Host::new()?;
+                let stats = host.stats().clone();
+                *guard = Some(host);
+                Ok(Some(stats))
+            }
+        }
+    }
+
+    fn refresh_process_stats(&self) -> Option<ProcessStats> {
+        let mut guard = self.process_sampler.lock().ok()?;
+        guard.refresh_all();
+        ProcessStats::from_system(&guard, std::process::id())
+    }
+}
+
 /// Runtime state and counters exported as observability metrics.
 #[derive(Clone, Debug, Serialize)]
 pub struct RuntimeMetrics {
@@ -531,6 +608,8 @@ pub enum O11yError {
     InvalidBootTime(u64),
     #[error("unsupported os {0}")]
     UnsupportedOS(String),
+    #[error("runtime environment {0}")]
+    RuntimeEnvironment(String),
 }
 /// Operating systems recognized by WORA host metadata.
 #[derive(Default, Clone, Debug, Serialize)]
@@ -630,6 +709,15 @@ pub struct Host {
 }
 
 impl Host {
+    /// Build a host snapshot from explicit parts.
+    pub fn from_parts(info: HostInfo, stats: HostStats) -> Self {
+        Self {
+            sys: System::new_all(),
+            info,
+            stats,
+        }
+    }
+
     /// Collect host information and resource statistics.
     pub fn new() -> Result<Self, O11yError> {
         let mut sys = sysinfo::System::new_all();

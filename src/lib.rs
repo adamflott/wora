@@ -15,7 +15,6 @@ use async_trait::async_trait;
 use chrono::Utc;
 use nix::unistd::getpid;
 use serde::Serialize;
-use sysinfo::System;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::watch;
@@ -161,11 +160,22 @@ impl RuntimeStatusHandle {
 impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv, AppMetric> {
     /// Create a new runtime context.
     pub fn new(dirs: &Dirs, app_name: String, ev_buf_size: usize, o11y: O11yProcessorOptions<AppMetric>) -> Result<Wora<AppEv, AppMetric>, WoraSetupError> {
+        Self::new_with_runtime_environment(dirs, app_name, ev_buf_size, o11y, SystemRuntimeEnvironment::default())
+    }
+
+    /// Create a new runtime context with an explicit runtime environment.
+    pub fn new_with_runtime_environment<R: RuntimeEnvironment>(
+        dirs: &Dirs,
+        app_name: String,
+        ev_buf_size: usize,
+        o11y: O11yProcessorOptions<AppMetric>,
+        runtime_environment: R,
+    ) -> Result<Wora<AppEv, AppMetric>, WoraSetupError> {
         let pid = getpid();
 
         let (tx, rx) = channel(ev_buf_size);
 
-        let host = Host::new()?;
+        let host = runtime_environment.initial_host()?;
         let status = RuntimeStatusHandle::new();
 
         let current_dir = std::env::current_dir()?;
@@ -892,6 +902,35 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
 /// Run apps via an `async` based executor with explicit restart options and a
 /// caller-supplied lock backend.
 pub async fn exec_async_runner_with_restart_options_and_lock_backend<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static, L: LockBackend>(
+    exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
+    app: impl App<AppEv, AppMetric> + Send + 'static,
+    fs: impl WFS + 'static,
+    o11y: O11yProcessorOptions<AppMetric>,
+    maybe_boot_dir: Option<PathBuf>,
+    restart_options: RestartPolicyOptions,
+    lock_backend: L,
+) -> Result<(), MainEarlyReturn> {
+    exec_async_runner_with_restart_options_lock_backend_and_runtime_environment(
+        exec,
+        app,
+        fs,
+        o11y,
+        maybe_boot_dir,
+        restart_options,
+        lock_backend,
+        SystemRuntimeEnvironment::default(),
+    )
+    .await
+}
+
+/// Run apps via an `async` based executor with explicit restart options, lock
+/// backend, and runtime environment provider.
+pub async fn exec_async_runner_with_restart_options_lock_backend_and_runtime_environment<
+    AppEv: Send + Sync + 'static,
+    AppMetric: Debug + Send + Sync + 'static,
+    L: LockBackend,
+    R: RuntimeEnvironment,
+>(
     mut exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
     mut app: impl App<AppEv, AppMetric> + Send + 'static,
     fs: impl WFS + 'static,
@@ -899,6 +938,7 @@ pub async fn exec_async_runner_with_restart_options_and_lock_backend<AppEv: Send
     maybe_boot_dir: Option<PathBuf>,
     restart_options: RestartPolicyOptions,
     lock_backend: L,
+    runtime_environment: R,
 ) -> Result<(), MainEarlyReturn> {
     let mut lock_path = PathBuf::new();
     lock_path.push(&exec.dirs().runtime_root_dir);
@@ -926,7 +966,7 @@ pub async fn exec_async_runner_with_restart_options_and_lock_backend<AppEv: Send
             let hs_interval = *o11y.host_stats_interval();
             let restart_counter = Arc::new(AtomicU32::new(0));
 
-            let mut wora = Wora::new(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE, o11y)?;
+            let mut wora = Wora::new_with_runtime_environment(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE, o11y, runtime_environment.clone())?;
             let mut health_rx = wora.status_handle().subscribe_health();
             let readiness_rx = wora.status_handle().subscribe_readiness();
             let (runtime_event_tx, mut runtime_event_rx) = channel::<Event<AppEv>>(EVENT_BUFFER_SIZE);
@@ -980,7 +1020,7 @@ pub async fn exec_async_runner_with_restart_options_and_lock_backend<AppEv: Send
                     restart_counter.load(Ordering::Relaxed),
                 )))
                 .await;
-            if let Some(process_stats) = ProcessStats::current() {
+            if let Some(process_stats) = runtime_environment.initial_process_stats() {
                 let _ = metrics_sender.send(o11y_new_ev_processstats(&process_stats)).await;
             }
 
@@ -1002,39 +1042,18 @@ pub async fn exec_async_runner_with_restart_options_and_lock_backend<AppEv: Send
             let runtime_app_name = wora.app_name.clone();
             let runtime_leadership = wora.leadership.clone();
             let runtime_metrics_restart_counter = restart_counter.clone();
-            let host_sampler = Arc::new(std::sync::Mutex::new(Host::new().ok()));
-            let process_sampler = Arc::new(std::sync::Mutex::new(System::new_all()));
+            let runtime_environment = runtime_environment.clone();
             wora.schedule_task(hs_interval, move |tx| {
                 let runtime_status = runtime_status.clone();
                 let runtime_app_name = runtime_app_name.clone();
                 let runtime_leadership = runtime_leadership.clone();
                 let runtime_metrics_restart_counter = runtime_metrics_restart_counter.clone();
-                let host_sampler = host_sampler.clone();
-                let process_sampler = process_sampler.clone();
+                let runtime_environment = runtime_environment.clone();
                 async move {
-                    let host_stats = match host_sampler.lock() {
-                        Ok(mut guard) => match guard.as_mut() {
-                            Some(host) => match host.update() {
-                                Ok(()) => Some(host.stats().clone()),
-                                Err(err) => {
-                                    error!("o11y:host stats refresh error: {}", err);
-                                    None
-                                }
-                            },
-                            None => match Host::new() {
-                                Ok(host) => {
-                                    let stats = host.stats().clone();
-                                    *guard = Some(host);
-                                    Some(stats)
-                                }
-                                Err(err) => {
-                                    error!("o11y:host stats refresh error: {}", err);
-                                    None
-                                }
-                            },
-                        },
-                        Err(_) => {
-                            error!("o11y:host stats sampler poisoned");
+                    let host_stats = match runtime_environment.refresh_host_stats() {
+                        Ok(stats) => stats,
+                        Err(err) => {
+                            error!("o11y:host stats refresh error: {}", err);
                             None
                         }
                     };
@@ -1042,16 +1061,7 @@ pub async fn exec_async_runner_with_restart_options_and_lock_backend<AppEv: Send
                         let _ = tx.send(o11y_new_ev_hoststats(&host_stats)).await;
                     }
 
-                    let process_stats = match process_sampler.lock() {
-                        Ok(mut sys) => {
-                            sys.refresh_all();
-                            ProcessStats::from_system(&sys, std::process::id())
-                        }
-                        Err(_) => {
-                            error!("o11y:process stats sampler poisoned");
-                            None
-                        }
-                    };
+                    let process_stats = runtime_environment.refresh_process_stats();
                     if let Some(process_stats) = process_stats {
                         let _ = tx.send(o11y_new_ev_processstats(&process_stats)).await;
                     }

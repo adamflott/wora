@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use chrono::Utc;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 use wora::prelude::*;
@@ -342,6 +343,78 @@ struct VirtualWatcherApp {
 }
 
 struct MetricsApp;
+
+#[derive(Clone)]
+struct DeterministicRuntimeEnvironment {
+    host_info: HostInfo,
+    host_stats: HostStats,
+    process: Option<ProcessStats>,
+}
+
+impl RuntimeEnvironment for DeterministicRuntimeEnvironment {
+    fn initial_host(&self) -> Result<Host, O11yError> {
+        Ok(Host::from_parts(self.host_info.clone(), self.host_stats.clone()))
+    }
+
+    fn initial_process_stats(&self) -> Option<ProcessStats> {
+        self.process.clone()
+    }
+
+    fn refresh_host_stats(&self) -> Result<Option<HostStats>, O11yError> {
+        Ok(Some(self.host_stats.clone()))
+    }
+
+    fn refresh_process_stats(&self) -> Option<ProcessStats> {
+        self.process.clone()
+    }
+}
+
+fn deterministic_host_info() -> HostInfo {
+    HostInfo {
+        os_type: SupportedOSes::Linux,
+        os_name: "test-os".to_string(),
+        os_version: Some("1.0".to_string()),
+        kernel_version: Some("1.0.0".to_string()),
+        architecture: Some("aarch64".to_string()),
+        hostname: Some("deterministic-host".to_string()),
+        ncpus: 4,
+        maxcpus: 8,
+        boot_time: Utc::now(),
+        #[cfg(target_os = "linux")]
+        boot_kernel_cmd: Some(Vec::new()),
+        #[cfg(target_os = "linux")]
+        ticks_per_sec: 100,
+        #[cfg(target_os = "linux")]
+        current_process_arp_entries: Vec::new(),
+        #[cfg(target_os = "linux")]
+        current_process_routes: Vec::new(),
+        #[cfg(target_os = "linux")]
+        current_process_tcp: Vec::new(),
+        #[cfg(target_os = "linux")]
+        current_process_tcp6: Vec::new(),
+        #[cfg(target_os = "linux")]
+        current_process_udp: Vec::new(),
+        #[cfg(target_os = "linux")]
+        current_process_udp6: Vec::new(),
+        #[cfg(target_os = "linux")]
+        current_process_unix: Vec::new(),
+    }
+}
+
+fn deterministic_host_stats() -> HostStats {
+    HostStats {
+        cpu: Vec::new(),
+        memory: MemStats { total: 10, free: 4, used: 6 },
+        load: LoadAvg {
+            one: 0.1,
+            five: 0.2,
+            fifteen: 0.3,
+        },
+        swap: SwapStats { total: 20, used: 5, free: 15 },
+        fs: Vec::new(),
+        net_io: std::collections::HashMap::new(),
+    }
+}
 
 impl Config for ReloadingConfig {
     type ConfigT = ReloadingConfig;
@@ -1039,6 +1112,71 @@ async fn runner_emits_host_process_and_runtime_metrics() -> Result<(), Box<dyn s
     assert!(saw_host_stats);
     assert!(saw_process_stats);
     assert!(saw_runtime_metrics);
+    Ok(())
+}
+
+#[tokio::test]
+async fn runner_uses_injected_runtime_environment() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("o11y-metrics-deterministic");
+    let dirs = test_dirs(root.clone());
+    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+    let (o11y, mut rx) = test_o11y_with_receiver(Duration::from_millis(10))?;
+    let runtime_environment = DeterministicRuntimeEnvironment {
+        host_info: deterministic_host_info(),
+        host_stats: deterministic_host_stats(),
+        process: Some(ProcessStats {
+            pid: 4242,
+            memory: 64,
+            virtual_memory: 128,
+            cpu_usage: 5.0,
+            accumulated_cpu_time: 12,
+            run_time: 7,
+            start_time: 9,
+            read_bytes: 1,
+            total_read_bytes: 2,
+            written_bytes: 3,
+            total_written_bytes: 4,
+        }),
+    };
+
+    exec_async_runner_with_restart_options_lock_backend_and_runtime_environment(
+        TestExec { dirs },
+        MetricsApp,
+        PhysicalVFS::new(),
+        o11y,
+        Some(root.join("boot")),
+        RestartPolicyOptions::default(),
+        ProcLockBackend,
+        runtime_environment,
+    )
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
+
+    let mut saw_host_stats = false;
+    let mut saw_process_stats = false;
+
+    while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
+        let Some(event) = event else {
+            break;
+        };
+        match event.kind {
+            O11yEventKind::HostStats(stats) => {
+                saw_host_stats = true;
+                assert_eq!(stats.memory.used, 6);
+                assert!(stats.cpu.is_empty());
+                assert_eq!(stats.swap.used, 5);
+            }
+            O11yEventKind::ProcessStats(stats) => {
+                saw_process_stats = true;
+                assert_eq!(stats.pid, 4242);
+                assert_eq!(stats.total_written_bytes, 4);
+            }
+            _ => {}
+        }
+    }
+
+    assert!(saw_host_stats);
+    assert!(saw_process_stats);
     Ok(())
 }
 

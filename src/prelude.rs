@@ -18,6 +18,7 @@ pub use crate::exec::*;
 pub use crate::exec_async_runner;
 pub use crate::exec_async_runner_with_restart_options;
 pub use crate::exec_async_runner_with_restart_options_and_lock_backend;
+pub use crate::exec_async_runner_with_restart_options_lock_backend_and_runtime_environment;
 pub use crate::exec_async_runner_with_restart_policy;
 pub use crate::exec_env::*;
 pub use crate::exec_unix::*;
