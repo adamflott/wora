@@ -117,6 +117,51 @@ struct AlwaysRestartApp {
 }
 
 #[derive(Clone, Debug)]
+struct ReadyMarkerExec {
+    dirs: Dirs,
+    ready_file: PathBuf,
+}
+
+#[async_trait]
+impl AsyncExecutor<(), ()> for ReadyMarkerExec {
+    fn id(&self) -> &'static str {
+        "ready-marker"
+    }
+
+    fn dirs(&self) -> &Dirs {
+        &self.dirs
+    }
+
+    async fn setup(&mut self, _wora: &Wora<(), ()>, fs: impl WFS) -> Result<(), SetupFailure> {
+        for dir in [
+            &self.dirs.root_dir,
+            &self.dirs.log_root_dir,
+            &self.dirs.metadata_root_dir,
+            &self.dirs.data_root_dir,
+            &self.dirs.runtime_root_dir,
+            &self.dirs.cache_root_dir,
+            &self.dirs.secrets_root_dir,
+        ] {
+            fs.create_dir(dir).await?;
+        }
+        Ok(())
+    }
+
+    async fn on_runtime_ready(&self, app_name: &str, _dirs: &Dirs, fs: impl WFS) -> Result<(), SetupFailure> {
+        let mut file = fs.create_file(&self.ready_file).await?;
+        use tokio::io::AsyncWriteExt;
+        file.write_all(format!("ready:{app_name}").as_bytes()).await?;
+        Ok(())
+    }
+
+    async fn is_ready(&self, _wora: &Wora<(), ()>, _fs: impl WFS) -> bool {
+        true
+    }
+
+    async fn end(&self, _wora: &Wora<(), ()>, _fs: impl WFS) {}
+}
+
+#[derive(Clone, Debug)]
 struct ControlEventExec {
     dirs: Dirs,
 }
@@ -257,6 +302,12 @@ impl App<(), ()> for ConfiguredRestartApp {
 
 struct ControlDrivenApp;
 
+struct DeferredReadyApp;
+
+struct HealthFailureApp {
+    calls: Arc<Mutex<u8>>,
+}
+
 #[async_trait]
 impl App<(), ()> for ControlDrivenApp {
     type AppConfig = NoConfig;
@@ -291,6 +342,105 @@ impl App<(), ()> for ControlDrivenApp {
         }
 
         MainRetryAction::UseExitCode(9)
+    }
+
+    async fn is_healthy(&mut self) -> HealthState {
+        HealthState::Ok
+    }
+
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
+}
+
+#[async_trait]
+impl App<(), ()> for DeferredReadyApp {
+    type AppConfig = NoConfig;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        "deferred_ready"
+    }
+
+    async fn setup(
+        &mut self,
+        wora: &Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        wora.report_readiness(ReadinessState::NotReady);
+        let status = wora.status_handle();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            status.report_readiness(ReadinessState::Ready);
+        });
+        Ok(())
+    }
+
+    async fn main(
+        &mut self,
+        _wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        MainRetryAction::Success
+    }
+
+    async fn is_healthy(&mut self) -> HealthState {
+        HealthState::Ok
+    }
+
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
+}
+
+#[async_trait]
+impl App<(), ()> for HealthFailureApp {
+    type AppConfig = NoConfig;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        "health_failure"
+    }
+
+    async fn setup(
+        &mut self,
+        wora: &Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        let status = wora.status_handle();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            status.report_health(HealthState::Failed);
+        });
+        Ok(())
+    }
+
+    async fn main(
+        &mut self,
+        wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
+        {
+            let Ok(mut calls) = self.calls.lock() else {
+                return MainRetryAction::UseExitCode(3);
+            };
+            *calls += 1;
+        }
+
+        while let Some(event) = wora.receiver.recv().await {
+            if matches!(event, Event::Control(ControlEvent::Shutdown(_))) {
+                return MainRetryAction::UseRestartPolicy;
+            }
+        }
+
+        MainRetryAction::UseExitCode(8)
     }
 
     async fn is_healthy(&mut self) -> HealthState {
@@ -353,6 +503,62 @@ async fn executor_runtime_event_sources_can_drive_control_flow() -> Result<(), B
     Ok(())
 }
 
+#[tokio::test]
+async fn delayed_readiness_reports_trigger_executor_ready_hook() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("deferred-ready");
+    let ready_file = root.join("runtime").join("ready.marker");
+    let dirs = test_dirs(root.clone());
+    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+
+    exec_async_runner(
+        ReadyMarkerExec {
+            dirs,
+            ready_file: ready_file.clone(),
+        },
+        DeferredReadyApp,
+        PhysicalVFS::new(),
+        test_o11y()?,
+        Some(root.join("boot")),
+    )
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
+
+    assert_eq!(std::fs::read_to_string(ready_file)?, "ready:deferred_ready");
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_health_can_trigger_restart_policy() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("health-restart");
+    let dirs = test_dirs(root.clone());
+    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+
+    let calls = Arc::new(Mutex::new(0));
+    let rc = exec_async_runner_with_restart_options(
+        TestExec { dirs },
+        HealthFailureApp { calls: calls.clone() },
+        PhysicalVFS::new(),
+        test_o11y()?,
+        Some(root.join("boot")),
+        RestartPolicyOptions {
+            policy: WorkloadRestartPolicy::RetryInstantly,
+            max_retries: Some(1),
+            supervision: SupervisionOptions {
+                shutdown_grace_period: Duration::from_millis(50),
+                unhealthy_action: UnhealthyAction::UseRestartPolicy,
+                ..SupervisionOptions::default()
+            },
+            ..RestartPolicyOptions::default()
+        },
+    )
+    .await;
+
+    let calls = calls.lock().map_err(|err| std::io::Error::other(err.to_string()))?;
+    assert!(matches!(rc, Err(MainEarlyReturn::UseExitCode(1))));
+    assert_eq!(*calls, 2);
+    Ok(())
+}
+
 #[cfg(target_family = "unix")]
 #[tokio::test]
 async fn systemd_executor_sends_ready_and_stopping_notifications() -> Result<(), Box<dyn std::error::Error>> {
@@ -367,21 +573,21 @@ async fn systemd_executor_sends_ready_and_stopping_notifications() -> Result<(),
     let exec = SystemdExecutor::system("notify_app")
         .await
         .with_notify_socket(socket_path.to_string_lossy().to_string());
-    let wora = Wora::new(
+    let wora: Wora<(), ()> = Wora::new(
         <SystemdExecutor as AsyncExecutor<(), ()>>::dirs(&exec),
         "notify_app".to_string(),
         16,
         test_o11y()?,
     )?;
 
-    <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_ready(&exec, &wora, PhysicalVFS::new()).await?;
+    <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_ready(&exec, "notify_app", &wora.dirs, PhysicalVFS::new()).await?;
     let mut buf = [0u8; 256];
     let ready_size = receiver.recv(&mut buf)?;
     let ready_message = std::str::from_utf8(&buf[..ready_size])?;
     assert!(ready_message.contains("READY=1"));
     assert!(ready_message.contains("notify_app ready"));
 
-    <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_stopping(&exec, &wora, PhysicalVFS::new()).await?;
+    <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_stopping(&exec, "notify_app", &wora.dirs, PhysicalVFS::new()).await?;
     let stopping_size = receiver.recv(&mut buf)?;
     let stopping_message = std::str::from_utf8(&buf[..stopping_size])?;
     assert!(stopping_message.contains("STOPPING=1"));
@@ -399,18 +605,18 @@ async fn container_executor_manages_readiness_and_termination_files() -> Result<
         .await
         .with_readiness_file(&readiness_path)
         .with_termination_log(&termination_path);
-    let wora = Wora::new(
+    let wora: Wora<(), ()> = Wora::new(
         <ContainerExecutor as AsyncExecutor<(), ()>>::dirs(&exec),
         "container_app".to_string(),
         16,
         test_o11y()?,
     )?;
 
-    <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_ready(&exec, &wora, PhysicalVFS::new()).await?;
+    <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_ready(&exec, "container_app", &wora.dirs, PhysicalVFS::new()).await?;
     assert!(readiness_path.is_file());
     assert_eq!(std::fs::read_to_string(&readiness_path)?, "ready:container_app\n");
 
-    <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_stopping(&exec, &wora, PhysicalVFS::new()).await?;
+    <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_stopping(&exec, "container_app", &wora.dirs, PhysicalVFS::new()).await?;
     assert!(!readiness_path.exists());
     assert_eq!(std::fs::read_to_string(&termination_path)?, "stopping:container_app\n");
 

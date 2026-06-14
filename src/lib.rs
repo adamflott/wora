@@ -7,6 +7,7 @@
 use std::fmt::Debug;
 use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -16,6 +17,7 @@ use proc_lock::try_lock;
 use serde::Serialize;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 use tracing::{debug, error, info, trace, warn};
@@ -32,7 +34,7 @@ pub mod restart_policy;
 pub mod vfs;
 
 use crate::dirs::Dirs;
-use crate::errors::{MainEarlyReturn, WoraSetupError};
+use crate::errors::{MainEarlyReturn, SetupFailure, WoraSetupError};
 use crate::events::*;
 use crate::exec::*;
 use crate::o11y::*;
@@ -64,6 +66,8 @@ pub struct Wora<AppEv, AppMetric> {
     pub leadership: Leadership,
     /// Observability channel and scheduling options.
     pub o11y: O11yProcessorOptions<AppMetric>,
+    /// Shared runtime status for health and readiness supervision.
+    status: RuntimeStatusHandle,
 }
 
 /// Current leadership role for a workload.
@@ -92,6 +96,64 @@ pub enum HealthState {
     Unknown,
 }
 
+/// Readiness state reported by an application.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub enum ReadinessState {
+    /// The application is ready to serve.
+    Ready,
+    /// The application is still warming up or otherwise not ready.
+    NotReady,
+    /// The application is stopping and should no longer be considered ready.
+    Stopping,
+    /// Readiness has not been reported.
+    Unknown,
+}
+
+/// Cloneable handle used by apps and background tasks to report health and readiness.
+#[derive(Clone, Debug)]
+pub struct RuntimeStatusHandle {
+    health: watch::Sender<HealthState>,
+    readiness: watch::Sender<ReadinessState>,
+}
+
+impl RuntimeStatusHandle {
+    fn new() -> Self {
+        let (health, _) = watch::channel(HealthState::Unknown);
+        let (readiness, _) = watch::channel(ReadinessState::Ready);
+        Self { health, readiness }
+    }
+
+    /// Report a new health state.
+    pub fn report_health(&self, state: HealthState) {
+        let _ = self.health.send(state);
+    }
+
+    /// Report a new readiness state.
+    pub fn report_readiness(&self, state: ReadinessState) {
+        let _ = self.readiness.send(state);
+    }
+
+    /// Subscribe to health state changes.
+    pub fn subscribe_health(&self) -> watch::Receiver<HealthState> {
+        self.health.subscribe()
+    }
+
+    /// Subscribe to readiness state changes.
+    pub fn subscribe_readiness(&self) -> watch::Receiver<ReadinessState> {
+        self.readiness.subscribe()
+    }
+
+    /// Return the latest reported health state.
+    pub fn health_state(&self) -> HealthState {
+        self.health.borrow().clone()
+    }
+
+    /// Return the latest reported readiness state.
+    pub fn readiness_state(&self) -> ReadinessState {
+        self.readiness.borrow().clone()
+    }
+}
+
 /// WORA API
 impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv, AppMetric> {
     /// Create a new runtime context.
@@ -101,6 +163,7 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
         let (tx, rx) = channel(ev_buf_size);
 
         let host = Host::new()?;
+        let status = RuntimeStatusHandle::new();
 
         let current_dir = std::env::current_dir()?;
 
@@ -114,6 +177,7 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
             receiver: rx,
             leadership: Leadership::Unknown,
             o11y,
+            status,
         })
     }
 
@@ -162,6 +226,31 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
     /// Return the number of logical CPUs detected at startup.
     pub fn host_cpu_max(&self) -> usize {
         self.host.info.maxcpus
+    }
+
+    /// Return the shared runtime status handle.
+    pub fn status_handle(&self) -> RuntimeStatusHandle {
+        self.status.clone()
+    }
+
+    /// Report application health to the runtime supervisor.
+    pub fn report_health(&self, state: HealthState) {
+        self.status.report_health(state);
+    }
+
+    /// Report application readiness to the runtime supervisor.
+    pub fn report_readiness(&self, state: ReadinessState) {
+        self.status.report_readiness(state);
+    }
+
+    /// Return the latest application health state known to the runtime.
+    pub fn health_state(&self) -> HealthState {
+        self.status.health_state()
+    }
+
+    /// Return the latest application readiness state known to the runtime.
+    pub fn readiness_state(&self) -> ReadinessState {
+        self.status.readiness_state()
     }
 
     /// Sleep for `duration`, then emit `ev`.
@@ -322,6 +411,42 @@ where
     }
 }
 
+enum ShutdownReason {
+    External,
+    Unhealthy,
+}
+
+enum RuntimeSupervisionEvent {
+    ShutdownRequested(ShutdownReason, Option<chrono::NaiveDateTime>),
+}
+
+async fn wait_for_ready_notification<AppEv, AppMetric, E, F>(
+    exec: E,
+    app_name: String,
+    dirs: Dirs,
+    fs: F,
+    mut readiness_rx: watch::Receiver<ReadinessState>,
+) -> Result<(), SetupFailure>
+where
+    AppEv: Send + Sync + 'static,
+    AppMetric: Send + Sync + 'static,
+    E: AsyncExecutor<AppEv, AppMetric>,
+    F: WFS + 'static,
+{
+    if *readiness_rx.borrow() == ReadinessState::Ready {
+        return exec.on_runtime_ready(&app_name, &dirs, fs).await;
+    }
+
+    loop {
+        if readiness_rx.changed().await.is_err() {
+            return Ok(());
+        }
+        if *readiness_rx.borrow() == ReadinessState::Ready {
+            return exec.on_runtime_ready(&app_name, &dirs, fs).await;
+        }
+    }
+}
+
 async fn run_app_main_with_restart_policy<AppEv, AppMetric, A, E, F>(
     app: &mut A,
     wora: &mut Wora<AppEv, AppMetric>,
@@ -329,6 +454,7 @@ async fn run_app_main_with_restart_policy<AppEv, AppMetric, A, E, F>(
     fs: F,
     metrics_sender: Sender<O11yEvent<AppMetric>>,
     restart_options: RestartPolicyOptions,
+    supervision_rx: &mut Receiver<RuntimeSupervisionEvent>,
 ) -> Result<(), MainEarlyReturn>
 where
     AppEv: Send + Sync + 'static,
@@ -340,11 +466,52 @@ where
     let mut retry_count = 0u32;
 
     loop {
-        match app
+        let status_handle = wora.status_handle();
+        let app_event_sender = wora.sender.clone();
+        status_handle.report_health(HealthState::Unknown);
+
+        let main_future = app
             .main(wora, exec.clone(), fs.clone(), metrics_sender.clone())
-            .instrument(tracing::info_span!("app:run:main", retry = retry_count))
-            .await
-        {
+            .instrument(tracing::info_span!("app:run:main", retry = retry_count));
+        tokio::pin!(main_future);
+
+        let mut shutdown_deadline: Option<Pin<Box<tokio::time::Sleep>>> = None;
+        let mut shutdown_reason = ShutdownReason::External;
+
+        let main_result = loop {
+            tokio::select! {
+                result = &mut main_future => break result,
+                Some(event) = supervision_rx.recv() => {
+                    let RuntimeSupervisionEvent::ShutdownRequested(reason, timestamp) = event;
+                    if shutdown_deadline.is_none() {
+                        shutdown_reason = reason;
+                        status_handle.report_readiness(ReadinessState::Stopping);
+                        shutdown_deadline = Some(Box::pin(tokio::time::sleep(restart_options.supervision.shutdown_grace_period)));
+                        let _ = app_event_sender.send(Event::Control(ControlEvent::Shutdown(timestamp))).await;
+                    }
+                }
+                _ = async {
+                    if let Some(deadline) = shutdown_deadline.as_mut() {
+                        deadline.await;
+                    }
+                }, if shutdown_deadline.is_some() => {
+                    match shutdown_reason {
+                        ShutdownReason::External => {
+                            break MainRetryAction::UseExitCode(restart_options.supervision.forced_shutdown_exit_code);
+                        }
+                        ShutdownReason::Unhealthy => {
+                            break match restart_options.supervision.unhealthy_action {
+                                UnhealthyAction::Ignore => MainRetryAction::UseExitCode(restart_options.supervision.forced_shutdown_exit_code),
+                                UnhealthyAction::RequestShutdown => MainRetryAction::UseExitCode(restart_options.supervision.forced_shutdown_exit_code),
+                                UnhealthyAction::UseRestartPolicy => MainRetryAction::UseRestartPolicy,
+                            };
+                        }
+                    }
+                }
+            }
+        };
+
+        match main_result {
             MainRetryAction::UseExitCode(ec) => return Err(MainEarlyReturn::UseExitCode(ec)),
             MainRetryAction::Success => return Ok(()),
             MainRetryAction::UseRestartPolicy => match restart_options.policy {
@@ -384,7 +551,7 @@ where
 
 /// Run apps via an `async` based executor
 pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static>(
-    exec: impl AsyncExecutor<AppEv, AppMetric>,
+    exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
     app: impl App<AppEv, AppMetric> + Send + 'static,
     fs: impl WFS + 'static,
     o11y: O11yProcessorOptions<AppMetric>,
@@ -395,7 +562,7 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
 
 /// Run apps via an `async` based executor with an explicit restart policy.
 pub async fn exec_async_runner_with_restart_policy<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static>(
-    exec: impl AsyncExecutor<AppEv, AppMetric>,
+    exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
     app: impl App<AppEv, AppMetric> + Send + 'static,
     fs: impl WFS + 'static,
     o11y: O11yProcessorOptions<AppMetric>,
@@ -420,7 +587,7 @@ pub async fn exec_async_runner_with_restart_policy<AppEv: Send + Sync + 'static,
 
 /// Run apps via an `async` based executor with explicit restart options.
 pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static>(
-    mut exec: impl AsyncExecutor<AppEv, AppMetric>,
+    mut exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
     mut app: impl App<AppEv, AppMetric> + Send + 'static,
     fs: impl WFS + 'static,
     o11y: O11yProcessorOptions<AppMetric>,
@@ -454,8 +621,54 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
             let hs_interval = *o11y.host_stats_interval();
 
             let mut wora = Wora::new(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE, o11y)?;
+            let mut health_rx = wora.status_handle().subscribe_health();
+            let readiness_rx = wora.status_handle().subscribe_readiness();
+            let (runtime_event_tx, mut runtime_event_rx) = channel::<Event<AppEv>>(EVENT_BUFFER_SIZE);
+            let (supervision_tx, mut supervision_rx) = channel::<RuntimeSupervisionEvent>(EVENT_BUFFER_SIZE);
+            let dispatch_app_sender = wora.sender.clone();
+            let dispatch_supervision_sender = supervision_tx.clone();
+            let runtime_dispatch_task = tokio::spawn(async move {
+                while let Some(event) = runtime_event_rx.recv().await {
+                    match &event {
+                        Event::Control(ControlEvent::Shutdown(timestamp)) => {
+                            let _ = dispatch_supervision_sender
+                                .send(RuntimeSupervisionEvent::ShutdownRequested(ShutdownReason::External, *timestamp))
+                                .await;
+                        }
+                        Event::Shutdown(timestamp) => {
+                            let _ = dispatch_supervision_sender
+                                .send(RuntimeSupervisionEvent::ShutdownRequested(ShutdownReason::External, *timestamp))
+                                .await;
+                        }
+                        _ => {}
+                    }
+
+                    if dispatch_app_sender.send(event).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            let health_supervision_sender = supervision_tx.clone();
+            let health_event_sender = wora.sender.clone();
+            let health_supervision_task = tokio::spawn(async move {
+                loop {
+                    if health_rx.changed().await.is_err() {
+                        break;
+                    }
+
+                    if *health_rx.borrow() == HealthState::Failed {
+                        let timestamp = Some(Utc::now().naive_utc());
+                        let _ = health_event_sender.send(Event::Control(ControlEvent::Shutdown(timestamp))).await;
+                        let _ = health_supervision_sender
+                            .send(RuntimeSupervisionEvent::ShutdownRequested(ShutdownReason::Unhealthy, timestamp))
+                            .await;
+                    }
+                }
+            });
+
             let runtime_event_tasks = exec
-                .spawn_runtime_event_sources(wora.sender.clone())
+                .spawn_runtime_event_sources(runtime_event_tx.clone())
                 .instrument(tracing::info_span!("exec:run:event_sources"))
                 .await?;
 
@@ -545,17 +758,21 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
                     info!("dirs.cache: {:?}", wora.dirs.cache_root_dir);
                     info!("dirs.secrets: {:?}", wora.dirs.secrets_root_dir);
 
-                    exec.on_runtime_ready(&wora, fs.clone())
-                        .instrument(tracing::info_span!("exec:run:on_runtime_ready"))
-                        .await?;
+                    let ready_task = tokio::spawn(wait_for_ready_notification::<AppEv, AppMetric, _, _>(
+                        exec.clone(),
+                        wora.app_name.clone(),
+                        wora.dirs.clone(),
+                        fs.clone(),
+                        readiness_rx,
+                    ));
 
                     let (mut watcher, mut watch_rx) = async_watcher()?;
 
                     info!("notify:watch:dir: {:?}", &wora.dirs.metadata_root_dir);
                     watcher.watch(std::path::Path::new(&wora.dirs.metadata_root_dir), RecursiveMode::Recursive)?;
-                    let ev_sender = wora.sender.clone();
+                    let ev_sender = runtime_event_tx.clone();
 
-                    tokio::spawn(async move {
+                    let watcher_task = tokio::spawn(async move {
                         while let Some(res) = watch_rx.recv().await {
                             match res {
                                 Ok(event) => {
@@ -575,8 +792,16 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
                     info!(process_id = wora.pid.to_string(), app_name = app.name());
 
                     if exec.is_ready(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:is_ready")).await {
-                        rc = run_app_main_with_restart_policy(&mut app, &mut wora, exec.clone(), fs.clone(), metrics_sender.clone(), restart_options.clone())
-                            .await;
+                        rc = run_app_main_with_restart_policy(
+                            &mut app,
+                            &mut wora,
+                            exec.clone(),
+                            fs.clone(),
+                            metrics_sender.clone(),
+                            restart_options.clone(),
+                            &mut supervision_rx,
+                        )
+                        .await;
 
                         if matches!(rc, Err(MainEarlyReturn::UseExitCode(_))) {
                             remove_lock_file(&lock_path).await;
@@ -585,7 +810,19 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
                         warn!(comp = "exec", method = "run", is_ready = false);
                     }
 
-                    exec.on_runtime_stopping(&wora, fs.clone())
+                    watcher_task.abort();
+                    match ready_task.await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => return Err(MainEarlyReturn::SetupFailed(err)),
+                        Err(join_err) if join_err.is_cancelled() => {}
+                        Err(join_err) => {
+                            return Err(MainEarlyReturn::WoraSetup(WoraSetupError::Str(format!(
+                                "readiness supervision task failed: {join_err}"
+                            ))));
+                        }
+                    }
+
+                    exec.on_runtime_stopping(&wora.app_name, &wora.dirs, fs.clone())
                         .instrument(tracing::info_span!("exec:run:on_runtime_stopping"))
                         .await?;
 
@@ -600,6 +837,8 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
 
             exec.end(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:end")).await;
 
+            health_supervision_task.abort();
+            runtime_dispatch_task.abort();
             for task in runtime_event_tasks {
                 task.abort();
             }

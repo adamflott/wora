@@ -227,10 +227,10 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
         self.unix.spawn_runtime_event_sources(sender).await
     }
 
-    async fn on_runtime_ready(&self, wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> Result<(), SetupFailure> {
+    async fn on_runtime_ready(&self, app_name: &str, _dirs: &Dirs, _fs: impl WFS) -> Result<(), SetupFailure> {
         self.send_notify_message(format!(
             "READY=1\nSTATUS={} ready via {}\nMAINPID={}",
-            wora.app_name,
+            app_name,
             match self.scope {
                 SystemdScope::System => "systemd-system",
                 SystemdScope::User => "systemd-user",
@@ -243,8 +243,8 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
         true
     }
 
-    async fn on_runtime_stopping(&self, wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> Result<(), SetupFailure> {
-        self.send_notify_message(format!("STOPPING=1\nSTATUS={} stopping", wora.app_name))
+    async fn on_runtime_stopping(&self, app_name: &str, _dirs: &Dirs, _fs: impl WFS) -> Result<(), SetupFailure> {
+        self.send_notify_message(format!("STOPPING=1\nSTATUS={} stopping", app_name))
     }
 
     async fn end(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) {}
@@ -473,14 +473,14 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
         self.unix.spawn_runtime_event_sources(sender).await
     }
 
-    async fn on_runtime_ready(&self, wora: &Wora<AppEv, AppMetric>, fs: impl WFS) -> Result<(), SetupFailure> {
+    async fn on_runtime_ready(&self, app_name: &str, _dirs: &Dirs, fs: impl WFS) -> Result<(), SetupFailure> {
         if let Some(path) = &self.readiness_file {
             if let Some(parent) = path.parent() {
                 fs.create_dir(parent).await?;
             }
             let mut file = fs.create_file(path).await?;
             use tokio::io::AsyncWriteExt;
-            file.write_all(format!("ready:{}\n", wora.app_name).as_bytes()).await?;
+            file.write_all(format!("ready:{}\n", app_name).as_bytes()).await?;
         }
         Ok(())
     }
@@ -489,14 +489,14 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
         true
     }
 
-    async fn on_runtime_stopping(&self, wora: &Wora<AppEv, AppMetric>, fs: impl WFS) -> Result<(), SetupFailure> {
+    async fn on_runtime_stopping(&self, app_name: &str, _dirs: &Dirs, fs: impl WFS) -> Result<(), SetupFailure> {
         if let Some(path) = &self.termination_log {
             if let Some(parent) = path.parent() {
                 fs.create_dir(parent).await?;
             }
             let mut file = fs.create_file(path).await?;
             use tokio::io::AsyncWriteExt;
-            file.write_all(format!("stopping:{}\n", wora.app_name).as_bytes()).await?;
+            file.write_all(format!("stopping:{}\n", app_name).as_bytes()).await?;
         }
 
         if let Some(path) = &self.readiness_file {

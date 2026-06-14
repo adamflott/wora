@@ -26,6 +26,8 @@ pub struct RestartPolicyOptions {
     pub max_retries: Option<u32>,
     /// Maximum pause for exponential backoff. `None` leaves the backoff uncapped.
     pub max_backoff: Option<Duration>,
+    /// Runtime supervision behavior for health and shutdown handling.
+    pub supervision: SupervisionOptions,
 }
 
 impl Default for RestartPolicyOptions {
@@ -35,6 +37,7 @@ impl Default for RestartPolicyOptions {
             pause: Duration::from_secs(1),
             max_retries: None,
             max_backoff: None,
+            supervision: SupervisionOptions::default(),
         }
     }
 }
@@ -64,6 +67,39 @@ impl RestartPolicyOptions {
         match self.max_backoff {
             Some(max_backoff) => pause.min(max_backoff),
             None => pause,
+        }
+    }
+}
+
+/// Action to take when the runtime is told the app is unhealthy.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub enum UnhealthyAction {
+    /// Ignore unhealthy state transitions.
+    Ignore,
+    /// Request graceful shutdown and fail if the app does not stop in time.
+    #[default]
+    RequestShutdown,
+    /// Request graceful shutdown and then apply the restart policy if the app does not stop in time.
+    UseRestartPolicy,
+}
+
+/// Runtime supervision behavior.
+#[derive(Clone, Debug)]
+pub struct SupervisionOptions {
+    /// Maximum time to wait for graceful shutdown after a shutdown request.
+    pub shutdown_grace_period: Duration,
+    /// Exit code used when shutdown times out.
+    pub forced_shutdown_exit_code: i8,
+    /// Action to take when the app reports `HealthState::Failed`.
+    pub unhealthy_action: UnhealthyAction,
+}
+
+impl Default for SupervisionOptions {
+    fn default() -> Self {
+        Self {
+            shutdown_grace_period: Duration::from_secs(30),
+            forced_shutdown_exit_code: 124,
+            unhealthy_action: UnhealthyAction::default(),
         }
     }
 }

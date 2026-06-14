@@ -1,6 +1,7 @@
 pub use crate::App;
 pub use crate::HealthState;
 pub use crate::Leadership;
+pub use crate::ReadinessState;
 pub use crate::Wora;
 pub use crate::dirs::Dirs;
 pub use crate::errors::*;
@@ -12,7 +13,7 @@ pub use crate::exec_async_runner_with_restart_policy;
 pub use crate::exec_env::*;
 pub use crate::exec_unix::*;
 pub use crate::o11y::*;
-pub use crate::restart_policy::{MainRetryAction, RestartPolicyOptions, WorkloadRestartPolicy};
+pub use crate::restart_policy::{MainRetryAction, RestartPolicyOptions, SupervisionOptions, UnhealthyAction, WorkloadRestartPolicy};
 pub use crate::vfs::*;
 pub use crate::{Config, NoConfig};
 
