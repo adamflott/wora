@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use derive_builder::Builder;
@@ -10,11 +11,16 @@ use procfs;
 #[cfg(target_os = "linux")]
 use procfs::ProcError;
 use serde::Serialize;
-use sysinfo::{Disks, Networks, System};
+use sysinfo::{Disks, Networks, Pid, System};
 use thiserror::Error;
-use tokio::sync::mpsc::Sender;
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::task::JoinHandle;
 use tracing::{Id, Level};
 use tracing_subscriber::Layer;
+
+use crate::{HealthState, Leadership, ReadinessState};
 
 /// Timestamped observability event emitted by WORA or an application.
 #[derive(Debug)]
@@ -88,6 +94,22 @@ pub fn o11y_new_ev_hoststats<T>(hs: &HostStats) -> O11yEvent<T> {
     }
 }
 
+/// Build a process statistics event.
+pub fn o11y_new_ev_processstats<T>(ps: &ProcessStats) -> O11yEvent<T> {
+    O11yEvent {
+        timestamp: chrono::Utc::now(),
+        kind: O11yEventKind::ProcessStats(ps.clone()),
+    }
+}
+
+/// Build a runtime metrics event.
+pub fn o11y_new_ev_runtime_metrics<T>(rm: &RuntimeMetrics) -> O11yEvent<T> {
+    O11yEvent {
+        timestamp: chrono::Utc::now(),
+        kind: O11yEventKind::RuntimeMetrics(rm.clone()),
+    }
+}
+
 /// Build a tracing span lifecycle event.
 pub fn o11y_new_ev_span<T>(id: tracing::Id, kind: O11ySpanEventKind) -> O11yEvent<T> {
     O11yEvent {
@@ -142,6 +164,10 @@ pub enum O11yEventKind<T> {
     HostInfo(HostInfo),
     /// Host resource statistics.
     HostStats(HostStats),
+    /// Current process resource statistics.
+    ProcessStats(ProcessStats),
+    /// Runtime state and counters.
+    RuntimeMetrics(RuntimeMetrics),
 
     /// Tracing span event.
     Span(Id, O11ySpanEventKind),
@@ -157,6 +183,209 @@ pub enum O11yEventKind<T> {
 pub enum O11yMetricValue {
     /// Monotonic counter.
     Counter(u64),
+}
+
+/// Current process resource statistics.
+#[derive(Clone, Default, Debug, Serialize)]
+pub struct ProcessStats {
+    pub pid: u32,
+    pub memory: u64,
+    pub virtual_memory: u64,
+    pub cpu_usage: f32,
+    pub accumulated_cpu_time: u64,
+    pub run_time: u64,
+    pub start_time: u64,
+    pub read_bytes: u64,
+    pub total_read_bytes: u64,
+    pub written_bytes: u64,
+    pub total_written_bytes: u64,
+}
+
+impl ProcessStats {
+    /// Collect statistics for the current process.
+    pub fn current() -> Option<Self> {
+        let mut sys = System::new_all();
+        sys.refresh_all();
+        Self::from_system(&sys, std::process::id())
+    }
+
+    /// Collect statistics for `pid` from `sys`.
+    pub fn from_system(sys: &System, pid: u32) -> Option<Self> {
+        let process = sys.process(Pid::from_u32(pid))?;
+        let disk = process.disk_usage();
+        Some(Self {
+            pid,
+            memory: process.memory(),
+            virtual_memory: process.virtual_memory(),
+            cpu_usage: process.cpu_usage(),
+            accumulated_cpu_time: process.accumulated_cpu_time(),
+            run_time: process.run_time(),
+            start_time: process.start_time(),
+            read_bytes: disk.read_bytes,
+            total_read_bytes: disk.total_read_bytes,
+            written_bytes: disk.written_bytes,
+            total_written_bytes: disk.total_written_bytes,
+        })
+    }
+}
+
+/// Runtime state and counters exported as observability metrics.
+#[derive(Clone, Debug, Serialize)]
+pub struct RuntimeMetrics {
+    pub app_name: String,
+    pub pid: u32,
+    pub leadership: Leadership,
+    pub health: HealthState,
+    pub readiness: ReadinessState,
+    pub restart_count: u32,
+    pub event_backlog_capacity: usize,
+    pub event_backlog_max_capacity: usize,
+}
+
+/// Error returned by observability sinks and processors.
+#[derive(Debug, Error)]
+pub enum O11ySinkError {
+    #[error("o11y sink: io")]
+    Io(#[from] std::io::Error),
+    #[error("o11y sink: serialization")]
+    Serialization(#[from] serde_json::Error),
+    #[error("o11y sink: mutex poisoned")]
+    Poisoned,
+}
+
+#[async_trait::async_trait]
+/// Sink for processed observability events.
+pub trait O11ySink<T>: Send {
+    /// Handle a single event.
+    async fn handle_event(&mut self, event: &O11yEvent<T>) -> Result<(), O11ySinkError>;
+
+    /// Flush buffered sink state.
+    async fn flush(&mut self) -> Result<(), O11ySinkError> {
+        Ok(())
+    }
+}
+
+fn event_kind_name<T>(kind: &O11yEventKind<T>) -> &'static str {
+    match kind {
+        O11yEventKind::Init(_) => "init",
+        O11yEventKind::Finish => "finish",
+        O11yEventKind::Flush => "flush",
+        O11yEventKind::Clear => "clear",
+        O11yEventKind::Reconnect => "reconnect",
+        O11yEventKind::Status(_, _) => "status",
+        O11yEventKind::HostInfo(_) => "host_info",
+        O11yEventKind::HostStats(_) => "host_stats",
+        O11yEventKind::ProcessStats(_) => "process_stats",
+        O11yEventKind::RuntimeMetrics(_) => "runtime_metrics",
+        O11yEventKind::Span(_, _) => "span",
+        O11yEventKind::Log(_, _, _) => "log",
+        O11yEventKind::App(_) => "app",
+    }
+}
+
+/// Sink that collects debug-formatted event lines into shared memory.
+pub struct O11yMemorySink {
+    entries: Arc<Mutex<Vec<String>>>,
+}
+
+impl O11yMemorySink {
+    /// Create a sink backed by `entries`.
+    pub fn new(entries: Arc<Mutex<Vec<String>>>) -> Self {
+        Self { entries }
+    }
+}
+
+#[async_trait::async_trait]
+impl<T: Debug + Send + Sync + 'static> O11ySink<T> for O11yMemorySink {
+    async fn handle_event(&mut self, event: &O11yEvent<T>) -> Result<(), O11ySinkError> {
+        let mut entries = self.entries.lock().map_err(|_| O11ySinkError::Poisoned)?;
+        entries.push(format!("{} {} {:?}", event.timestamp.to_rfc3339(), event_kind_name(&event.kind), event.kind));
+        Ok(())
+    }
+}
+
+#[derive(Serialize)]
+struct JsonLine<'a> {
+    timestamp: String,
+    kind: &'static str,
+    payload: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sink: Option<&'a str>,
+}
+
+/// Sink that writes events as JSON lines.
+pub struct O11yJsonLinesSink {
+    path: PathBuf,
+    sink_name: Option<String>,
+}
+
+impl O11yJsonLinesSink {
+    /// Create a JSON-lines sink writing to `path`.
+    pub fn new(path: PathBuf) -> Self {
+        Self { path, sink_name: None }
+    }
+
+    /// Add a static sink name to emitted records.
+    pub fn with_name(mut self, sink_name: impl Into<String>) -> Self {
+        self.sink_name = Some(sink_name.into());
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl<T: Debug + Send + Sync + 'static> O11ySink<T> for O11yJsonLinesSink {
+    async fn handle_event(&mut self, event: &O11yEvent<T>) -> Result<(), O11ySinkError> {
+        let line = JsonLine {
+            timestamp: event.timestamp.to_rfc3339(),
+            kind: event_kind_name(&event.kind),
+            payload: format!("{:?}", event.kind),
+            sink: self.sink_name.as_deref(),
+        };
+        let mut file = OpenOptions::new().create(true).append(true).open(&self.path).await?;
+        file.write_all(serde_json::to_string(&line)?.as_bytes()).await?;
+        file.write_all(b"\n").await?;
+        file.flush().await?;
+        Ok(())
+    }
+}
+
+/// Observability processor that fans events out to one or more sinks.
+pub struct O11yProcessor<T> {
+    sinks: Vec<Box<dyn O11ySink<T>>>,
+}
+
+impl<T: Sync> O11yProcessor<T> {
+    /// Create a processor with `sinks`.
+    pub fn new(sinks: Vec<Box<dyn O11ySink<T>>>) -> Self {
+        Self { sinks }
+    }
+
+    /// Process a single event.
+    pub async fn process_event(&mut self, event: &O11yEvent<T>) -> Result<(), O11ySinkError> {
+        for sink in &mut self.sinks {
+            sink.handle_event(event).await?;
+            if matches!(event.kind, O11yEventKind::Flush | O11yEventKind::Finish) {
+                sink.flush().await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Run until `receiver` closes.
+    pub async fn run(mut self, mut receiver: Receiver<O11yEvent<T>>) -> Result<(), O11ySinkError> {
+        while let Some(event) = receiver.recv().await {
+            self.process_event(&event).await?;
+        }
+        Ok(())
+    }
+
+    /// Spawn the processor on the Tokio runtime.
+    pub fn spawn(self, receiver: Receiver<O11yEvent<T>>) -> JoinHandle<Result<(), O11ySinkError>>
+    where
+        T: Send + 'static,
+    {
+        tokio::spawn(self.run(receiver))
+    }
 }
 
 impl Default for O11yMetricValue {

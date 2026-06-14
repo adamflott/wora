@@ -104,7 +104,13 @@ impl App<(), ()> for DaemonApp {
         Ok(())
     }
 
-    async fn main(&mut self, wora: &mut Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, fs: impl WFS + 'static, _o11y: Sender<O11yEvent<()>>) -> MainRetryAction {
+    async fn main(
+        &mut self,
+        wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        fs: impl WFS + 'static,
+        _o11y: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
         info!("waiting for events...");
         match wora
             .run_event_loop(self, fs, |app, _wora, ev| {
@@ -215,6 +221,8 @@ async fn main() -> Result<(), MainEarlyReturn> {
                 O11yEventKind::App(_o11y) => {}
                 O11yEventKind::HostInfo(_hi) => {}
                 O11yEventKind::HostStats(_hs) => {}
+                O11yEventKind::ProcessStats(_ps) => {}
+                O11yEventKind::RuntimeMetrics(_rm) => {}
                 O11yEventKind::Flush => {
                     println!("{}: flush", res.timestamp);
                 }

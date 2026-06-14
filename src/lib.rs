@@ -8,6 +8,8 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -735,6 +737,23 @@ where
     }
 }
 
+fn runtime_metrics_snapshot<AppEv, AppMetric>(wora: &Wora<AppEv, AppMetric>, restart_count: u32) -> RuntimeMetrics
+where
+    AppEv: Send + Sync + 'static,
+    AppMetric: Send + Sync + 'static,
+{
+    RuntimeMetrics {
+        app_name: wora.app_name.clone(),
+        pid: std::process::id(),
+        leadership: wora.leadership.clone(),
+        health: wora.health_state(),
+        readiness: wora.readiness_state(),
+        restart_count,
+        event_backlog_capacity: wora.sender.capacity(),
+        event_backlog_max_capacity: wora.sender.max_capacity(),
+    }
+}
+
 async fn run_app_main_with_restart_policy<AppEv, AppMetric, A, E, F>(
     app: &mut A,
     wora: &mut Wora<AppEv, AppMetric>,
@@ -743,6 +762,7 @@ async fn run_app_main_with_restart_policy<AppEv, AppMetric, A, E, F>(
     metrics_sender: Sender<O11yEvent<AppMetric>>,
     restart_options: RestartPolicyOptions,
     supervision_rx: &mut Receiver<RuntimeSupervisionEvent>,
+    restart_counter: Arc<AtomicU32>,
 ) -> Result<(), MainEarlyReturn>
 where
     AppEv: Send + Sync + 'static,
@@ -757,6 +777,10 @@ where
         let status_handle = wora.status_handle();
         let app_event_sender = wora.sender.clone();
         status_handle.report_health(HealthState::Unknown);
+        restart_counter.store(retry_count, Ordering::Relaxed);
+        let _ = metrics_sender
+            .send(o11y_new_ev_runtime_metrics(&runtime_metrics_snapshot(wora, retry_count)))
+            .await;
 
         let main_future = app
             .main(wora, exec.clone(), fs.clone(), metrics_sender.clone())
@@ -809,6 +833,7 @@ where
                         return Err(MainEarlyReturn::UseExitCode(1));
                     }
                     retry_count = retry_count.saturating_add(1);
+                    restart_counter.store(retry_count, Ordering::Relaxed);
                     info!("app:run:restart policy:retry_instantly retry:{}", retry_count);
                 }
                 WorkloadRestartPolicy::RetryPause => {
@@ -816,6 +841,7 @@ where
                         return Err(MainEarlyReturn::UseExitCode(1));
                     }
                     retry_count = retry_count.saturating_add(1);
+                    restart_counter.store(retry_count, Ordering::Relaxed);
                     let pause = restart_options.pause_for_retry(retry_count);
                     info!("app:run:restart policy:retry_pause retry:{} pause:{:?}", retry_count, pause);
                     tokio::time::sleep(pause).await;
@@ -825,6 +851,7 @@ where
                         return Err(MainEarlyReturn::UseExitCode(1));
                     }
                     retry_count = retry_count.saturating_add(1);
+                    restart_counter.store(retry_count, Ordering::Relaxed);
                     let pause = restart_options.pause_for_retry(retry_count);
                     info!("app:run:restart policy:exponential_backoff retry:{} pause:{:?}", retry_count, pause);
                     tokio::time::sleep(pause).await;
@@ -907,6 +934,7 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
             let status_interval = *o11y.status_interval();
             let flush_interval = *o11y.flush_interval();
             let hs_interval = *o11y.host_stats_interval();
+            let restart_counter = Arc::new(AtomicU32::new(0));
 
             let mut wora = Wora::new(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE, o11y)?;
             let mut health_rx = wora.status_handle().subscribe_health();
@@ -961,6 +989,15 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
                 .await?;
 
             let _ = metrics_sender.send(o11y_new_ev_hostinfo(wora.host.info())).await;
+            let _ = metrics_sender
+                .send(o11y_new_ev_runtime_metrics(&runtime_metrics_snapshot(
+                    &wora,
+                    restart_counter.load(Ordering::Relaxed),
+                )))
+                .await;
+            if let Some(process_stats) = ProcessStats::current() {
+                let _ = metrics_sender.send(o11y_new_ev_processstats(&process_stats)).await;
+            }
 
             wora.schedule_task(status_interval, move |tx| async move {
                 let cap = tx.capacity();
@@ -976,10 +1013,43 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
             })
             .await;
 
-            wora.schedule_task(hs_interval, move |_tx| async move {
-                // TODO
-                //let _ = tx.send(mehs()).await;
-                TaskOp::Requeue
+            let runtime_status = wora.status_handle();
+            let runtime_app_name = wora.app_name.clone();
+            let runtime_leadership = wora.leadership.clone();
+            let runtime_metrics_restart_counter = restart_counter.clone();
+            wora.schedule_task(hs_interval, move |tx| {
+                let runtime_status = runtime_status.clone();
+                let runtime_app_name = runtime_app_name.clone();
+                let runtime_leadership = runtime_leadership.clone();
+                let runtime_metrics_restart_counter = runtime_metrics_restart_counter.clone();
+                async move {
+                    match Host::new() {
+                        Ok(host) => {
+                            let _ = tx.send(o11y_new_ev_hoststats(host.stats())).await;
+                        }
+                        Err(err) => {
+                            error!("o11y:host stats refresh error: {}", err);
+                        }
+                    }
+
+                    if let Some(process_stats) = ProcessStats::current() {
+                        let _ = tx.send(o11y_new_ev_processstats(&process_stats)).await;
+                    }
+
+                    let runtime_metrics = RuntimeMetrics {
+                        app_name: runtime_app_name.clone(),
+                        pid: std::process::id(),
+                        leadership: runtime_leadership.clone(),
+                        health: runtime_status.health_state(),
+                        readiness: runtime_status.readiness_state(),
+                        restart_count: runtime_metrics_restart_counter.load(Ordering::Relaxed),
+                        event_backlog_capacity: tx.capacity(),
+                        event_backlog_max_capacity: tx.max_capacity(),
+                    };
+                    let _ = tx.send(o11y_new_ev_runtime_metrics(&runtime_metrics)).await;
+
+                    TaskOp::Requeue
+                }
             })
             .await;
 
@@ -1109,6 +1179,7 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
                             metrics_sender.clone(),
                             restart_options.clone(),
                             &mut supervision_rx,
+                            restart_counter.clone(),
                         )
                         .await;
 

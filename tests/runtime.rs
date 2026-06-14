@@ -36,6 +36,18 @@ fn test_o11y() -> Result<O11yProcessorOptions<()>, Box<dyn std::error::Error>> {
         .map_err(|err| std::io::Error::other(err.to_string()).into())
 }
 
+fn test_o11y_with_receiver(interval: Duration) -> Result<(O11yProcessorOptions<()>, tokio::sync::mpsc::Receiver<O11yEvent<()>>), Box<dyn std::error::Error>> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<O11yEvent<()>>(64);
+    let o11y = O11yProcessorOptionsBuilder::default()
+        .sender(tx)
+        .flush_interval(interval)
+        .status_interval(interval)
+        .host_stats_interval(interval)
+        .build()
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
+    Ok((o11y, rx))
+}
+
 #[cfg(target_family = "unix")]
 fn unique_socket_path(name: &str) -> PathBuf {
     let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
@@ -326,6 +338,8 @@ struct ReloadingApp {
 struct HelperLoopApp {
     current_enabled: bool,
 }
+
+struct MetricsApp;
 
 impl Config for ReloadingConfig {
     type ConfigT = ReloadingConfig;
@@ -624,6 +638,45 @@ impl App<(), ()> for HelperLoopApp {
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
 }
 
+#[async_trait]
+impl App<(), ()> for MetricsApp {
+    type AppConfig = NoConfig;
+    type AppSecrets = NoSecrets;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        "metrics_app"
+    }
+
+    async fn setup(
+        &mut self,
+        _wora: &Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    async fn main(
+        &mut self,
+        _wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
+        tokio::time::sleep(Duration::from_millis(35)).await;
+        MainRetryAction::Success
+    }
+
+    async fn is_healthy(&mut self) -> HealthState {
+        HealthState::Ok
+    }
+
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
+}
+
 #[tokio::test]
 async fn runner_loads_initial_config_and_applies_restart_policy() -> Result<(), Box<dyn std::error::Error>> {
     let root = unique_test_dir("runner");
@@ -778,6 +831,74 @@ async fn run_event_loop_auto_applies_typed_reload_before_handler() -> Result<(),
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn o11y_processor_fans_out_to_memory_and_json_sinks() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("o11y-processor");
+    std::fs::create_dir_all(&root)?;
+    let json_path = root.join("o11y.jsonl");
+    let entries = Arc::new(Mutex::new(Vec::new()));
+    let processor = O11yProcessor::new(vec![
+        Box::new(O11yMemorySink::new(entries.clone())),
+        Box::new(O11yJsonLinesSink::new(json_path.clone()).with_name("test")),
+    ]);
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    let task = processor.spawn(rx);
+
+    tx.send(o11y_new_ev_flush::<()>()).await?;
+    tx.send(o11y_new_ev_finish::<()>()).await?;
+    drop(tx);
+
+    task.await.map_err(|err| std::io::Error::other(err.to_string()))??;
+
+    let entries = entries.lock().map_err(|err| std::io::Error::other(err.to_string()))?;
+    assert!(entries.iter().any(|entry| entry.contains("flush")));
+    assert!(entries.iter().any(|entry| entry.contains("finish")));
+
+    let file = std::fs::read_to_string(json_path)?;
+    assert!(file.contains("\"kind\":\"flush\""));
+    assert!(file.contains("\"sink\":\"test\""));
+    Ok(())
+}
+
+#[tokio::test]
+async fn runner_emits_host_process_and_runtime_metrics() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("o11y-metrics");
+    let dirs = test_dirs(root.clone());
+    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+    let (o11y, mut rx) = test_o11y_with_receiver(Duration::from_millis(10))?;
+
+    exec_async_runner(TestExec { dirs }, MetricsApp, PhysicalVFS::new(), o11y, Some(root.join("boot")))
+        .await
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
+
+    let mut saw_host_stats = false;
+    let mut saw_process_stats = false;
+    let mut saw_runtime_metrics = false;
+
+    while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
+        let Some(event) = event else {
+            break;
+        };
+        match event.kind {
+            O11yEventKind::HostStats(_) => saw_host_stats = true,
+            O11yEventKind::ProcessStats(stats) => {
+                saw_process_stats = true;
+                assert!(stats.pid > 0);
+            }
+            O11yEventKind::RuntimeMetrics(metrics) => {
+                saw_runtime_metrics = true;
+                assert_eq!(metrics.app_name, "metrics_app");
+            }
+            _ => {}
+        }
+    }
+
+    assert!(saw_host_stats);
+    assert!(saw_process_stats);
+    assert!(saw_runtime_metrics);
     Ok(())
 }
 

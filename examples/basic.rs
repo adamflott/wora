@@ -77,6 +77,8 @@ async fn main() -> Result<(), MainEarlyReturn> {
                 O11yEventKind::App(_o11y) => {}
                 O11yEventKind::HostInfo(_hi) => {}
                 O11yEventKind::HostStats(_hs) => {}
+                O11yEventKind::ProcessStats(_ps) => {}
+                O11yEventKind::RuntimeMetrics(_rm) => {}
                 O11yEventKind::Flush => {
                     println!("{}: flush", res.timestamp);
                 }
