@@ -5,7 +5,6 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use tokio::fs::{File, ReadDir};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::errors::VfsError;
@@ -43,10 +42,9 @@ struct InMemoryWatchRegistration {
 /// Virtual filesystem interface used by executors and applications.
 ///
 /// Prefer the higher-level helpers such as `write`, `remove_file`, `list_dir`,
-/// and `watch_dir` when writing new runtime code. They can be implemented by
-/// both host-backed and fully virtual filesystems. The lower-level `tokio::fs`
-/// handle methods are preserved for compatibility but may not be supported by
-/// every virtual backend.
+/// and `watch_dir` when writing runtime code. The trait is intentionally
+/// high-level so both host-backed and virtual filesystems can implement it
+/// coherently.
 ///
 /// `exec_async_runner` can now receive `notify`-shaped watch events from the
 /// active VFS implementation. `InMemoryVFS` therefore supports runner-level
@@ -71,21 +69,6 @@ pub trait WFS: Debug + Clone + Send + Sync {
 
     /// Watch a directory recursively for change events.
     async fn watch_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<VfsWatcher, VfsError>;
-
-    /// Open a directory stream for `path`.
-    ///
-    /// This method is primarily intended for host-backed implementations.
-    async fn read_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<ReadDir, VfsError>;
-
-    /// Open an existing file for reading.
-    ///
-    /// This method is primarily intended for host-backed implementations.
-    async fn open_file<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<File, VfsError>;
-
-    /// Create or truncate a file for writing.
-    ///
-    /// This method is primarily intended for host-backed implementations.
-    async fn create_file<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<File, VfsError>;
 
     /// Read a UTF-8 file into a string.
     async fn read_to_string<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<String, VfsError>;
@@ -147,18 +130,6 @@ impl WFS for PhysicalVFS {
             receiver: rx,
             _guard: WatchGuard::Native { _watcher: watcher },
         })
-    }
-
-    async fn read_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<ReadDir, VfsError> {
-        tokio::fs::read_dir(path).await.map_err(VfsError::Io)
-    }
-
-    async fn open_file<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<File, VfsError> {
-        File::open(path).await.map_err(VfsError::Io)
-    }
-
-    async fn create_file<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<File, VfsError> {
-        File::create(path).await.map_err(VfsError::Io)
     }
 
     async fn read_to_string<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<String, VfsError> {
@@ -226,11 +197,9 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 /// Fully in-memory `WFS` implementation.
 ///
-/// This implementation is intended for tests and pure virtual workflows that
-/// do not require direct `tokio::fs::File` or `tokio::fs::ReadDir` handles.
-/// Runtime code should prefer `list_dir`, `write`, `remove_file`, `watch_dir`,
-/// `read`, and `read_to_string` so it can work with either `PhysicalVFS` or
-/// `InMemoryVFS`.
+/// This implementation is intended for tests and pure virtual workflows.
+/// Runtime code can target the same high-level interface for both
+/// `PhysicalVFS` and `InMemoryVFS`.
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryVFS {
     state: Arc<RwLock<InMemoryState>>,
@@ -400,22 +369,6 @@ impl WFS for InMemoryVFS {
         })
     }
 
-    async fn read_dir<P: AsRef<Path> + Send + Sync>(&self, _path: P) -> Result<ReadDir, VfsError> {
-        Err(VfsError::UnsupportedOperation(
-            "InMemoryVFS does not expose tokio::fs::ReadDir; use list_dir instead",
-        ))
-    }
-
-    async fn open_file<P: AsRef<Path> + Send + Sync>(&self, _path: P) -> Result<File, VfsError> {
-        Err(VfsError::UnsupportedOperation(
-            "InMemoryVFS does not expose tokio::fs::File; use read or read_to_string instead",
-        ))
-    }
-
-    async fn create_file<P: AsRef<Path> + Send + Sync>(&self, _path: P) -> Result<File, VfsError> {
-        Err(VfsError::UnsupportedOperation("InMemoryVFS does not expose tokio::fs::File; use write instead"))
-    }
-
     async fn read_to_string<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<String, VfsError> {
         let bytes = self.read(path).await?;
         String::from_utf8(bytes).map_err(|err| VfsError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, err)))
@@ -487,22 +440,6 @@ mod tests {
             .ok_or_else(|| std::io::Error::other("watcher closed"))??;
         assert_eq!(event.paths, vec![PathBuf::from("/app/config/demo.toml")]);
         Ok(())
-    }
-
-    #[tokio::test]
-    async fn in_memory_vfs_reports_unsupported_low_level_handles() {
-        let fs = InMemoryVFS::new();
-        let err = match fs.create_file("/tmp/demo").await {
-            Ok(_) => panic!("create_file unexpectedly succeeded"),
-            Err(err) => err,
-        };
-        assert!(matches!(err, VfsError::UnsupportedOperation(_)));
-
-        let err = match fs.read_dir("/tmp").await {
-            Ok(_) => panic!("read_dir unexpectedly succeeded"),
-            Err(err) => err,
-        };
-        assert!(matches!(err, VfsError::UnsupportedOperation(_)));
     }
 
     #[tokio::test]
