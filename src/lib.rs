@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use async_trait::async_trait;
 use chrono::Utc;
 use nix::unistd::getpid;
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use proc_lock::try_lock;
 use serde::Serialize;
 use sysinfo::System;
@@ -525,23 +524,6 @@ pub trait App<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> {
         fs: impl WFS + 'static,
         metrics: Sender<O11yEvent<AppMetric>>,
     );
-}
-
-fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)> {
-    let (tx, rx) = channel(1);
-
-    let watcher = RecommendedWatcher::new(
-        move |res| {
-            futures::executor::block_on(async {
-                if tx.send(res).await.is_err() {
-                    error!("notify:watch:send failed");
-                }
-            })
-        },
-        notify::Config::default(),
-    )?;
-
-    Ok((watcher, rx))
 }
 
 async fn configure_app_from_metadata<AppEv, AppMetric, A>(app: &mut A, wora: &Wora<AppEv, AppMetric>, fs: impl WFS + 'static) -> Result<(), MainEarlyReturn>
@@ -1124,7 +1106,7 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
                         &wora.dirs.data_root_dir,
                         &wora.dirs.cache_root_dir,
                     ] {
-                        if !dir.exists() {
+                        if !fs.dir_exists(dir).await? {
                             error!("directory {:?} does not exist", dir);
                             return Err(MainEarlyReturn::WoraSetup(WoraSetupError::DirectoryDoesNotExistOnFilesystem(dir.clone())));
                         }
@@ -1154,18 +1136,15 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
                         readiness_rx,
                     ));
 
-                    let (mut watcher, mut watch_rx) = async_watcher()?;
-                    let (mut secret_watcher, mut secret_watch_rx) = async_watcher()?;
-
                     info!("notify:watch:dir: {:?}", &wora.dirs.metadata_root_dir);
-                    watcher.watch(std::path::Path::new(&wora.dirs.metadata_root_dir), RecursiveMode::Recursive)?;
+                    let mut watcher = fs.watch_dir(&wora.dirs.metadata_root_dir).await?;
                     info!("notify:watch:secrets: {:?}", &wora.dirs.secrets_root_dir);
-                    secret_watcher.watch(std::path::Path::new(&wora.dirs.secrets_root_dir), RecursiveMode::Recursive)?;
+                    let mut secret_watcher = fs.watch_dir(&wora.dirs.secrets_root_dir).await?;
                     let ev_sender = runtime_event_tx.clone();
                     let secret_ev_sender = runtime_event_tx.clone();
 
                     let watcher_task = tokio::spawn(async move {
-                        while let Some(res) = watch_rx.recv().await {
+                        while let Some(res) = watcher.receiver().recv().await {
                             match res {
                                 Ok(event) => {
                                     info!("changed: {:?}", event);
@@ -1181,7 +1160,7 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
                         }
                     });
                     let secret_watcher_task = tokio::spawn(async move {
-                        while let Some(res) = secret_watch_rx.recv().await {
+                        while let Some(res) = secret_watcher.receiver().recv().await {
                             match res {
                                 Ok(event) => {
                                     info!("secret changed: {:?}", event);

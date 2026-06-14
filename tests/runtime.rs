@@ -337,6 +337,10 @@ struct HelperLoopApp {
     current_enabled: bool,
 }
 
+struct VirtualWatcherApp {
+    current_enabled: bool,
+}
+
 struct MetricsApp;
 
 impl Config for ReloadingConfig {
@@ -637,6 +641,65 @@ impl App<(), ()> for HelperLoopApp {
 }
 
 #[async_trait]
+impl App<(), ()> for VirtualWatcherApp {
+    type AppConfig = ReloadingConfig;
+    type AppSecrets = NoSecrets;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        "virtual_watcher"
+    }
+
+    async fn reload_config(&mut self, reload: ConfigReload<ReloadingConfig>) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(config) = reload.main {
+            self.current_enabled = config.enabled;
+        }
+        Ok(())
+    }
+
+    async fn setup(
+        &mut self,
+        wora: &Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        let metadata_file = wora.dirs.metadata_root_dir.join("virtual_watcher.toml");
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = fs.write(&metadata_file, b"enabled = true").await;
+        });
+        Ok(())
+    }
+
+    async fn main(
+        &mut self,
+        wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
+        match wora
+            .run_event_loop(self, fs, |app, _wora, event| match event {
+                Event::ConfigChange(_) if app.current_enabled => EventLoopAction::Exit(MainRetryAction::Success),
+                _ => EventLoopAction::Continue,
+            })
+            .await
+        {
+            Ok(action) => action,
+            Err(_) => MainRetryAction::UseExitCode(78),
+        }
+    }
+
+    async fn is_healthy(&mut self) -> HealthState {
+        HealthState::Ok
+    }
+
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
+}
+
+#[async_trait]
 impl App<(), ()> for MetricsApp {
     type AppConfig = NoConfig;
     type AppSecrets = NoSecrets;
@@ -863,6 +926,29 @@ async fn apply_reload_event_supports_in_memory_vfs() -> Result<(), Box<dyn std::
     );
     assert!(app.current_enabled);
     assert_eq!(app.current_secret, "bravo");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn exec_async_runner_supports_in_memory_vfs_watchers() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("virtual-watch-runner");
+    let dirs = test_dirs(root.clone());
+    let fs = InMemoryVFS::new();
+
+    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+    fs.create_dir(&dirs.metadata_root_dir).await?;
+    fs.write(dirs.metadata_root_dir.join("virtual_watcher.toml"), b"enabled = false").await?;
+
+    exec_async_runner(
+        TestExec { dirs },
+        VirtualWatcherApp { current_enabled: false },
+        fs,
+        test_o11y()?,
+        Some(root.join("boot")),
+    )
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
 
     Ok(())
 }

@@ -45,6 +45,8 @@ impl From<std::env::VarError> for NewWorkloadError {
 pub enum VfsError {
     #[error("io")]
     Io(#[from] std::io::Error),
+    #[error("notify")]
+    Notify(#[from] notify::Error),
     #[error("project directories unavailable for app {0}")]
     ProjectDirsUnavailable(String),
     #[error("unsupported virtual filesystem operation: {0}")]

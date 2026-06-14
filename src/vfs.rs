@@ -4,22 +4,54 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::fs::{File, ReadDir};
+use tokio::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::errors::VfsError;
 
+/// Filesystem watch stream returned by `WFS::watch_dir`.
+pub struct VfsWatcher {
+    receiver: Receiver<notify::Result<notify::Event>>,
+    _guard: WatchGuard,
+}
+
+enum WatchGuard {
+    Native { _watcher: RecommendedWatcher },
+    InMemory,
+}
+
+impl std::fmt::Debug for VfsWatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VfsWatcher").finish_non_exhaustive()
+    }
+}
+
+impl VfsWatcher {
+    /// Return a mutable receiver for filesystem watch events.
+    pub fn receiver(&mut self) -> &mut Receiver<notify::Result<notify::Event>> {
+        &mut self.receiver
+    }
+}
+
+#[derive(Clone, Debug)]
+struct InMemoryWatchRegistration {
+    root: PathBuf,
+    sender: Sender<notify::Result<notify::Event>>,
+}
+
 /// Virtual filesystem interface used by executors and applications.
 ///
-/// Prefer the higher-level helpers such as `write`, `remove_file`, and
-/// `list_dir` when writing new runtime code. They can be implemented by both
-/// host-backed and fully virtual filesystems. The lower-level `tokio::fs`
+/// Prefer the higher-level helpers such as `write`, `remove_file`, `list_dir`,
+/// and `watch_dir` when writing new runtime code. They can be implemented by
+/// both host-backed and fully virtual filesystems. The lower-level `tokio::fs`
 /// handle methods are preserved for compatibility but may not be supported by
 /// every virtual backend.
 ///
-/// `exec_async_runner` still relies on native filesystem watchers through
-/// `notify`, so fully virtual end-to-end runner tests are not yet available.
-/// `InMemoryVFS` is most useful for targeted runtime helpers, executor hooks,
-/// and application logic that only needs the higher-level operations.
+/// `exec_async_runner` can now receive `notify`-shaped watch events from the
+/// active VFS implementation. `InMemoryVFS` therefore supports runner-level
+/// config and secret reload workflows as long as the lock path itself is backed
+/// by the host filesystem.
 #[async_trait]
 pub trait WFS: Debug + Clone + Send + Sync {
     /// Construct a new filesystem handle.
@@ -36,6 +68,9 @@ pub trait WFS: Debug + Clone + Send + Sync {
 
     /// Write raw bytes to `path`, truncating any existing file.
     async fn write<P: AsRef<Path> + Send + Sync>(&self, path: P, data: &[u8]) -> Result<(), VfsError>;
+
+    /// Watch a directory recursively for change events.
+    async fn watch_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<VfsWatcher, VfsError>;
 
     /// Open a directory stream for `path`.
     ///
@@ -93,6 +128,27 @@ impl WFS for PhysicalVFS {
         tokio::fs::write(path, data).await.map_err(VfsError::Io)
     }
 
+    async fn watch_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<VfsWatcher, VfsError> {
+        let watch_path = path.as_ref().to_path_buf();
+        let (tx, rx) = channel(8);
+        let watcher = RecommendedWatcher::new(
+            move |res| {
+                futures::executor::block_on(async {
+                    if tx.send(res).await.is_err() {
+                        log::error!("notify:watch:send failed");
+                    }
+                })
+            },
+            notify::Config::default(),
+        )?;
+        let mut watcher = watcher;
+        watcher.watch(&watch_path, RecursiveMode::Recursive)?;
+        Ok(VfsWatcher {
+            receiver: rx,
+            _guard: WatchGuard::Native { _watcher: watcher },
+        })
+    }
+
     async fn read_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<ReadDir, VfsError> {
         tokio::fs::read_dir(path).await.map_err(VfsError::Io)
     }
@@ -128,6 +184,7 @@ enum InMemoryNode {
 #[derive(Clone, Debug, Default)]
 struct InMemoryState {
     nodes: BTreeMap<PathBuf, InMemoryNode>,
+    watchers: Vec<InMemoryWatchRegistration>,
 }
 
 impl InMemoryState {
@@ -171,8 +228,9 @@ fn normalize_path(path: &Path) -> PathBuf {
 ///
 /// This implementation is intended for tests and pure virtual workflows that
 /// do not require direct `tokio::fs::File` or `tokio::fs::ReadDir` handles.
-/// Runtime code should prefer `list_dir`, `write`, `remove_file`, `read`, and
-/// `read_to_string` so it can work with either `PhysicalVFS` or `InMemoryVFS`.
+/// Runtime code should prefer `list_dir`, `write`, `remove_file`, `watch_dir`,
+/// `read`, and `read_to_string` so it can work with either `PhysicalVFS` or
+/// `InMemoryVFS`.
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryVFS {
     state: Arc<RwLock<InMemoryState>>,
@@ -194,6 +252,27 @@ impl InMemoryVFS {
             .map_err(|_| VfsError::Io(std::io::Error::other("in-memory vfs write lock poisoned")))?;
         f(&mut guard)
     }
+
+    fn matching_watchers(state: &InMemoryState, path: &Path) -> Vec<Sender<notify::Result<notify::Event>>> {
+        let normalized = normalize_path(path);
+        state
+            .watchers
+            .iter()
+            .filter(|watch| normalized.starts_with(&watch.root))
+            .map(|watch| watch.sender.clone())
+            .collect()
+    }
+
+    async fn emit_watch_event(&self, path: PathBuf, kind: notify::EventKind, watchers: Vec<Sender<notify::Result<notify::Event>>>) {
+        if watchers.is_empty() {
+            return;
+        }
+
+        let event = notify::Event::new(kind).add_path(path);
+        for watcher in watchers {
+            let _ = watcher.send(Ok(event.clone())).await;
+        }
+    }
 }
 
 #[async_trait]
@@ -203,22 +282,26 @@ impl WFS for InMemoryVFS {
         nodes.insert(PathBuf::from("."), InMemoryNode::Directory);
         nodes.insert(PathBuf::from("/"), InMemoryNode::Directory);
         Self {
-            state: Arc::new(RwLock::new(InMemoryState { nodes })),
+            state: Arc::new(RwLock::new(InMemoryState { nodes, watchers: Vec::new() })),
         }
     }
 
     async fn create_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<(), VfsError> {
-        self.with_state_mut(|state| {
-            let normalized = normalize_path(path.as_ref());
+        let normalized = normalize_path(path.as_ref());
+        let watchers = self.with_state_mut(|state| {
             if matches!(state.nodes.get(&normalized), Some(InMemoryNode::File(_))) {
                 return Err(VfsError::Io(std::io::Error::new(
                     std::io::ErrorKind::AlreadyExists,
                     format!("file already exists at {}", normalized.display()),
                 )));
             }
+            let existed = state.nodes.contains_key(&normalized);
             state.ensure_dir(&normalized);
-            Ok(())
-        })
+            Ok(if existed { Vec::new() } else { Self::matching_watchers(state, &normalized) })
+        })?;
+        self.emit_watch_event(normalized, notify::EventKind::Create(notify::event::CreateKind::Folder), watchers)
+            .await;
+        Ok(())
     }
 
     async fn list_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<Vec<PathBuf>, VfsError> {
@@ -254,8 +337,8 @@ impl WFS for InMemoryVFS {
 
     async fn remove_file<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<(), VfsError> {
         let file_path = normalize_path(path.as_ref());
-        self.with_state_mut(|state| match state.nodes.remove(&file_path) {
-            Some(InMemoryNode::File(_)) => Ok(()),
+        let watchers = self.with_state_mut(|state| match state.nodes.remove(&file_path) {
+            Some(InMemoryNode::File(_)) => Ok(Self::matching_watchers(state, &file_path)),
             Some(InMemoryNode::Directory) => Err(VfsError::Io(std::io::Error::new(
                 std::io::ErrorKind::IsADirectory,
                 format!("path is a directory: {}", file_path.display()),
@@ -264,12 +347,15 @@ impl WFS for InMemoryVFS {
                 std::io::ErrorKind::NotFound,
                 format!("file not found: {}", file_path.display()),
             ))),
-        })
+        })?;
+        self.emit_watch_event(file_path, notify::EventKind::Remove(notify::event::RemoveKind::File), watchers)
+            .await;
+        Ok(())
     }
 
     async fn write<P: AsRef<Path> + Send + Sync>(&self, path: P, data: &[u8]) -> Result<(), VfsError> {
         let file_path = normalize_path(path.as_ref());
-        self.with_state_mut(|state| {
+        let (watchers, kind) = self.with_state_mut(|state| {
             state.ensure_parent_dir(&file_path)?;
             if matches!(state.nodes.get(&file_path), Some(InMemoryNode::Directory)) {
                 return Err(VfsError::Io(std::io::Error::new(
@@ -277,8 +363,40 @@ impl WFS for InMemoryVFS {
                     format!("path is a directory: {}", file_path.display()),
                 )));
             }
-            state.nodes.insert(file_path, InMemoryNode::File(data.to_vec()));
-            Ok(())
+            let existed = matches!(state.nodes.get(&file_path), Some(InMemoryNode::File(_)));
+            state.nodes.insert(file_path.clone(), InMemoryNode::File(data.to_vec()));
+            let watchers = Self::matching_watchers(state, &file_path);
+            let kind = if existed {
+                notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content))
+            } else {
+                notify::EventKind::Create(notify::event::CreateKind::File)
+            };
+            Ok((watchers, kind))
+        })?;
+        self.emit_watch_event(file_path, kind, watchers).await;
+        Ok(())
+    }
+
+    async fn watch_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<VfsWatcher, VfsError> {
+        let root = normalize_path(path.as_ref());
+        let (tx, rx) = channel(8);
+        self.with_state_mut(|state| match state.nodes.get(&root) {
+            Some(InMemoryNode::Directory) => {
+                state.watchers.push(InMemoryWatchRegistration { root, sender: tx });
+                Ok(())
+            }
+            Some(InMemoryNode::File(_)) => Err(VfsError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                format!("path is a file: {}", path.as_ref().display()),
+            ))),
+            None => Err(VfsError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("directory not found: {}", path.as_ref().display()),
+            ))),
+        })?;
+        Ok(VfsWatcher {
+            receiver: rx,
+            _guard: WatchGuard::InMemory,
         })
     }
 
@@ -327,6 +445,7 @@ impl WFS for InMemoryVFS {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::{Duration, timeout};
 
     #[tokio::test]
     async fn in_memory_vfs_round_trips_files_and_directories() -> Result<(), Box<dyn std::error::Error>> {
@@ -353,6 +472,21 @@ mod tests {
             VfsError::Io(io) => assert_eq!(io.kind(), std::io::ErrorKind::NotFound),
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn in_memory_vfs_emits_watch_events() -> Result<(), Box<dyn std::error::Error>> {
+        let fs = InMemoryVFS::new();
+        fs.create_dir("/app/config").await?;
+        let mut watcher = fs.watch_dir("/app").await?;
+
+        fs.write("/app/config/demo.toml", b"enabled = true").await?;
+
+        let event = timeout(Duration::from_secs(1), watcher.receiver().recv())
+            .await?
+            .ok_or_else(|| std::io::Error::other("watcher closed"))??;
+        assert_eq!(event.paths, vec![PathBuf::from("/app/config/demo.toml")]);
+        Ok(())
     }
 
     #[tokio::test]
