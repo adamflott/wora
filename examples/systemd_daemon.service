@@ -1,0 +1,35 @@
+[Unit]
+Description=WORA systemd daemon example
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+
+# Install the example binary somewhere stable before using this unit.
+ExecStart=/usr/local/bin/systemd_daemon
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+# These directory directives are exposed to the process and consumed by
+# `SystemdExecutor::system(...)`.
+StateDirectory=systemd_daemon
+CacheDirectory=systemd_daemon
+RuntimeDirectory=systemd_daemon
+LogsDirectory=systemd_daemon
+ConfigurationDirectory=systemd_daemon
+
+# The main config file should be created at:
+#   /etc/systemd_daemon/systemd_daemon.toml
+#
+# Example contents:
+#   message = "hello from systemd"
+#   interval_ms = 1000
+
+[Install]
+WantedBy=multi-user.target

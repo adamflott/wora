@@ -72,6 +72,12 @@ Run the Linux `systemd` daemon example:
 cargo run --example systemd_daemon
 ```
 
+Sample unit file:
+
+```text
+examples/systemd_daemon.service
+```
+
 Run the onboarding example:
 
 ```sh
