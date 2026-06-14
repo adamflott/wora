@@ -73,6 +73,7 @@ impl Config for DaemonConfig {
 #[async_trait]
 impl App<(), ()> for DaemonApp {
     type AppConfig = DaemonConfig;
+    type AppSecrets = NoSecrets;
     type Setup = ();
     fn name(&self) -> &'static str {
         "async_daemon"

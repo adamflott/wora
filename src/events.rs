@@ -68,6 +68,8 @@ pub enum Event<T> {
     // workload
     /// workload configuration has changed
     ConfigChange(notify::Event),
+    /// workload secrets have changed
+    SecretChange(notify::Event),
 
     // workload operations
     /// workload is being requested to reload configuration

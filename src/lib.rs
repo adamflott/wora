@@ -34,7 +34,7 @@ pub mod restart_policy;
 pub mod vfs;
 
 use crate::dirs::Dirs;
-use crate::errors::{MainEarlyReturn, SetupFailure, WoraSetupError};
+use crate::errors::{MainEarlyReturn, ReloadError, SetupFailure, VfsError, WoraSetupError};
 use crate::events::*;
 use crate::exec::*;
 use crate::o11y::*;
@@ -253,6 +253,33 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
         self.status.readiness_state()
     }
 
+    /// Apply a typed config or secret reload event to `app`.
+    ///
+    /// This helper is intended to be called from `App::main` when the app
+    /// receives `Event::ConfigChange` or `Event::SecretChange`.
+    pub async fn apply_reload_event<A>(&self, app: &mut A, fs: impl WFS + 'static, event: &Event<AppEv>) -> Result<ReloadHandling, ReloadError>
+    where
+        A: App<AppEv, AppMetric> + Send,
+    {
+        match event {
+            Event::ConfigChange(notify_event) => {
+                let reload = load_config_reload::<A::AppConfig>(&self.dirs.metadata_root_dir, app.name(), fs, Some(&notify_event.paths)).await?;
+                app.reload_config(reload)
+                    .await
+                    .map_err(|err| ReloadError::Message(format!("failed to apply config reload for {}: {}", app.name(), err)))?;
+                Ok(ReloadHandling::ConfigApplied)
+            }
+            Event::SecretChange(notify_event) => {
+                let reload = load_secret_reload::<A::AppSecrets>(&self.dirs.secrets_root_dir, fs, Some(&notify_event.paths)).await?;
+                app.reload_secrets(reload)
+                    .await
+                    .map_err(|err| ReloadError::Message(format!("failed to apply secret reload for {}: {}", app.name(), err)))?;
+                Ok(ReloadHandling::SecretsApplied)
+            }
+            _ => Ok(ReloadHandling::NotHandled),
+        }
+    }
+
     /// Sleep for `duration`, then emit `ev`.
     pub async fn schedule_event(&self, duration: tokio::time::Duration, ev: Event<AppEv>) {
         tokio::time::sleep(duration).await;
@@ -309,6 +336,87 @@ pub trait Config {
     }
 }
 
+/// Typed configuration file payload.
+#[derive(Clone, Debug)]
+pub struct ConfigFile<T> {
+    /// Source file path.
+    pub path: PathBuf,
+    /// Parsed configuration value.
+    pub value: T,
+}
+
+/// Typed configuration reload payload.
+#[derive(Clone, Debug)]
+pub struct ConfigReload<T> {
+    /// Parsed main config, if present in the reload set.
+    pub main: Option<T>,
+    /// Parsed supplemental config files.
+    pub supplemental: Vec<ConfigFile<T>>,
+}
+
+impl<T> Default for ConfigReload<T> {
+    fn default() -> Self {
+        Self {
+            main: None,
+            supplemental: Vec::new(),
+        }
+    }
+}
+
+/// Typed secret file payload.
+#[derive(Clone, Debug)]
+pub struct SecretFile<T> {
+    /// Source file path.
+    pub path: PathBuf,
+    /// Secret key, usually derived from the filename.
+    pub key: String,
+    /// Parsed secret value.
+    pub value: T,
+}
+
+/// Typed secret reload payload.
+#[derive(Clone, Debug)]
+pub struct SecretReload<T> {
+    /// Parsed secret files included in the reload set.
+    pub files: Vec<SecretFile<T>>,
+}
+
+impl<T> Default for SecretReload<T> {
+    fn default() -> Self {
+        Self { files: Vec::new() }
+    }
+}
+
+/// Secret parser used for initial secret load and runtime reload handling.
+pub trait Secrets {
+    /// Parsed secret value type used by the application.
+    type SecretT: Send + 'static;
+
+    /// Parse a secret file.
+    fn parse_secret_file(file_path: PathBuf, data: Vec<u8>) -> Result<Self::SecretT, Box<dyn std::error::Error>>;
+}
+
+/// Empty secret implementation for apps that do not use secrets.
+pub struct NoSecrets;
+impl Secrets for NoSecrets {
+    type SecretT = ();
+
+    fn parse_secret_file(_file_path: PathBuf, _data: Vec<u8>) -> Result<Self::SecretT, Box<dyn std::error::Error>> {
+        Ok(())
+    }
+}
+
+/// Result from applying a typed runtime reload helper.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReloadHandling {
+    /// The event was not a typed reload event.
+    NotHandled,
+    /// A typed config reload was applied.
+    ConfigApplied,
+    /// A typed secret reload was applied.
+    SecretsApplied,
+}
+
 /// Empty configuration implementation for apps that do not use config files.
 pub struct NoConfig;
 impl Config for NoConfig {
@@ -322,6 +430,8 @@ impl Config for NoConfig {
 pub trait App<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> {
     /// Configuration parser for the app.
     type AppConfig: Config;
+    /// Secret parser for the app.
+    type AppSecrets: Secrets;
     /// Setup artifact type returned by `setup`.
     type Setup;
     /// Stable application name used for directories, locks, and logging.
@@ -334,6 +444,19 @@ pub trait App<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> {
 
     /// Apply an initially loaded application configuration.
     async fn configure(&mut self, _config: <Self::AppConfig as Config>::ConfigT) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    /// Apply a typed configuration reload.
+    async fn reload_config(&mut self, reload: ConfigReload<<Self::AppConfig as Config>::ConfigT>) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(config) = reload.main {
+            self.configure(config).await?;
+        }
+        Ok(())
+    }
+
+    /// Apply a typed secret reload.
+    async fn reload_secrets(&mut self, _reload: SecretReload<<Self::AppSecrets as Secrets>::SecretT>) -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     }
 
@@ -392,23 +515,159 @@ where
     AppMetric: Send + Sync + 'static,
     A: App<AppEv, AppMetric> + Send,
 {
-    let config_path = wora.dirs.metadata_root_dir.join(format!("{}.toml", app.name()));
-
-    match fs.read_to_string(&config_path).await {
-        Ok(data) => {
-            let config = A::AppConfig::parse_main_config_file(data)
-                .map_err(|err| WoraSetupError::Str(format!("failed to parse config {}: {}", config_path.display(), err)))?;
-            app.configure(config)
+    match load_config_reload::<A::AppConfig>(&wora.dirs.metadata_root_dir, app.name(), fs.clone(), None).await {
+        Ok(reload) => {
+            app.reload_config(reload)
                 .instrument(tracing::info_span!("app:run:configure"))
                 .await
-                .map_err(|err| WoraSetupError::Str(format!("failed to apply config {}: {}", config_path.display(), err)))?;
+                .map_err(|err| WoraSetupError::Str(format!("failed to apply config {}: {}", wora.dirs.metadata_root_dir.display(), err)))?;
             Ok(())
         }
-        Err(err) => {
-            debug!("config:init:skip path:{} error:{}", config_path.display(), err);
+        Err(ReloadError::Vfs(err)) => {
+            debug!("config:init:skip path:{} error:{}", wora.dirs.metadata_root_dir.display(), err);
             Ok(())
+        }
+        Err(err) => Err(WoraSetupError::Str(err.to_string()).into()),
+    }
+}
+
+async fn load_initial_secrets<AppEv, AppMetric, A>(app: &mut A, wora: &Wora<AppEv, AppMetric>, fs: impl WFS + 'static) -> Result<(), MainEarlyReturn>
+where
+    AppEv: Send + Sync + 'static,
+    AppMetric: Send + Sync + 'static,
+    A: App<AppEv, AppMetric> + Send,
+{
+    match load_secret_reload::<A::AppSecrets>(&wora.dirs.secrets_root_dir, fs.clone(), None).await {
+        Ok(reload) => {
+            if !reload.files.is_empty() {
+                app.reload_secrets(reload)
+                    .instrument(tracing::info_span!("app:run:secrets"))
+                    .await
+                    .map_err(|err| WoraSetupError::Str(format!("failed to apply secrets {}: {}", wora.dirs.secrets_root_dir.display(), err)))?;
+            }
+            Ok(())
+        }
+        Err(ReloadError::Vfs(err)) => {
+            debug!("secrets:init:skip path:{} error:{}", wora.dirs.secrets_root_dir.display(), err);
+            Ok(())
+        }
+        Err(err) => Err(WoraSetupError::Str(err.to_string()).into()),
+    }
+}
+
+fn is_main_config_path(app_name: &str, path: &PathBuf) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == format!("{app_name}.toml"))
+}
+
+async fn parse_config_file<C: Config>(path: PathBuf, fs: impl WFS + 'static, is_main: bool) -> Result<Option<ConfigFile<C::ConfigT>>, ReloadError> {
+    match fs.read_to_string(&path).await {
+        Ok(data) => {
+            let value = if is_main {
+                C::parse_main_config_file(data)
+            } else {
+                C::parse_supplemental_config_file(path.clone(), data)
+            }
+            .map_err(|err| ReloadError::Message(format!("failed to parse config {}: {}", path.display(), err)))?;
+
+            Ok(Some(ConfigFile { path, value }))
+        }
+        Err(VfsError::Io(err))
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::IsADirectory | std::io::ErrorKind::InvalidInput
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+async fn metadata_paths(fs: impl WFS + 'static, metadata_root: &PathBuf) -> Result<Vec<PathBuf>, ReloadError> {
+    let mut paths = Vec::new();
+    let mut entries = fs.read_dir(metadata_root).await?;
+    while let Some(entry) = entries.next_entry().await.map_err(VfsError::Io)? {
+        paths.push(entry.path());
+    }
+    Ok(paths)
+}
+
+async fn secret_paths(fs: impl WFS + 'static, secrets_root: &PathBuf) -> Result<Vec<PathBuf>, ReloadError> {
+    let mut paths = Vec::new();
+    let mut entries = fs.read_dir(secrets_root).await?;
+    while let Some(entry) = entries.next_entry().await.map_err(VfsError::Io)? {
+        paths.push(entry.path());
+    }
+    Ok(paths)
+}
+
+async fn load_config_reload<C>(
+    metadata_root: &PathBuf,
+    app_name: &str,
+    fs: impl WFS + 'static,
+    changed_paths: Option<&[PathBuf]>,
+) -> Result<ConfigReload<C::ConfigT>, ReloadError>
+where
+    C: Config,
+{
+    let mut reload = ConfigReload::default();
+    let paths = match changed_paths {
+        Some(paths) => paths.to_vec(),
+        None => metadata_paths(fs.clone(), metadata_root).await?,
+    };
+
+    for path in paths {
+        let is_main = is_main_config_path(app_name, &path);
+        if let Some(parsed) = parse_config_file::<C>(path.clone(), fs.clone(), is_main).await? {
+            if is_main {
+                reload.main = Some(parsed.value);
+            } else {
+                reload.supplemental.push(parsed);
+            }
         }
     }
+
+    Ok(reload)
+}
+
+async fn load_secret_reload<S>(
+    secrets_root: &PathBuf,
+    fs: impl WFS + 'static,
+    changed_paths: Option<&[PathBuf]>,
+) -> Result<SecretReload<S::SecretT>, ReloadError>
+where
+    S: Secrets,
+{
+    let mut reload = SecretReload::default();
+    let paths = match changed_paths {
+        Some(paths) => paths.to_vec(),
+        None => secret_paths(fs.clone(), secrets_root).await?,
+    };
+
+    for path in paths {
+        let key = match path.file_name().and_then(|value| value.to_str()) {
+            Some(key) => key.to_string(),
+            None => continue,
+        };
+
+        match fs.read(&path).await {
+            Ok(data) => {
+                let value = S::parse_secret_file(path.clone(), data)
+                    .map_err(|err| ReloadError::Message(format!("failed to parse secret {}: {}", path.display(), err)))?;
+                reload.files.push(SecretFile { path, key, value });
+            }
+            Err(VfsError::Io(err))
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::IsADirectory | std::io::ErrorKind::InvalidInput
+                ) => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    Ok(reload)
 }
 
 enum ShutdownReason {
@@ -718,6 +977,7 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
             exec.setup(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:setup")).await?;
 
             configure_app_from_metadata(&mut app, &wora, fs.clone()).await?;
+            load_initial_secrets(&mut app, &wora, fs.clone()).await?;
 
             let mut rc = Err(MainEarlyReturn::UseExitCode(1));
 
@@ -767,10 +1027,14 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
                     ));
 
                     let (mut watcher, mut watch_rx) = async_watcher()?;
+                    let (mut secret_watcher, mut secret_watch_rx) = async_watcher()?;
 
                     info!("notify:watch:dir: {:?}", &wora.dirs.metadata_root_dir);
                     watcher.watch(std::path::Path::new(&wora.dirs.metadata_root_dir), RecursiveMode::Recursive)?;
+                    info!("notify:watch:secrets: {:?}", &wora.dirs.secrets_root_dir);
+                    secret_watcher.watch(std::path::Path::new(&wora.dirs.secrets_root_dir), RecursiveMode::Recursive)?;
                     let ev_sender = runtime_event_tx.clone();
+                    let secret_ev_sender = runtime_event_tx.clone();
 
                     let watcher_task = tokio::spawn(async move {
                         while let Some(res) = watch_rx.recv().await {
@@ -778,6 +1042,22 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
                                 Ok(event) => {
                                     info!("changed: {:?}", event);
                                     match ev_sender.send(Event::ConfigChange(event)).await {
+                                        Ok(_) => {}
+                                        Err(send_err) => {
+                                            error!("send error: {:?}", send_err);
+                                        }
+                                    }
+                                }
+                                Err(e) => error!("watch error: {:?}", e),
+                            }
+                        }
+                    });
+                    let secret_watcher_task = tokio::spawn(async move {
+                        while let Some(res) = secret_watch_rx.recv().await {
+                            match res {
+                                Ok(event) => {
+                                    info!("secret changed: {:?}", event);
+                                    match secret_ev_sender.send(Event::SecretChange(event)).await {
                                         Ok(_) => {}
                                         Err(send_err) => {
                                             error!("send error: {:?}", send_err);
@@ -811,6 +1091,7 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
                     }
 
                     watcher_task.abort();
+                    secret_watcher_task.abort();
                     match ready_task.await {
                         Ok(Ok(())) => {}
                         Ok(Err(err)) => return Err(MainEarlyReturn::SetupFailed(err)),

@@ -115,3 +115,13 @@ impl From<log::SetLoggerError> for SetupFailure {
 
 #[derive(Debug, Error)]
 pub enum EnvVarsParseError {}
+
+#[derive(Debug, Error)]
+pub enum ReloadError {
+    #[error("reload: vfs")]
+    Vfs(#[from] VfsError),
+    #[error("reload: notify")]
+    Notify(#[from] notify::Error),
+    #[error("reload: {0}")]
+    Message(String),
+}

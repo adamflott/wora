@@ -27,6 +27,7 @@ struct BasicApp {
 #[async_trait]
 impl App<(), ()> for BasicApp {
     type AppConfig = NoConfig;
+    type AppSecrets = NoSecrets;
     type Setup = ();
     fn name(&self) -> &'static str {
         "wora_basic"

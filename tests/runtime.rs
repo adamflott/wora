@@ -208,6 +208,7 @@ impl AsyncExecutor<(), ()> for ControlEventExec {
 #[async_trait]
 impl App<(), ()> for AlwaysRestartApp {
     type AppConfig = NoConfig;
+    type AppSecrets = NoSecrets;
     type Setup = ();
 
     fn name(&self) -> &'static str {
@@ -249,6 +250,7 @@ impl App<(), ()> for AlwaysRestartApp {
 #[async_trait]
 impl App<(), ()> for ConfiguredRestartApp {
     type AppConfig = TestConfig;
+    type AppSecrets = NoSecrets;
     type Setup = ();
 
     fn name(&self) -> &'static str {
@@ -308,9 +310,41 @@ struct HealthFailureApp {
     calls: Arc<Mutex<u8>>,
 }
 
+#[derive(Default)]
+struct ReloadingConfig {
+    enabled: bool,
+}
+
+struct ReloadingSecrets;
+
+struct ReloadingApp {
+    initial_config_loaded: bool,
+    current_enabled: bool,
+    current_secret: String,
+}
+
+impl Config for ReloadingConfig {
+    type ConfigT = ReloadingConfig;
+
+    fn parse_main_config_file(data: String) -> Result<Self::ConfigT, Box<dyn std::error::Error>> {
+        Ok(ReloadingConfig {
+            enabled: data.trim() == "enabled = true",
+        })
+    }
+}
+
+impl Secrets for ReloadingSecrets {
+    type SecretT = String;
+
+    fn parse_secret_file(_file_path: PathBuf, data: Vec<u8>) -> Result<Self::SecretT, Box<dyn std::error::Error>> {
+        Ok(String::from_utf8(data)?.trim().to_string())
+    }
+}
+
 #[async_trait]
 impl App<(), ()> for ControlDrivenApp {
     type AppConfig = NoConfig;
+    type AppSecrets = NoSecrets;
     type Setup = ();
 
     fn name(&self) -> &'static str {
@@ -354,6 +388,7 @@ impl App<(), ()> for ControlDrivenApp {
 #[async_trait]
 impl App<(), ()> for DeferredReadyApp {
     type AppConfig = NoConfig;
+    type AppSecrets = NoSecrets;
     type Setup = ();
 
     fn name(&self) -> &'static str {
@@ -398,6 +433,7 @@ impl App<(), ()> for DeferredReadyApp {
 #[async_trait]
 impl App<(), ()> for HealthFailureApp {
     type AppConfig = NoConfig;
+    type AppSecrets = NoSecrets;
     type Setup = ();
 
     fn name(&self) -> &'static str {
@@ -441,6 +477,77 @@ impl App<(), ()> for HealthFailureApp {
         }
 
         MainRetryAction::UseExitCode(8)
+    }
+
+    async fn is_healthy(&mut self) -> HealthState {
+        HealthState::Ok
+    }
+
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
+}
+
+#[async_trait]
+impl App<(), ()> for ReloadingApp {
+    type AppConfig = ReloadingConfig;
+    type AppSecrets = ReloadingSecrets;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        "reloading"
+    }
+
+    async fn reload_config(&mut self, reload: ConfigReload<ReloadingConfig>) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(config) = reload.main {
+            self.initial_config_loaded = true;
+            self.current_enabled = config.enabled;
+        }
+        Ok(())
+    }
+
+    async fn reload_secrets(&mut self, reload: SecretReload<String>) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(secret) = reload.files.into_iter().find(|file| file.key == "api_key") {
+            self.current_secret = secret.value;
+        }
+        Ok(())
+    }
+
+    async fn setup(
+        &mut self,
+        wora: &Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        assert!(self.initial_config_loaded);
+        assert_eq!(self.current_secret, "alpha");
+
+        let metadata_file = wora.dirs.metadata_root_dir.join("reloading.toml");
+        let secret_file = wora.dirs.secrets_root_dir.join("api_key");
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = tokio::fs::write(&metadata_file, "enabled = true").await;
+            let _ = tokio::fs::write(&secret_file, "bravo").await;
+        });
+
+        Ok(())
+    }
+
+    async fn main(
+        &mut self,
+        wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
+        while let Some(event) = wora.receiver.recv().await {
+            let _ = wora.apply_reload_event(self, fs.clone(), &event).await;
+            if self.current_enabled && self.current_secret == "bravo" {
+                return MainRetryAction::Success;
+            }
+        }
+
+        MainRetryAction::UseExitCode(10)
     }
 
     async fn is_healthy(&mut self) -> HealthState {
@@ -556,6 +663,33 @@ async fn failed_health_can_trigger_restart_policy() -> Result<(), Box<dyn std::e
     let calls = calls.lock().map_err(|err| std::io::Error::other(err.to_string()))?;
     assert!(matches!(rc, Err(MainEarlyReturn::UseExitCode(1))));
     assert_eq!(*calls, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn typed_config_and_secret_reload_helpers_apply_runtime_changes() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("typed-reload");
+    let dirs = test_dirs(root.clone());
+    std::fs::create_dir_all(&dirs.metadata_root_dir)?;
+    std::fs::create_dir_all(&dirs.secrets_root_dir)?;
+    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+    std::fs::write(dirs.metadata_root_dir.join("reloading.toml"), "enabled = false")?;
+    std::fs::write(dirs.secrets_root_dir.join("api_key"), "alpha")?;
+
+    exec_async_runner(
+        TestExec { dirs },
+        ReloadingApp {
+            initial_config_loaded: false,
+            current_enabled: false,
+            current_secret: String::new(),
+        },
+        PhysicalVFS::new(),
+        test_o11y()?,
+        Some(root.join("boot")),
+    )
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
+
     Ok(())
 }
 
