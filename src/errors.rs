@@ -47,6 +47,8 @@ pub enum VfsError {
     Io(#[from] std::io::Error),
     #[error("project directories unavailable for app {0}")]
     ProjectDirsUnavailable(String),
+    #[error("unsupported virtual filesystem operation: {0}")]
+    UnsupportedOperation(&'static str),
 }
 
 #[derive(Debug, Error)]

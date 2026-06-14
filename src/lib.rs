@@ -621,21 +621,11 @@ async fn parse_config_file<C: Config>(path: PathBuf, fs: impl WFS + 'static, is_
 }
 
 async fn metadata_paths(fs: impl WFS + 'static, metadata_root: &PathBuf) -> Result<Vec<PathBuf>, ReloadError> {
-    let mut paths = Vec::new();
-    let mut entries = fs.read_dir(metadata_root).await?;
-    while let Some(entry) = entries.next_entry().await.map_err(VfsError::Io)? {
-        paths.push(entry.path());
-    }
-    Ok(paths)
+    fs.list_dir(metadata_root).await.map_err(ReloadError::from)
 }
 
 async fn secret_paths(fs: impl WFS + 'static, secrets_root: &PathBuf) -> Result<Vec<PathBuf>, ReloadError> {
-    let mut paths = Vec::new();
-    let mut entries = fs.read_dir(secrets_root).await?;
-    while let Some(entry) = entries.next_entry().await.map_err(VfsError::Io)? {
-        paths.push(entry.path());
-    }
-    Ok(paths)
+    fs.list_dir(secrets_root).await.map_err(ReloadError::from)
 }
 
 async fn load_config_reload<C>(

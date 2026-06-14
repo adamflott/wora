@@ -478,9 +478,7 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
             if let Some(parent) = path.parent() {
                 fs.create_dir(parent).await?;
             }
-            let mut file = fs.create_file(path).await?;
-            use tokio::io::AsyncWriteExt;
-            file.write_all(format!("ready:{}\n", app_name).as_bytes()).await?;
+            fs.write(path, format!("ready:{}\n", app_name).as_bytes()).await?;
         }
         Ok(())
     }
@@ -494,16 +492,14 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
             if let Some(parent) = path.parent() {
                 fs.create_dir(parent).await?;
             }
-            let mut file = fs.create_file(path).await?;
-            use tokio::io::AsyncWriteExt;
-            file.write_all(format!("stopping:{}\n", app_name).as_bytes()).await?;
+            fs.write(path, format!("stopping:{}\n", app_name).as_bytes()).await?;
         }
 
         if let Some(path) = &self.readiness_file {
-            match tokio::fs::remove_file(path).await {
+            match fs.remove_file(path).await {
                 Ok(_) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(SetupFailure::IO(err)),
+                Err(VfsError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(SetupFailure::Vfs(err)),
             }
         }
 

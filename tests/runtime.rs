@@ -160,9 +160,7 @@ impl AsyncExecutor<(), ()> for ReadyMarkerExec {
     }
 
     async fn on_runtime_ready(&self, app_name: &str, _dirs: &Dirs, fs: impl WFS) -> Result<(), SetupFailure> {
-        let mut file = fs.create_file(&self.ready_file).await?;
-        use tokio::io::AsyncWriteExt;
-        file.write_all(format!("ready:{app_name}").as_bytes()).await?;
+        fs.write(&self.ready_file, format!("ready:{app_name}").as_bytes()).await?;
         Ok(())
     }
 
@@ -835,6 +833,41 @@ async fn run_event_loop_auto_applies_typed_reload_before_handler() -> Result<(),
 }
 
 #[tokio::test]
+async fn apply_reload_event_supports_in_memory_vfs() -> Result<(), Box<dyn std::error::Error>> {
+    let dirs = test_dirs(PathBuf::from("/virtual-runtime"));
+    let fs = InMemoryVFS::new();
+    fs.create_dir(&dirs.metadata_root_dir).await?;
+    fs.create_dir(&dirs.secrets_root_dir).await?;
+    fs.write(dirs.metadata_root_dir.join("reloading.toml"), b"enabled = true").await?;
+    fs.write(dirs.secrets_root_dir.join("api_key"), b"bravo").await?;
+
+    let wora: Wora<(), ()> = Wora::new(&dirs, "reloading".to_string(), 8, test_o11y()?)?;
+    let mut app = ReloadingApp {
+        initial_config_loaded: false,
+        current_enabled: false,
+        current_secret: String::new(),
+    };
+
+    let config_event = notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content)))
+        .add_path(dirs.metadata_root_dir.join("reloading.toml"));
+    let secret_event = notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content)))
+        .add_path(dirs.secrets_root_dir.join("api_key"));
+
+    assert_eq!(
+        wora.apply_reload_event(&mut app, fs.clone(), &Event::ConfigChange(config_event)).await?,
+        ReloadHandling::ConfigApplied
+    );
+    assert_eq!(
+        wora.apply_reload_event(&mut app, fs.clone(), &Event::SecretChange(secret_event)).await?,
+        ReloadHandling::SecretsApplied
+    );
+    assert!(app.current_enabled);
+    assert_eq!(app.current_secret, "bravo");
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn o11y_processor_fans_out_to_memory_and_json_sinks() -> Result<(), Box<dyn std::error::Error>> {
     let root = unique_test_dir("o11y-processor");
     std::fs::create_dir_all(&root)?;
@@ -1041,9 +1074,9 @@ async fn systemd_executor_sends_ready_and_stopping_notifications() -> Result<(),
 
 #[tokio::test]
 async fn container_executor_manages_readiness_and_termination_files() -> Result<(), Box<dyn std::error::Error>> {
-    let root = unique_test_dir("container-exec");
-    let readiness_path = root.join("status").join("ready");
-    let termination_path = root.join("status").join("termination.log");
+    let readiness_path = PathBuf::from("/virtual/status/ready");
+    let termination_path = PathBuf::from("/virtual/status/termination.log");
+    let fs = InMemoryVFS::new();
     let exec = ContainerExecutor::new("container_app")
         .await
         .with_readiness_file(&readiness_path)
@@ -1055,13 +1088,12 @@ async fn container_executor_manages_readiness_and_termination_files() -> Result<
         test_o11y()?,
     )?;
 
-    <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_ready(&exec, "container_app", &wora.dirs, PhysicalVFS::new()).await?;
-    assert!(readiness_path.is_file());
-    assert_eq!(std::fs::read_to_string(&readiness_path)?, "ready:container_app\n");
+    <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_ready(&exec, "container_app", &wora.dirs, fs.clone()).await?;
+    assert_eq!(fs.read_to_string(&readiness_path).await?, "ready:container_app\n");
 
-    <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_stopping(&exec, "container_app", &wora.dirs, PhysicalVFS::new()).await?;
-    assert!(!readiness_path.exists());
-    assert_eq!(std::fs::read_to_string(&termination_path)?, "stopping:container_app\n");
+    <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_stopping(&exec, "container_app", &wora.dirs, fs.clone()).await?;
+    assert!(!fs.dir_exists(&readiness_path).await?);
+    assert_eq!(fs.read_to_string(&termination_path).await?, "stopping:container_app\n");
 
     Ok(())
 }
