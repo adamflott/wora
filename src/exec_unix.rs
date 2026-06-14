@@ -62,10 +62,6 @@ impl UnixLike {
                             break;
                         }
                     }
-
-                    if send.send(Event::UnixSignal(signum)).await.is_err() {
-                        break;
-                    }
                 }
             }));
         }

@@ -53,48 +53,27 @@ pub enum ControlEvent {
 ///
 #[derive(Clone, Debug, Serialize)]
 pub enum Event<T> {
-    /// platform-neutral lifecycle or operator control request
+    /// Platform-neutral lifecycle or operator control request.
     Control(ControlEvent),
+
     // system
-    /// when a Unix signal arrives
-    UnixSignal(i32),
-    /// system stats
+    /// System stats.
     SystemResource(SystemResourceStat),
-    /// system stat thresholds reached
+    /// System CPU threshold reached.
     SystemResourceCPUThreshold(Percentage, Cpu),
+    /// System load threshold reached.
     SystemResourceLoadThreshold(Percentage, LoadAvg),
+    /// System memory threshold reached.
     SystemResourceMemoryThreshold(Percentage, MemStats),
 
     // workload
-    /// workload configuration has changed
-    ConfigChange(notify::Event),
-    /// workload secrets have changed
-    SecretChange(notify::Event),
-
-    // workload operations
-    /// workload is being requested to reload configuration
-    ///
-    /// Prefer `Event::Control(ControlEvent::ReloadConfiguration)` for new
-    /// code. This variant remains for compatibility with earlier APIs.
-    #[allow(dead_code)]
-    ReloadConfiguration,
-    /// workload is being requested to suspend
-    ///
-    /// Prefer `Event::Control(ControlEvent::Suspend(_))` for new code.
-    Suspended(Option<chrono::NaiveDateTime>),
-    /// workload is being requested to shutdown
-    ///
-    /// Prefer `Event::Control(ControlEvent::Shutdown(_))` for new code.
-    Shutdown(Option<chrono::NaiveDateTime>),
-    /// workload is being requested to change leadership role
-    LeadershipChange(Leadership, Leadership),
-
-    /// workload is being requested to rotate logging
-    ///
-    /// Prefer `Event::Control(ControlEvent::LogRotation)` for new code.
-    LogRotation,
-
-    /// custom workload/app events
+    /// Workload configuration has changed.
+    ConfigChanged(notify::Event),
+    /// Workload secrets have changed.
+    SecretChanged(notify::Event),
+    /// Workload leadership role has changed.
+    LeadershipChanged(Leadership, Leadership),
+    /// Custom workload/app events.
     App(T),
 }
 

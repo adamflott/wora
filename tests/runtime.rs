@@ -609,7 +609,7 @@ impl App<(), ()> for HelperLoopApp {
             let _ = tokio::fs::write(&metadata_file, "enabled = true").await;
             let event =
                 notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content))).add_path(metadata_file);
-            let _ = sender.send(Event::ConfigChange(event)).await;
+            let _ = sender.send(Event::ConfigChanged(event)).await;
         });
         Ok(())
     }
@@ -623,7 +623,7 @@ impl App<(), ()> for HelperLoopApp {
     ) -> MainRetryAction {
         match wora
             .run_event_loop(self, fs, |app, _wora, event| match event {
-                Event::ConfigChange(_) if app.current_enabled => EventLoopAction::Exit(MainRetryAction::Success),
+                Event::ConfigChanged(_) if app.current_enabled => EventLoopAction::Exit(MainRetryAction::Success),
                 _ => EventLoopAction::Continue,
             })
             .await
@@ -682,7 +682,7 @@ impl App<(), ()> for VirtualWatcherApp {
     ) -> MainRetryAction {
         match wora
             .run_event_loop(self, fs, |app, _wora, event| match event {
-                Event::ConfigChange(_) if app.current_enabled => EventLoopAction::Exit(MainRetryAction::Success),
+                Event::ConfigChanged(_) if app.current_enabled => EventLoopAction::Exit(MainRetryAction::Success),
                 _ => EventLoopAction::Continue,
             })
             .await
@@ -917,11 +917,11 @@ async fn apply_reload_event_supports_in_memory_vfs() -> Result<(), Box<dyn std::
         .add_path(dirs.secrets_root_dir.join("api_key"));
 
     assert_eq!(
-        wora.apply_reload_event(&mut app, fs.clone(), &Event::ConfigChange(config_event)).await?,
+        wora.apply_reload_event(&mut app, fs.clone(), &Event::ConfigChanged(config_event)).await?,
         ReloadHandling::ConfigApplied
     );
     assert_eq!(
-        wora.apply_reload_event(&mut app, fs.clone(), &Event::SecretChange(secret_event)).await?,
+        wora.apply_reload_event(&mut app, fs.clone(), &Event::SecretChanged(secret_event)).await?,
         ReloadHandling::SecretsApplied
     );
     assert!(app.current_enabled);

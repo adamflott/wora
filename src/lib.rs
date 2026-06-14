@@ -259,20 +259,20 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
     /// Apply a typed config or secret reload event to `app`.
     ///
     /// This helper is intended to be called from `App::main` when the app
-    /// receives `Event::ConfigChange` or `Event::SecretChange`.
+    /// receives `Event::ConfigChanged` or `Event::SecretChanged`.
     pub async fn apply_reload_event<A>(&self, app: &mut A, fs: impl WFS + 'static, event: &Event<AppEv>) -> Result<ReloadHandling, ReloadError>
     where
         A: App<AppEv, AppMetric> + Send,
     {
         match event {
-            Event::ConfigChange(notify_event) => {
+            Event::ConfigChanged(notify_event) => {
                 let reload = load_config_reload::<A::AppConfig>(&self.dirs.metadata_root_dir, app.name(), fs, Some(&notify_event.paths)).await?;
                 app.reload_config(reload)
                     .await
                     .map_err(|err| ReloadError::Message(format!("failed to apply config reload for {}: {}", app.name(), err)))?;
                 Ok(ReloadHandling::ConfigApplied)
             }
-            Event::SecretChange(notify_event) => {
+            Event::SecretChanged(notify_event) => {
                 let reload = load_secret_reload::<A::AppSecrets>(&self.dirs.secrets_root_dir, fs, Some(&notify_event.paths)).await?;
                 app.reload_secrets(reload)
                     .await
@@ -941,11 +941,6 @@ pub async fn exec_async_runner_with_restart_options_and_lock_backend<AppEv: Send
                                 .send(RuntimeSupervisionEvent::ShutdownRequested(ShutdownReason::External, *timestamp))
                                 .await;
                         }
-                        Event::Shutdown(timestamp) => {
-                            let _ = dispatch_supervision_sender
-                                .send(RuntimeSupervisionEvent::ShutdownRequested(ShutdownReason::External, *timestamp))
-                                .await;
-                        }
                         _ => {}
                     }
 
@@ -1162,7 +1157,7 @@ pub async fn exec_async_runner_with_restart_options_and_lock_backend<AppEv: Send
                             match res {
                                 Ok(event) => {
                                     info!("changed: {:?}", event);
-                                    match ev_sender.send(Event::ConfigChange(event)).await {
+                                    match ev_sender.send(Event::ConfigChanged(event)).await {
                                         Ok(_) => {}
                                         Err(send_err) => {
                                             error!("send error: {:?}", send_err);
@@ -1178,7 +1173,7 @@ pub async fn exec_async_runner_with_restart_options_and_lock_backend<AppEv: Send
                             match res {
                                 Ok(event) => {
                                     info!("secret changed: {:?}", event);
-                                    match secret_ev_sender.send(Event::SecretChange(event)).await {
+                                    match secret_ev_sender.send(Event::SecretChanged(event)).await {
                                         Ok(_) => {}
                                         Err(send_err) => {
                                             error!("send error: {:?}", send_err);

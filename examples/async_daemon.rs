@@ -4,7 +4,6 @@ use std::sync::RwLock;
 
 use async_trait::async_trait;
 use clap::{Parser, ValueEnum};
-use libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
 use tracing::{Level, debug, error, info};
@@ -134,43 +133,16 @@ impl App<(), ()> for DaemonApp {
                             EventLoopAction::Continue
                         }
                     },
-                    Event::UnixSignal(signum) => {
-                        match signum {
-                            SIGTERM | SIGINT | SIGQUIT => {}
-                            SIGHUP => {
-                                info!("sighup!");
-                            }
-                            SIGUSR1 => {}
-                            _ => {}
-                        }
-                        EventLoopAction::Continue
-                    }
-                    Event::Shutdown(dt) => {
-                        info!("shutting down at {:?}", dt);
-                        EventLoopAction::Exit(MainRetryAction::Success)
-                    }
-                    Event::ReloadConfiguration => {
-                        info!("reload configuration");
-                        EventLoopAction::Continue
-                    }
                     Event::SystemResource(_) => EventLoopAction::Continue,
-                    Event::ConfigChange(_) => {
+                    Event::ConfigChanged(_) => {
                         info!("config changed");
                         EventLoopAction::Continue
                     }
-                    Event::SecretChange(_) => {
+                    Event::SecretChanged(_) => {
                         info!("secret changed");
                         EventLoopAction::Continue
                     }
-                    Event::Suspended(dt) => {
-                        info!("suspending at {:?}", dt);
-                        EventLoopAction::Continue
-                    }
-                    Event::LogRotation => {
-                        info!("rotating log");
-                        EventLoopAction::Continue
-                    }
-                    Event::LeadershipChange(old_state, new_state) => {
+                    Event::LeadershipChanged(old_state, new_state) => {
                         info!("leadership has changed from state {:?} to {:?}", old_state, new_state);
                         EventLoopAction::Continue
                     }
