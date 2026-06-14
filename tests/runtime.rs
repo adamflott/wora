@@ -936,16 +936,17 @@ async fn exec_async_runner_supports_in_memory_vfs_watchers() -> Result<(), Box<d
     let dirs = test_dirs(root.clone());
     let fs = InMemoryVFS::new();
 
-    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
     fs.create_dir(&dirs.metadata_root_dir).await?;
     fs.write(dirs.metadata_root_dir.join("virtual_watcher.toml"), b"enabled = false").await?;
 
-    exec_async_runner(
+    exec_async_runner_with_restart_options_and_lock_backend(
         TestExec { dirs },
         VirtualWatcherApp { current_enabled: false },
         fs,
         test_o11y()?,
         Some(root.join("boot")),
+        RestartPolicyOptions::default(),
+        InMemoryLockBackend::default(),
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;

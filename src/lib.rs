@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use async_trait::async_trait;
 use chrono::Utc;
 use nix::unistd::getpid;
-use proc_lock::try_lock;
 use serde::Serialize;
 use sysinfo::System;
 use tokio::sync::mpsc::channel;
@@ -30,6 +29,7 @@ pub mod events;
 pub mod exec;
 pub mod exec_env;
 pub mod exec_unix;
+pub mod lock;
 pub mod o11y;
 pub mod prelude;
 pub mod restart_policy;
@@ -39,6 +39,7 @@ use crate::dirs::Dirs;
 use crate::errors::{MainEarlyReturn, ReloadError, SetupFailure, VfsError, WoraSetupError};
 use crate::events::*;
 use crate::exec::*;
+use crate::lock::{LockBackend, ProcLockBackend};
 use crate::o11y::*;
 use crate::restart_policy::*;
 use crate::vfs::*;
@@ -878,12 +879,26 @@ pub async fn exec_async_runner_with_restart_policy<AppEv: Send + Sync + 'static,
 
 /// Run apps via an `async` based executor with explicit restart options.
 pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static>(
+    exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
+    app: impl App<AppEv, AppMetric> + Send + 'static,
+    fs: impl WFS + 'static,
+    o11y: O11yProcessorOptions<AppMetric>,
+    maybe_boot_dir: Option<PathBuf>,
+    restart_options: RestartPolicyOptions,
+) -> Result<(), MainEarlyReturn> {
+    exec_async_runner_with_restart_options_and_lock_backend(exec, app, fs, o11y, maybe_boot_dir, restart_options, ProcLockBackend).await
+}
+
+/// Run apps via an `async` based executor with explicit restart options and a
+/// caller-supplied lock backend.
+pub async fn exec_async_runner_with_restart_options_and_lock_backend<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static, L: LockBackend>(
     mut exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
     mut app: impl App<AppEv, AppMetric> + Send + 'static,
     fs: impl WFS + 'static,
     o11y: O11yProcessorOptions<AppMetric>,
     maybe_boot_dir: Option<PathBuf>,
     restart_options: RestartPolicyOptions,
+    lock_backend: L,
 ) -> Result<(), MainEarlyReturn> {
     let mut lock_path = PathBuf::new();
     lock_path.push(&exec.dirs().runtime_root_dir);
@@ -896,13 +911,12 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
     };
 
     lock_path.push(&lock_fp);
-    let lock = proc_lock::LockPath::FullPath(&lock_path);
 
     let o11y_tx = o11y.sender().clone();
 
     let _ = o11y_tx.send(o11y_new_ev_init(exec.dirs().log_root_dir.clone())).await;
 
-    match try_lock(&lock) {
+    match lock_backend.try_lock(&lock_path) {
         Ok(lock_guard) => {
             info!("exec:run:lock_file created:{:?}", &lock_path);
 
@@ -1192,7 +1206,7 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
                         .await;
 
                         if matches!(rc, Err(MainEarlyReturn::UseExitCode(_))) {
-                            remove_lock_file(&lock_path).await;
+                            remove_lock_artifact(&lock_backend, &lock_path).await;
                         }
                     } else {
                         warn!(comp = "exec", method = "run", is_ready = false);
@@ -1233,7 +1247,7 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
             }
 
             drop(lock_guard);
-            remove_lock_file(&lock_path).await;
+            remove_lock_artifact(&lock_backend, &lock_path).await;
 
             let _ = o11y_tx.send(o11y_new_ev_finish()).await;
 
@@ -1249,13 +1263,16 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
     }
 }
 
-async fn remove_lock_file(lock_path: &PathBuf) {
-    match tokio::fs::remove_file(lock_path).await {
+async fn remove_lock_artifact<L: LockBackend>(lock_backend: &L, lock_path: &PathBuf) {
+    match lock_backend.cleanup(lock_path).await {
         Ok(_) => {
             debug!("lock:removed file:{:?}", lock_path);
         }
-        Err(rm_err) => {
+        Err(VfsError::Io(rm_err)) => {
             error!("lock file:{:?} error:{}", lock_path, rm_err);
+        }
+        Err(err) => {
+            error!("lock artifact:{:?} error:{}", lock_path, err);
         }
     }
 }
