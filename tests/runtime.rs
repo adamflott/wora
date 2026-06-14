@@ -5,7 +5,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use chrono::Utc;
 use tokio::sync::mpsc::Sender;
-use tokio::task::JoinHandle;
 use wora::prelude::*;
 
 fn unique_test_dir(name: &str) -> PathBuf {
@@ -163,50 +162,6 @@ impl AsyncExecutor<(), ()> for ReadyMarkerExec {
     async fn on_runtime_ready(&self, app_name: &str, _dirs: &Dirs, fs: impl WFS) -> Result<(), SetupFailure> {
         fs.write(&self.ready_file, format!("ready:{app_name}").as_bytes()).await?;
         Ok(())
-    }
-
-    async fn is_ready(&self, _wora: &Wora<(), ()>, _fs: impl WFS) -> bool {
-        true
-    }
-
-    async fn end(&self, _wora: &Wora<(), ()>, _fs: impl WFS) {}
-}
-
-#[derive(Clone, Debug)]
-struct ControlEventExec {
-    dirs: Dirs,
-}
-
-#[async_trait]
-impl AsyncExecutor<(), ()> for ControlEventExec {
-    fn id(&self) -> &'static str {
-        "control-event"
-    }
-
-    fn dirs(&self) -> &Dirs {
-        &self.dirs
-    }
-
-    async fn setup(&mut self, _wora: &Wora<(), ()>, fs: impl WFS) -> Result<(), SetupFailure> {
-        for dir in [
-            &self.dirs.root_dir,
-            &self.dirs.log_root_dir,
-            &self.dirs.metadata_root_dir,
-            &self.dirs.data_root_dir,
-            &self.dirs.runtime_root_dir,
-            &self.dirs.cache_root_dir,
-            &self.dirs.secrets_root_dir,
-        ] {
-            fs.create_dir(dir).await?;
-        }
-        Ok(())
-    }
-
-    async fn spawn_runtime_event_sources(&self, sender: Sender<Event<()>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
-        Ok(vec![tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            let _ = sender.send(Event::Control(ControlEvent::Shutdown(None))).await;
-        })])
     }
 
     async fn is_ready(&self, _wora: &Wora<(), ()>, _fs: impl WFS) -> bool {
@@ -847,19 +802,16 @@ async fn runner_loads_initial_config_and_applies_restart_policy() -> Result<(), 
 
 #[tokio::test]
 async fn executor_runtime_event_sources_can_drive_control_flow() -> Result<(), Box<dyn std::error::Error>> {
-    let root = unique_test_dir("control-event-source");
-    let dirs = test_dirs(root.clone());
-    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    let exec = UnixLikeBare::new("control_event").await.with_control_event_receiver(rx);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let _ = tx.send(ControlEvent::Shutdown(None)).await;
+    });
 
-    exec_async_runner(
-        ControlEventExec { dirs },
-        ControlDrivenApp,
-        PhysicalVFS::new(),
-        test_o11y()?,
-        Some(root.join("boot")),
-    )
-    .await
-    .map_err(|err| std::io::Error::other(err.to_string()))?;
+    exec_async_runner(exec, ControlDrivenApp, PhysicalVFS::new(), test_o11y()?, None)
+        .await
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
 
     Ok(())
 }
@@ -1319,6 +1271,32 @@ async fn container_executor_manages_readiness_and_termination_files() -> Result<
     <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_stopping(&exec, "container_app", &wora.dirs, fs.clone()).await?;
     assert!(!fs.dir_exists(&readiness_path).await?);
     assert_eq!(fs.read_to_string(&termination_path).await?, "stopping:container_app\n");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn container_executor_accepts_injected_control_events() -> Result<(), Box<dyn std::error::Error>> {
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    let exec = ContainerExecutor::new("container_control").await.with_control_event_receiver(rx);
+    let fs = InMemoryVFS::new();
+
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let _ = tx.send(ControlEvent::Shutdown(None)).await;
+    });
+
+    exec_async_runner_with_restart_options_and_lock_backend(
+        exec,
+        ControlDrivenApp,
+        fs,
+        test_o11y()?,
+        None,
+        RestartPolicyOptions::default(),
+        InMemoryLockBackend::default(),
+    )
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
 
     Ok(())
 }

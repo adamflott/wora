@@ -18,13 +18,14 @@ use std::os::unix::net::SocketAddr;
 #[cfg(target_family = "unix")]
 use std::os::unix::net::UnixDatagram;
 use thiserror::Error;
+use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 use tracing::{debug, trace};
 
 use crate::dirs::Dirs;
 use crate::errors::{SetupFailure, VfsError};
-use crate::events::Event;
+use crate::events::{ControlEvent, Event};
 use crate::exec::AsyncExecutor;
 use crate::exec_unix::UnixLike;
 use crate::{WFS, Wora};
@@ -161,6 +162,12 @@ impl SystemdExecutor {
     /// Override the notify socket path used by readiness/stopping hooks.
     pub fn with_notify_socket(mut self, notify_socket: impl Into<String>) -> Self {
         self.notify_socket = Some(notify_socket.into());
+        self
+    }
+
+    /// Inject a control-event receiver for deterministic testing.
+    pub fn with_control_event_receiver(mut self, receiver: Receiver<ControlEvent>) -> Self {
+        self.unix = self.unix.clone().with_control_event_receiver(receiver);
         self
     }
 
@@ -321,6 +328,12 @@ impl LaunchdExecutor {
         &self.socket_names
     }
 
+    /// Inject a control-event receiver for deterministic testing.
+    pub fn with_control_event_receiver(mut self, receiver: Receiver<ControlEvent>) -> Self {
+        self.unix = self.unix.clone().with_control_event_receiver(receiver);
+        self
+    }
+
     /// Build a launchd plist job description for this executor.
     #[cfg(target_os = "macos")]
     pub fn launchd_job<P: AsRef<Path>>(&self, label: &str, program: P, program_arguments: Vec<String>) -> Result<Launchd, LaunchdExecutorError> {
@@ -439,6 +452,12 @@ impl ContainerExecutor {
     /// Configure a termination log file written during shutdown.
     pub fn with_termination_log(mut self, path: impl Into<PathBuf>) -> Self {
         self.termination_log = Some(path.into());
+        self
+    }
+
+    /// Inject a control-event receiver for deterministic testing.
+    pub fn with_control_event_receiver(mut self, receiver: Receiver<ControlEvent>) -> Self {
+        self.unix = self.unix.clone().with_control_event_receiver(receiver);
         self
     }
 }

@@ -1,11 +1,13 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use directories::ProjectDirs;
 use libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2};
 use nix::unistd::chdir;
 use tokio::signal::unix::SignalKind;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 use tracing::{error, trace};
 
@@ -20,6 +22,7 @@ use crate::{AsyncExecutor, WFS};
 pub struct UnixLike {
     /// Directories used by the executor.
     pub dirs: Dirs,
+    injected_control_events: Option<Arc<Mutex<Option<Receiver<ControlEvent>>>>>,
 }
 
 impl UnixLike {
@@ -34,7 +37,15 @@ impl UnixLike {
             cache_root_dir: PathBuf::from("/var/run/"),
             secrets_root_dir: PathBuf::from("/var/run/"),
         };
-        UnixLike { dirs }
+        UnixLike {
+            dirs,
+            injected_control_events: None,
+        }
+    }
+
+    pub(crate) fn with_control_event_receiver(mut self, receiver: Receiver<ControlEvent>) -> Self {
+        self.injected_control_events = Some(Arc::new(Mutex::new(Some(receiver))));
+        self
     }
 
     fn control_event_for_signal(signum: i32) -> Option<ControlEvent> {
@@ -48,6 +59,21 @@ impl UnixLike {
     }
 
     pub(crate) async fn spawn_runtime_event_sources<AppEv: Send + 'static>(&self, sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        if let Some(injected_controls) = &self.injected_control_events {
+            let send = sender;
+            let injected_controls = injected_controls.clone();
+            return Ok(vec![tokio::spawn(async move {
+                let Some(mut receiver) = injected_controls.lock().await.take() else {
+                    return;
+                };
+                while let Some(control_event) = receiver.recv().await {
+                    if send.send(Event::Control(control_event)).await.is_err() {
+                        break;
+                    }
+                }
+            })]);
+        }
+
         let mut tasks = Vec::new();
 
         for &signum in [SIGHUP, SIGTERM, SIGQUIT, SIGUSR1, SIGUSR2, SIGINT].iter() {
@@ -113,6 +139,12 @@ impl UnixLikeSystem {
         let unix = UnixLike::new(app_name).await;
         UnixLikeSystem { unix }
     }
+
+    /// Inject a control-event receiver for deterministic testing.
+    pub fn with_control_event_receiver(mut self, receiver: Receiver<ControlEvent>) -> Self {
+        self.unix = self.unix.clone().with_control_event_receiver(receiver);
+        self
+    }
 }
 
 #[async_trait]
@@ -167,6 +199,12 @@ impl UnixLikeUser {
         unix.dirs = dirs;
 
         Ok(UnixLikeUser { unix })
+    }
+
+    /// Inject a control-event receiver for deterministic testing.
+    pub fn with_control_event_receiver(mut self, receiver: Receiver<ControlEvent>) -> Self {
+        self.unix = self.unix.clone().with_control_event_receiver(receiver);
+        self
     }
 }
 
@@ -223,6 +261,12 @@ impl UnixLikeBare {
         unix.dirs = dirs;
 
         UnixLikeBare { unix }
+    }
+
+    /// Inject a control-event receiver for deterministic testing.
+    pub fn with_control_event_receiver(mut self, receiver: Receiver<ControlEvent>) -> Self {
+        self.unix = self.unix.clone().with_control_event_receiver(receiver);
+        self
     }
 }
 
