@@ -280,6 +280,26 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
         }
     }
 
+    /// Run a reload-aware event loop for event-driven applications.
+    ///
+    /// Typed config and secret reloads are applied before `handler` receives
+    /// the event.
+    pub async fn run_event_loop<A, F>(&mut self, app: &mut A, fs: impl WFS + 'static, mut handler: F) -> Result<MainRetryAction, ReloadError>
+    where
+        A: App<AppEv, AppMetric> + Send,
+        F: FnMut(&mut A, &mut Wora<AppEv, AppMetric>, Event<AppEv>) -> EventLoopAction + Send,
+    {
+        while let Some(event) = self.receiver.recv().await {
+            self.apply_reload_event(app, fs.clone(), &event).await?;
+            match handler(app, self, event) {
+                EventLoopAction::Continue => {}
+                EventLoopAction::Exit(action) => return Ok(action),
+            }
+        }
+
+        Ok(MainRetryAction::Success)
+    }
+
     /// Sleep for `duration`, then emit `ev`.
     pub async fn schedule_event(&self, duration: tokio::time::Duration, ev: Event<AppEv>) {
         tokio::time::sleep(duration).await;
@@ -415,6 +435,15 @@ pub enum ReloadHandling {
     ConfigApplied,
     /// A typed secret reload was applied.
     SecretsApplied,
+}
+
+/// Control flow returned by `Wora::run_event_loop`.
+#[derive(Clone, Debug)]
+pub enum EventLoopAction {
+    /// Keep processing events.
+    Continue,
+    /// Exit the loop with the given runner action.
+    Exit(MainRetryAction),
 }
 
 /// Empty configuration implementation for apps that do not use config files.

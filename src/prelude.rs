@@ -1,6 +1,7 @@
 pub use crate::App;
 pub use crate::ConfigFile;
 pub use crate::ConfigReload;
+pub use crate::EventLoopAction;
 pub use crate::HealthState;
 pub use crate::Leadership;
 pub use crate::NoSecrets;

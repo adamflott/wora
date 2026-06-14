@@ -323,6 +323,10 @@ struct ReloadingApp {
     current_secret: String,
 }
 
+struct HelperLoopApp {
+    current_enabled: bool,
+}
+
 impl Config for ReloadingConfig {
     type ConfigT = ReloadingConfig;
 
@@ -557,6 +561,69 @@ impl App<(), ()> for ReloadingApp {
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
 }
 
+#[async_trait]
+impl App<(), ()> for HelperLoopApp {
+    type AppConfig = ReloadingConfig;
+    type AppSecrets = NoSecrets;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        "helper_loop"
+    }
+
+    async fn reload_config(&mut self, reload: ConfigReload<ReloadingConfig>) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(config) = reload.main {
+            self.current_enabled = config.enabled;
+        }
+        Ok(())
+    }
+
+    async fn setup(
+        &mut self,
+        wora: &Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        let metadata_file = wora.dirs.metadata_root_dir.join("helper_loop.toml");
+        let sender = wora.sender.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = tokio::fs::write(&metadata_file, "enabled = true").await;
+            let event =
+                notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content))).add_path(metadata_file);
+            let _ = sender.send(Event::ConfigChange(event)).await;
+        });
+        Ok(())
+    }
+
+    async fn main(
+        &mut self,
+        wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
+        match wora
+            .run_event_loop(self, fs, |app, _wora, event| match event {
+                Event::ConfigChange(_) if app.current_enabled => EventLoopAction::Exit(MainRetryAction::Success),
+                _ => EventLoopAction::Continue,
+            })
+            .await
+        {
+            Ok(action) => action,
+            Err(_) => MainRetryAction::UseExitCode(11),
+        }
+    }
+
+    async fn is_healthy(&mut self) -> HealthState {
+        HealthState::Ok
+    }
+
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
+}
+
 #[tokio::test]
 async fn runner_loads_initial_config_and_applies_restart_policy() -> Result<(), Box<dyn std::error::Error>> {
     let root = unique_test_dir("runner");
@@ -683,6 +750,27 @@ async fn typed_config_and_secret_reload_helpers_apply_runtime_changes() -> Resul
             current_enabled: false,
             current_secret: String::new(),
         },
+        PhysicalVFS::new(),
+        test_o11y()?,
+        Some(root.join("boot")),
+    )
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn run_event_loop_auto_applies_typed_reload_before_handler() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("helper-loop");
+    let dirs = test_dirs(root.clone());
+    std::fs::create_dir_all(&dirs.metadata_root_dir)?;
+    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+    std::fs::write(dirs.metadata_root_dir.join("helper_loop.toml"), "enabled = false")?;
+
+    exec_async_runner(
+        TestExec { dirs },
+        HelperLoopApp { current_enabled: false },
         PhysicalVFS::new(),
         test_o11y()?,
         Some(root.join("boot")),

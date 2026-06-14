@@ -79,6 +79,13 @@ impl App<(), ()> for DaemonApp {
         "async_daemon"
     }
 
+    async fn reload_config(&mut self, reload: ConfigReload<DaemonConfig>) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(config) = reload.main {
+            self.config = config;
+        }
+        Ok(())
+    }
+
     async fn setup(
         &mut self,
         wora: &Wora<(), ()>,
@@ -97,72 +104,86 @@ impl App<(), ()> for DaemonApp {
         Ok(())
     }
 
-    async fn main(&mut self, wora: &mut Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, fs: impl WFS, _o11y: Sender<O11yEvent<()>>) -> MainRetryAction {
+    async fn main(&mut self, wora: &mut Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, fs: impl WFS + 'static, _o11y: Sender<O11yEvent<()>>) -> MainRetryAction {
         info!("waiting for events...");
-        while let Some(ev) = wora.receiver.recv().await {
-            info!("event: {:?}", &ev);
-            match ev {
-                Event::Control(control) => match control {
-                    ControlEvent::ReloadConfiguration => {
-                        info!("control: reload configuration");
-                    }
-                    ControlEvent::Shutdown(dt) => {
-                        info!("shutting down at {:?}", dt);
-                        return MainRetryAction::Success;
-                    }
-                    ControlEvent::Suspend(dt) => {
-                        info!("suspending at {:?}", dt);
-                    }
-                    ControlEvent::LogRotation => {
-                        info!("rotating log");
-                    }
-                },
-                Event::UnixSignal(signum) => match signum {
-                    SIGTERM | SIGINT | SIGQUIT => {}
-                    SIGHUP => {
-                        info!("sighup!");
-                    }
-                    SIGUSR1 => {}
-                    _ => {}
-                },
-                Event::Shutdown(dt) => {
-                    info!("shutting down at {:?}", dt);
-                    return MainRetryAction::Success;
-                }
-                Event::ReloadConfiguration => {
-                    info!("reload configuration");
-                }
-                Event::SystemResource(_) => {}
-                Event::ConfigChange(event) => {
-                    for pathbuf in event.paths {
-                        if let Ok(data) = fs.read_to_string(pathbuf).await {
-                            match DaemonConfig::parse_main_config_file(data) {
-                                Ok(cfg) => {
-                                    info!("config changed");
-                                    self.config = cfg;
-                                }
-                                Err(err) => {
-                                    error!("failed to parse config{:?}", err);
-                                }
-                            }
+        match wora
+            .run_event_loop(self, fs, |app, _wora, ev| {
+                info!("event: {:?}", &ev);
+                let action = match ev {
+                    Event::Control(control) => match control {
+                        ControlEvent::ReloadConfiguration => {
+                            info!("control: reload configuration");
+                            EventLoopAction::Continue
                         }
+                        ControlEvent::Shutdown(dt) => {
+                            info!("shutting down at {:?}", dt);
+                            EventLoopAction::Exit(MainRetryAction::Success)
+                        }
+                        ControlEvent::Suspend(dt) => {
+                            info!("suspending at {:?}", dt);
+                            EventLoopAction::Continue
+                        }
+                        ControlEvent::LogRotation => {
+                            info!("rotating log");
+                            EventLoopAction::Continue
+                        }
+                    },
+                    Event::UnixSignal(signum) => {
+                        match signum {
+                            SIGTERM | SIGINT | SIGQUIT => {}
+                            SIGHUP => {
+                                info!("sighup!");
+                            }
+                            SIGUSR1 => {}
+                            _ => {}
+                        }
+                        EventLoopAction::Continue
                     }
-                }
-                Event::Suspended(dt) => {
-                    info!("suspending at {:?}", dt);
-                }
-                Event::LogRotation => {
-                    info!("rotating log");
-                }
-                Event::LeadershipChange(old_state, new_state) => {
-                    info!("leadership has changed from state {:?} to {:?}", old_state, new_state);
-                }
-                Event::App(_) => {}
-                _ => {}
+                    Event::Shutdown(dt) => {
+                        info!("shutting down at {:?}", dt);
+                        EventLoopAction::Exit(MainRetryAction::Success)
+                    }
+                    Event::ReloadConfiguration => {
+                        info!("reload configuration");
+                        EventLoopAction::Continue
+                    }
+                    Event::SystemResource(_) => EventLoopAction::Continue,
+                    Event::ConfigChange(_) => {
+                        info!("config changed");
+                        EventLoopAction::Continue
+                    }
+                    Event::SecretChange(_) => {
+                        info!("secret changed");
+                        EventLoopAction::Continue
+                    }
+                    Event::Suspended(dt) => {
+                        info!("suspending at {:?}", dt);
+                        EventLoopAction::Continue
+                    }
+                    Event::LogRotation => {
+                        info!("rotating log");
+                        EventLoopAction::Continue
+                    }
+                    Event::LeadershipChange(old_state, new_state) => {
+                        info!("leadership has changed from state {:?} to {:?}", old_state, new_state);
+                        EventLoopAction::Continue
+                    }
+                    Event::App(_) => EventLoopAction::Continue,
+                    _ => EventLoopAction::Continue,
+                };
+
+                let _ = &app.config;
+
+                action
+            })
+            .await
+        {
+            Ok(action) => action,
+            Err(err) => {
+                error!("event loop reload error: {}", err);
+                MainRetryAction::UseExitCode(78)
             }
         }
-
-        MainRetryAction::Success
     }
 
     async fn is_healthy(&mut self) -> HealthState {
