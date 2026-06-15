@@ -17,7 +17,7 @@ pub struct VfsWatcher {
 
 enum WatchGuard {
     Native { _watcher: RecommendedWatcher },
-    InMemory,
+    InMemory { state: Arc<RwLock<InMemoryState>>, id: u64 },
 }
 
 impl std::fmt::Debug for VfsWatcher {
@@ -33,8 +33,21 @@ impl VfsWatcher {
     }
 }
 
+impl Drop for WatchGuard {
+    fn drop(&mut self) {
+        let WatchGuard::InMemory { state, id } = self else {
+            return;
+        };
+
+        if let Ok(mut guard) = state.write() {
+            guard.watchers.retain(|watch| watch.id != *id);
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct InMemoryWatchRegistration {
+    id: u64,
     root: PathBuf,
     sender: Sender<notify::Result<notify::Event>>,
 }
@@ -156,6 +169,7 @@ enum InMemoryNode {
 struct InMemoryState {
     nodes: BTreeMap<PathBuf, InMemoryNode>,
     watchers: Vec<InMemoryWatchRegistration>,
+    next_watch_id: u64,
 }
 
 impl InMemoryState {
@@ -242,6 +256,11 @@ impl InMemoryVFS {
             let _ = watcher.send(Ok(event.clone())).await;
         }
     }
+
+    #[cfg(test)]
+    fn watcher_count(&self) -> Result<usize, VfsError> {
+        self.with_state(|state| Ok(state.watchers.len()))
+    }
 }
 
 #[async_trait]
@@ -251,7 +270,11 @@ impl WFS for InMemoryVFS {
         nodes.insert(PathBuf::from("."), InMemoryNode::Directory);
         nodes.insert(PathBuf::from("/"), InMemoryNode::Directory);
         Self {
-            state: Arc::new(RwLock::new(InMemoryState { nodes, watchers: Vec::new() })),
+            state: Arc::new(RwLock::new(InMemoryState {
+                nodes,
+                watchers: Vec::new(),
+                next_watch_id: 1,
+            })),
         }
     }
 
@@ -350,10 +373,16 @@ impl WFS for InMemoryVFS {
     async fn watch_dir<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<VfsWatcher, VfsError> {
         let root = normalize_path(path.as_ref());
         let (tx, rx) = channel(8);
-        self.with_state_mut(|state| match state.nodes.get(&root) {
+        let watch_id = self.with_state_mut(|state| match state.nodes.get(&root) {
             Some(InMemoryNode::Directory) => {
-                state.watchers.push(InMemoryWatchRegistration { root, sender: tx });
-                Ok(())
+                let watch_id = state.next_watch_id;
+                state.next_watch_id += 1;
+                state.watchers.push(InMemoryWatchRegistration {
+                    id: watch_id,
+                    root,
+                    sender: tx,
+                });
+                Ok(watch_id)
             }
             Some(InMemoryNode::File(_)) => Err(VfsError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotADirectory,
@@ -366,7 +395,10 @@ impl WFS for InMemoryVFS {
         })?;
         Ok(VfsWatcher {
             receiver: rx,
-            _guard: WatchGuard::InMemory,
+            _guard: WatchGuard::InMemory {
+                state: self.state.clone(),
+                id: watch_id,
+            },
         })
     }
 
@@ -443,6 +475,20 @@ mod tests {
             .await?
             .ok_or_else(|| std::io::Error::other("watcher closed"))??;
         assert_eq!(event.paths, vec![PathBuf::from("/app/config/demo.toml")]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn in_memory_vfs_deregisters_watchers_on_drop() -> Result<(), Box<dyn std::error::Error>> {
+        let fs = InMemoryVFS::new();
+        fs.create_dir("/app/config").await?;
+
+        let watcher = fs.watch_dir("/app").await?;
+        assert_eq!(fs.watcher_count()?, 1);
+
+        drop(watcher);
+
+        assert_eq!(fs.watcher_count()?, 0);
         Ok(())
     }
 
