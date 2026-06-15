@@ -17,6 +17,7 @@ use std::os::unix::io::RawFd;
 use std::os::unix::net::SocketAddr;
 #[cfg(target_family = "unix")]
 use std::os::unix::net::UnixDatagram;
+#[cfg(target_os = "macos")]
 use thiserror::Error;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
