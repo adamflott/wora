@@ -6,7 +6,7 @@
 
 use std::fmt::Debug;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -38,7 +38,7 @@ use crate::dirs::Dirs;
 use crate::errors::{MainEarlyReturn, ReloadError, SetupFailure, VfsError, WoraSetupError};
 use crate::events::*;
 use crate::exec::*;
-use crate::lock::{LockBackend, ProcLockBackend};
+use crate::lock::{LockBackend, LockError, ProcLockBackend};
 use crate::o11y::*;
 use crate::restart_policy::*;
 use crate::vfs::*;
@@ -583,7 +583,7 @@ where
     }
 }
 
-fn is_main_config_path(app_name: &str, path: &PathBuf) -> bool {
+fn is_main_config_path(app_name: &str, path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name == format!("{app_name}.toml"))
@@ -741,6 +741,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_app_main_with_restart_policy<AppEv, AppMetric, A, E, F>(
     app: &mut A,
     wora: &mut Wora<AppEv, AppMetric>,
@@ -901,6 +902,9 @@ pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static
 
 /// Run apps via an `async` based executor with explicit restart options and a
 /// caller-supplied lock backend.
+///
+/// Use this when you want custom single-instance semantics, such as in-memory
+/// test locks or an environment-specific distributed lock implementation.
 pub async fn exec_async_runner_with_restart_options_and_lock_backend<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static, L: LockBackend>(
     exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
     app: impl App<AppEv, AppMetric> + Send + 'static,
@@ -925,6 +929,10 @@ pub async fn exec_async_runner_with_restart_options_and_lock_backend<AppEv: Send
 
 /// Run apps via an `async` based executor with explicit restart options, lock
 /// backend, and runtime environment provider.
+///
+/// Returns [`MainEarlyReturn::AlreadyRunning`] when the supplied lock backend
+/// reports that another instance already owns the runtime lock.
+#[allow(clippy::too_many_arguments)]
 pub async fn exec_async_runner_with_restart_options_lock_backend_and_runtime_environment<
     AppEv: Send + Sync + 'static,
     AppMetric: Debug + Send + Sync + 'static,
@@ -975,13 +983,10 @@ pub async fn exec_async_runner_with_restart_options_lock_backend_and_runtime_env
             let dispatch_supervision_sender = supervision_tx.clone();
             let runtime_dispatch_task = tokio::spawn(async move {
                 while let Some(event) = runtime_event_rx.recv().await {
-                    match &event {
-                        Event::Control(ControlEvent::Shutdown(timestamp)) => {
-                            let _ = dispatch_supervision_sender
-                                .send(RuntimeSupervisionEvent::ShutdownRequested(ShutdownReason::External, *timestamp))
-                                .await;
-                        }
-                        _ => {}
+                    if let Event::Control(ControlEvent::Shutdown(timestamp)) = &event {
+                        let _ = dispatch_supervision_sender
+                            .send(RuntimeSupervisionEvent::ShutdownRequested(ShutdownReason::External, *timestamp))
+                            .await;
                     }
 
                     if dispatch_app_sender.send(event).await.is_err() {
@@ -1258,12 +1263,19 @@ pub async fn exec_async_runner_with_restart_options_lock_backend_and_runtime_env
 
             rc
         }
-        Err(err) => {
+        Err(LockError::AlreadyLocked(path)) => {
+            info!("lock already held: {:?}", &path);
+
+            let _ = o11y_tx.send(o11y_new_ev_finish()).await;
+
+            Err(MainEarlyReturn::AlreadyRunning(path))
+        }
+        Err(LockError::Io(err)) => {
             error!("lock file:{:?} error:{:?}", &lock_path, err);
 
             let _ = o11y_tx.send(o11y_new_ev_finish()).await;
 
-            Err(MainEarlyReturn::UseExitCode(111)) // TODO fix print and return
+            Err(MainEarlyReturn::IO(err))
         }
     }
 }

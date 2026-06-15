@@ -83,10 +83,10 @@ impl UnixLike {
                 loop {
                     sig.recv().await;
 
-                    if let Some(control_event) = UnixLike::control_event_for_signal(signum) {
-                        if send.send(Event::Control(control_event)).await.is_err() {
-                            break;
-                        }
+                    if let Some(control_event) = UnixLike::control_event_for_signal(signum)
+                        && send.send(Event::Control(control_event)).await.is_err()
+                    {
+                        break;
                     }
                 }
             }));

@@ -7,6 +7,8 @@ use chrono::Utc;
 use tokio::sync::mpsc::Sender;
 use wora::prelude::*;
 
+type TestO11yReceiver = tokio::sync::mpsc::Receiver<O11yEvent<()>>;
+
 fn unique_test_dir(name: &str) -> PathBuf {
     let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
     std::env::temp_dir().join(format!("wora-{name}-{}-{suffix}", std::process::id()))
@@ -36,7 +38,7 @@ fn test_o11y() -> Result<O11yProcessorOptions<()>, Box<dyn std::error::Error>> {
         .map_err(|err| std::io::Error::other(err.to_string()).into())
 }
 
-fn test_o11y_with_receiver(interval: Duration) -> Result<(O11yProcessorOptions<()>, tokio::sync::mpsc::Receiver<O11yEvent<()>>), Box<dyn std::error::Error>> {
+fn test_o11y_with_receiver(interval: Duration) -> Result<(O11yProcessorOptions<()>, TestO11yReceiver), Box<dyn std::error::Error>> {
     let (tx, rx) = tokio::sync::mpsc::channel::<O11yEvent<()>>(64);
     let o11y = O11yProcessorOptionsBuilder::default()
         .sender(tx)
@@ -951,6 +953,38 @@ async fn apply_reload_event_supports_in_memory_vfs() -> Result<(), Box<dyn std::
     );
     assert!(app.current_enabled);
     assert_eq!(app.current_secret, "bravo");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn runner_reports_already_running_when_lock_is_held() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("lock-contention");
+    let dirs = test_dirs(root.clone());
+    let fs = InMemoryVFS::new();
+    let o11y = test_o11y()?;
+    let lock_backend = InMemoryLockBackend::default();
+    let held_path = dirs.runtime_root_dir.join("configured_restart.lock");
+    let _guard = lock_backend.try_lock(&held_path)?;
+
+    let result = exec_async_runner_with_restart_options_and_lock_backend(
+        TestExec { dirs },
+        ConfiguredRestartApp {
+            configured: false,
+            calls: Arc::new(Mutex::new(0)),
+        },
+        fs,
+        o11y,
+        Some(root.join("boot")),
+        RestartPolicyOptions::default(),
+        lock_backend,
+    )
+    .await;
+
+    match result {
+        Err(MainEarlyReturn::AlreadyRunning(path)) => assert_eq!(path, held_path),
+        other => panic!("unexpected runner result: {other:?}"),
+    }
 
     Ok(())
 }

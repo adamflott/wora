@@ -162,10 +162,10 @@ impl InMemoryState {
     fn ensure_dir(&mut self, path: &Path) {
         let normalized = normalize_path(path);
         self.nodes.entry(normalized.clone()).or_insert(InMemoryNode::Directory);
-        if let Some(parent) = normalized.parent() {
-            if parent != normalized {
-                self.ensure_dir(parent);
-            }
+        if let Some(parent) = normalized.parent()
+            && parent != normalized
+        {
+            self.ensure_dir(parent);
         }
     }
 
@@ -294,10 +294,11 @@ impl WFS for InMemoryVFS {
 
             let mut children = BTreeSet::new();
             for candidate in state.nodes.keys() {
-                if let Some(parent) = candidate.parent() {
-                    if parent == dir && candidate != &dir {
-                        children.insert(candidate.clone());
-                    }
+                if let Some(parent) = candidate.parent()
+                    && parent == dir
+                    && candidate != &dir
+                {
+                    children.insert(candidate.clone());
                 }
             }
             Ok(children.into_iter().collect())
@@ -420,7 +421,10 @@ mod tests {
     #[tokio::test]
     async fn in_memory_vfs_requires_existing_parent_directory_for_writes() {
         let fs = InMemoryVFS::new();
-        let err = fs.write("/missing/demo.toml", b"hello").await.unwrap_err();
+        let err = match fs.write("/missing/demo.toml", b"hello").await {
+            Ok(()) => panic!("write unexpectedly succeeded"),
+            Err(err) => err,
+        };
         match err {
             VfsError::Io(io) => assert_eq!(io.kind(), std::io::ErrorKind::NotFound),
             other => panic!("unexpected error: {other:?}"),

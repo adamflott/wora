@@ -91,6 +91,8 @@ pub enum MainEarlyReturn {
     NewWorkload(#[from] NewWorkloadError),
     #[error("setup")]
     SetupFailed(#[from] SetupFailure),
+    #[error("already running: {0}")]
+    AlreadyRunning(std::path::PathBuf),
     #[error("exit code")]
     UseExitCode(i8),
     #[error("clap")]

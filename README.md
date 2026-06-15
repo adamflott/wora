@@ -40,9 +40,12 @@ WORA has five main pieces:
 - `AsyncExecutor`: the environment adapter. Executors provide directories, setup, readiness, and teardown behavior.
 - `Wora`: the runtime context passed to apps. It carries directories, host data, event channels, runtime status, and observability options.
 - `WFS`: the virtual filesystem abstraction. `PhysicalVFS` is the host filesystem implementation.
+- `LockBackend`: the single-instance coordination abstraction. `ProcLockBackend` uses host lock files and `InMemoryLockBackend` is useful for tests and fully virtual runner flows.
 - `O11yProcessor`: the observability pipeline for fan-out into sinks.
 
 `exec_async_runner` wires those pieces together by creating a lock file, initializing observability, building the `Wora` context, running executor and app setup, loading initial config and secrets, watching the metadata and secrets directories, invoking `App::main`, supervising shutdown/readiness/health, and then running teardown.
+
+When a lock backend reports contention, the runner returns `MainEarlyReturn::AlreadyRunning(...)` instead of collapsing that case into a generic exit code.
 
 ## Getting Started
 
