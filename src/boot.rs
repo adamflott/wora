@@ -44,11 +44,7 @@ pub(crate) async fn resolve_boot_state<F: WFS>(fs: F, boot_root: PathBuf, app_na
 }
 
 pub(crate) fn default_boot_root() -> PathBuf {
-    #[cfg(target_os = "linux")]
-    let fp = PathBuf::from("//var/run");
-    #[cfg(target_os = "macos")]
-    let fp = PathBuf::from("/tmp/");
-    fp
+    PathBuf::from("/tmp")
 }
 
 fn marker_path(boot_root: &Path, app_name: &str) -> PathBuf {
