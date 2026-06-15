@@ -5,7 +5,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- next-header -->
-## [Unreleased] - ReleaseDate
+## [0.0.14] - 2026-06-14
+
+### Features
+
+- Move runtime control handling behind executor-owned event sources instead of hard-wired Unix signal handling in the runner.
+- Add environment-specific executors for `systemd`, `launchd`, and container-style deployments.
+- Add native `systemd` and `launchd` integration support through dedicated crates.
+- Add runtime supervision for health, readiness, graceful shutdown, and draining before stopping.
+- Add `drain_grace_period` along with explicit `Draining` and `Stopping` readiness phases.
+- Add typed config and secret reload flows.
+- Add `Wora::run_event_loop(...)` for reload-aware event-driven workloads.
+- Add observability sinks plus runtime and process metrics support.
+- Add a runtime environment abstraction for host and process metric collection.
+- Add pluggable lock backends and in-memory locking support.
+- Add a fully high-level virtual filesystem API with an in-memory implementation and watcher support.
+- Add explicit boot-state tracking with file markers instead of directory markers.
+- Add typed config and secret change events decoupled from raw `notify::Event`.
+
+### Changes
+
+- Clean up the public event model around `Event::Control(ControlEvent)`.
+- Rename non-control event variants to `ConfigChanged`, `SecretChanged`, and `LeadershipChanged`.
+- Remove `App::is_healthy()` and standardize supervision on `Wora` and `RuntimeStatusHandle`.
+- Replace the `users` crate with `nix`-based user and group lookup plus privilege switching.
+
+### Fixes
+
+- Replace hard-coded lock-contention exit handling with structured `AlreadyRunning(...)` results.
+- Deregister in-memory VFS watchers on drop.
+- Flush buffered JSON-lines observability output on shutdown and channel close.
+- Reuse host and process metric samplers instead of rebuilding them repeatedly.
+- Fix timing-sensitive injected-control runtime tests.
+- Fix parallel test collisions by giving injected-control test apps distinct runtime names.
+- Replace the unsupported and security-problematic `users` dependency.
+
+### Tests
+
+- Expand runtime coverage for injected executor control events, in-memory VFS watcher delivery, in-memory lock backends, boot marker behavior, draining before stopping, container readiness withdrawal during draining, typed reload handling, runtime environment injection, and observability sink behavior.
+
+### Documentation
+
+- Add an onboarding example.
+- Add a `systemd` daemon example.
+- Add a sample `systemd` unit file.
+- Add an exporter design document for Prometheus and OpenTelemetry integration.
+- Update README and rustdocs to reflect the newer executor, supervision, reload, and observability model.
+
+### CI / Tooling
+
+- Add Dependabot configuration for Cargo and GitHub Actions.
+- Update GitHub Actions dependencies.
+- Add release profile tuning in `Cargo.toml`.
 
 ## [0.0.13] - 2026-05-23
 
