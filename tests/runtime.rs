@@ -683,8 +683,7 @@ impl App<(), ()> for HelperLoopApp {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(20)).await;
             let _ = tokio::fs::write(&metadata_file, "enabled = true").await;
-            let event =
-                notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content))).add_path(metadata_file);
+            let event = ConfigChange::new(ChangeKind::Modified, metadata_file.clone(), vec![metadata_file]);
             let _ = sender.send(Event::ConfigChanged(event)).await;
         });
         Ok(())
@@ -699,7 +698,7 @@ impl App<(), ()> for HelperLoopApp {
     ) -> MainRetryAction {
         match wora
             .run_event_loop(self, fs, |app, _wora, event| match event {
-                Event::ConfigChanged(_) if app.current_enabled => EventLoopAction::Exit(MainRetryAction::Success),
+                Event::ConfigChanged(change) if app.current_enabled && change.main_config_changed => EventLoopAction::Exit(MainRetryAction::Success),
                 _ => EventLoopAction::Continue,
             })
             .await
@@ -758,7 +757,7 @@ impl App<(), ()> for VirtualWatcherApp {
     ) -> MainRetryAction {
         match wora
             .run_event_loop(self, fs, |app, _wora, event| match event {
-                Event::ConfigChanged(_) if app.current_enabled => EventLoopAction::Exit(MainRetryAction::Success),
+                Event::ConfigChanged(change) if app.current_enabled && change.main_config_changed => EventLoopAction::Exit(MainRetryAction::Success),
                 _ => EventLoopAction::Continue,
             })
             .await
@@ -984,10 +983,10 @@ async fn apply_reload_event_supports_in_memory_vfs() -> Result<(), Box<dyn std::
         current_secret: String::new(),
     };
 
-    let config_event = notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content)))
-        .add_path(dirs.metadata_root_dir.join("reloading.toml"));
-    let secret_event = notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content)))
-        .add_path(dirs.secrets_root_dir.join("api_key"));
+    let config_path = dirs.metadata_root_dir.join("reloading.toml");
+    let secret_path = dirs.secrets_root_dir.join("api_key");
+    let config_event = ConfigChange::new(ChangeKind::Modified, config_path.clone(), vec![config_path]);
+    let secret_event = SecretChange::new(ChangeKind::Modified, vec![secret_path]);
 
     assert_eq!(
         wora.apply_reload_event(&mut app, fs.clone(), &Event::ConfigChanged(config_event)).await?,

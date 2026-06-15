@@ -277,15 +277,17 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
         A: App<AppEv, AppMetric> + Send,
     {
         match event {
-            Event::ConfigChanged(notify_event) => {
-                let reload = load_config_reload::<A::AppConfig>(&self.dirs.metadata_root_dir, app.name(), fs, Some(&notify_event.paths)).await?;
+            Event::ConfigChanged(change) => {
+                let changed_paths = (!change.paths.is_empty()).then_some(change.paths.as_slice());
+                let reload = load_config_reload::<A::AppConfig>(&self.dirs.metadata_root_dir, app.name(), fs, changed_paths).await?;
                 app.reload_config(reload)
                     .await
                     .map_err(|err| ReloadError::Message(format!("failed to apply config reload for {}: {}", app.name(), err)))?;
                 Ok(ReloadHandling::ConfigApplied)
             }
-            Event::SecretChanged(notify_event) => {
-                let reload = load_secret_reload::<A::AppSecrets>(&self.dirs.secrets_root_dir, fs, Some(&notify_event.paths)).await?;
+            Event::SecretChanged(change) => {
+                let changed_paths = (!change.paths.is_empty()).then_some(change.paths.as_slice());
+                let reload = load_secret_reload::<A::AppSecrets>(&self.dirs.secrets_root_dir, fs, changed_paths).await?;
                 app.reload_secrets(reload)
                     .await
                     .map_err(|err| ReloadError::Message(format!("failed to apply secret reload for {}: {}", app.name(), err)))?;
@@ -583,6 +585,15 @@ where
         }
         Err(err) => Err(WoraSetupError::Str(err.to_string()).into()),
     }
+}
+
+fn config_change_event(app_name: &str, metadata_root: &Path, notify_event: notify::Event) -> ConfigChange {
+    let main_config_path = metadata_root.join(format!("{app_name}.toml"));
+    ConfigChange::new(ChangeKind::from_notify_kind(&notify_event.kind), main_config_path, notify_event.paths)
+}
+
+fn secret_change_event(notify_event: notify::Event) -> SecretChange {
+    SecretChange::new(ChangeKind::from_notify_kind(&notify_event.kind), notify_event.paths)
 }
 
 fn is_main_config_path(app_name: &str, path: &Path) -> bool {
@@ -1152,6 +1163,8 @@ pub async fn exec_async_runner_with_restart_options_lock_backend_and_runtime_env
                     let mut watcher = fs.watch_dir(&wora.dirs.metadata_root_dir).await?;
                     info!("notify:watch:secrets: {:?}", &wora.dirs.secrets_root_dir);
                     let mut secret_watcher = fs.watch_dir(&wora.dirs.secrets_root_dir).await?;
+                    let metadata_root = wora.dirs.metadata_root_dir.clone();
+                    let app_name = wora.app_name.clone();
                     let ev_sender = runtime_event_tx.clone();
                     let secret_ev_sender = runtime_event_tx.clone();
 
@@ -1160,7 +1173,10 @@ pub async fn exec_async_runner_with_restart_options_lock_backend_and_runtime_env
                             match res {
                                 Ok(event) => {
                                     info!("changed: {:?}", event);
-                                    match ev_sender.send(Event::ConfigChanged(event)).await {
+                                    match ev_sender
+                                        .send(Event::ConfigChanged(config_change_event(&app_name, &metadata_root, event)))
+                                        .await
+                                    {
                                         Ok(_) => {}
                                         Err(send_err) => {
                                             error!("send error: {:?}", send_err);
@@ -1176,7 +1192,7 @@ pub async fn exec_async_runner_with_restart_options_lock_backend_and_runtime_env
                             match res {
                                 Ok(event) => {
                                     info!("secret changed: {:?}", event);
-                                    match secret_ev_sender.send(Event::SecretChanged(event)).await {
+                                    match secret_ev_sender.send(Event::SecretChanged(secret_change_event(event))).await {
                                         Ok(_) => {}
                                         Err(send_err) => {
                                             error!("send error: {:?}", send_err);

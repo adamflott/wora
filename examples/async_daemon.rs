@@ -134,12 +134,12 @@ impl App<(), ()> for DaemonApp {
                         }
                     },
                     Event::SystemResource(_) => EventLoopAction::Continue,
-                    Event::ConfigChanged(_) => {
-                        info!("config changed");
+                    Event::ConfigChanged(change) => {
+                        info!("config changed main_config_changed={} paths={:?}", change.main_config_changed, change.paths);
                         EventLoopAction::Continue
                     }
-                    Event::SecretChanged(_) => {
-                        info!("secret changed");
+                    Event::SecretChanged(change) => {
+                        info!("secret changed paths={:?}", change.paths);
                         EventLoopAction::Continue
                     }
                     Event::LeadershipChanged(old_state, new_state) => {

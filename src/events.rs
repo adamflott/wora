@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
+use std::path::PathBuf;
 
 use decimal_percentage::Percentage;
 use nix::unistd::Pid;
@@ -7,6 +8,74 @@ use serde::{Serialize, Serializer};
 
 use crate::Leadership;
 use crate::o11y::{Cpu, Disk, LoadAvg, MemStats, NetIO, SwapStats};
+
+/// Stable classification of a filesystem-backed change event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub enum ChangeKind {
+    /// One or more files were created.
+    Created,
+    /// One or more files were modified.
+    Modified,
+    /// One or more files were removed.
+    Removed,
+    /// The underlying watcher reported a change that does not map cleanly to
+    /// create/modify/remove.
+    Other,
+}
+
+impl ChangeKind {
+    pub(crate) fn from_notify_kind(kind: &notify::EventKind) -> Self {
+        match kind {
+            notify::EventKind::Create(_) => Self::Created,
+            notify::EventKind::Modify(_) => Self::Modified,
+            notify::EventKind::Remove(_) => Self::Removed,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Typed workload configuration change event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ConfigChange {
+    /// Stable classification of the underlying change.
+    pub kind: ChangeKind,
+    /// Paths reported by the watcher for this config change.
+    pub paths: Vec<PathBuf>,
+    /// Whether the app's primary `{app_name}.toml` file is included.
+    pub main_config_changed: bool,
+    /// Metadata paths other than the app's primary config file.
+    pub supplemental_paths: Vec<PathBuf>,
+}
+
+impl ConfigChange {
+    /// Build a typed config change event from watcher paths.
+    pub fn new(kind: ChangeKind, main_config_path: PathBuf, paths: Vec<PathBuf>) -> Self {
+        let main_config_changed = paths.iter().any(|path| path == &main_config_path);
+        let supplemental_paths = paths.iter().filter(|path| *path != &main_config_path).cloned().collect();
+        Self {
+            kind,
+            paths,
+            main_config_changed,
+            supplemental_paths,
+        }
+    }
+}
+
+/// Typed workload secret change event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SecretChange {
+    /// Stable classification of the underlying change.
+    pub kind: ChangeKind,
+    /// Paths reported by the watcher for this secret change.
+    pub paths: Vec<PathBuf>,
+}
+
+impl SecretChange {
+    /// Build a typed secret change event from watcher paths.
+    pub fn new(kind: ChangeKind, paths: Vec<PathBuf>) -> Self {
+        Self { kind, paths }
+    }
+}
 
 /// Process Id (pid)
 #[derive(Clone, Debug)]
@@ -68,9 +137,9 @@ pub enum Event<T> {
 
     // workload
     /// Workload configuration has changed.
-    ConfigChanged(notify::Event),
+    ConfigChanged(ConfigChange),
     /// Workload secrets have changed.
-    SecretChanged(notify::Event),
+    SecretChanged(SecretChange),
     /// Workload leadership role has changed.
     LeadershipChanged(Leadership, Leadership),
     /// Custom workload/app events.
