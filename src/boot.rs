@@ -24,7 +24,7 @@ impl BootState {
 pub enum BootMarkerError {
     #[error("boot marker path is not a file: {0}")]
     InvalidType(PathBuf),
-    #[error("boot marker filesystem error")]
+    #[error("boot marker filesystem error: {0}")]
     Vfs(#[from] VfsError),
 }
 
