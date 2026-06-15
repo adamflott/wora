@@ -244,6 +244,10 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
     }
 
     /// Return the shared runtime status handle.
+    ///
+    /// Applications and background tasks should use this handle, or the
+    /// convenience methods on `Wora`, to report health and readiness changes to
+    /// the runtime supervisor.
     pub fn status_handle(&self) -> RuntimeStatusHandle {
         self.status.clone()
     }
@@ -473,6 +477,10 @@ impl Config for NoConfig {
 }
 #[async_trait]
 /// Application lifecycle implemented by WORA workloads.
+///
+/// Runtime health and readiness supervision is driven through
+/// [`Wora::report_health`], [`Wora::report_readiness`], or a cloned
+/// [`RuntimeStatusHandle`], not by polling an app callback.
 pub trait App<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> {
     /// Configuration parser for the app.
     type AppConfig: Config;
@@ -527,9 +535,6 @@ pub trait App<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> {
         fs: impl WFS + 'static,
         metrics: Sender<O11yEvent<AppMetric>>,
     ) -> MainRetryAction;
-
-    /// Report application health.
-    async fn is_healthy(&mut self) -> HealthState;
 
     /// Clean up application state after `main` returns.
     async fn end(

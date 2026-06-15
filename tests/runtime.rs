@@ -208,10 +208,6 @@ impl App<(), ()> for AlwaysRestartApp {
         MainRetryAction::UseRestartPolicy
     }
 
-    async fn is_healthy(&mut self) -> HealthState {
-        HealthState::Ok
-    }
-
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
 }
 
@@ -261,10 +257,6 @@ impl App<(), ()> for ConfiguredRestartApp {
         } else {
             MainRetryAction::Success
         }
-    }
-
-    async fn is_healthy(&mut self) -> HealthState {
-        HealthState::Ok
     }
 
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
@@ -363,10 +355,6 @@ impl App<(), ()> for BootTrackingApp {
         _metrics: Sender<O11yEvent<()>>,
     ) -> MainRetryAction {
         MainRetryAction::Success
-    }
-
-    async fn is_healthy(&mut self) -> HealthState {
-        HealthState::Ok
     }
 
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
@@ -474,10 +462,6 @@ impl App<(), ()> for ControlDrivenApp {
         MainRetryAction::UseExitCode(9)
     }
 
-    async fn is_healthy(&mut self) -> HealthState {
-        HealthState::Ok
-    }
-
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
 }
 
@@ -517,10 +501,6 @@ impl App<(), ()> for DeferredReadyApp {
     ) -> MainRetryAction {
         tokio::time::sleep(Duration::from_millis(40)).await;
         MainRetryAction::Success
-    }
-
-    async fn is_healthy(&mut self) -> HealthState {
-        HealthState::Ok
     }
 
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
@@ -573,10 +553,6 @@ impl App<(), ()> for HealthFailureApp {
         }
 
         MainRetryAction::UseExitCode(8)
-    }
-
-    async fn is_healthy(&mut self) -> HealthState {
-        HealthState::Ok
     }
 
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
@@ -646,10 +622,6 @@ impl App<(), ()> for ReloadingApp {
         MainRetryAction::UseExitCode(10)
     }
 
-    async fn is_healthy(&mut self) -> HealthState {
-        HealthState::Ok
-    }
-
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
 }
 
@@ -708,10 +680,6 @@ impl App<(), ()> for HelperLoopApp {
         }
     }
 
-    async fn is_healthy(&mut self) -> HealthState {
-        HealthState::Ok
-    }
-
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
 }
 
@@ -767,10 +735,6 @@ impl App<(), ()> for VirtualWatcherApp {
         }
     }
 
-    async fn is_healthy(&mut self) -> HealthState {
-        HealthState::Ok
-    }
-
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
 }
 
@@ -804,10 +768,6 @@ impl App<(), ()> for MetricsApp {
     ) -> MainRetryAction {
         tokio::time::sleep(Duration::from_millis(35)).await;
         MainRetryAction::Success
-    }
-
-    async fn is_healthy(&mut self) -> HealthState {
-        HealthState::Ok
     }
 
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
@@ -1328,10 +1288,6 @@ impl App<(), ()> for MissingSecretsApp {
     ) -> MainRetryAction {
         assert_eq!(self.reloaded_secret_count, 0);
         MainRetryAction::Success
-    }
-
-    async fn is_healthy(&mut self) -> HealthState {
-        HealthState::Ok
     }
 
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}

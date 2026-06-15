@@ -95,10 +95,6 @@ impl App<OnboardingEvent, ()> for OnboardingApp {
         }
     }
 
-    async fn is_healthy(&mut self) -> HealthState {
-        HealthState::Ok
-    }
-
     async fn end(
         &mut self,
         _wora: &Wora<OnboardingEvent, ()>,

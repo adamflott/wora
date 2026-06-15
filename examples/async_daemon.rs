@@ -164,10 +164,6 @@ impl App<(), ()> for DaemonApp {
         }
     }
 
-    async fn is_healthy(&mut self) -> HealthState {
-        HealthState::Ok
-    }
-
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS, _o11y: Sender<O11yEvent<()>>) {}
 }
 

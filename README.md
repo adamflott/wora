@@ -36,9 +36,9 @@ This crate is an early-stage async framework. The main public API is usable, wit
 
 WORA has five main pieces:
 
-- `App`: the workload lifecycle trait. Applications implement `setup`, `main`, `reload_config`, `reload_secrets`, `is_healthy`, and `end`.
+- `App`: the workload lifecycle trait. Applications implement `setup`, `main`, `reload_config`, `reload_secrets`, and `end`.
 - `AsyncExecutor`: the environment adapter. Executors provide directories, setup, readiness, and teardown behavior.
-- `Wora`: the runtime context passed to apps. It carries directories, host data, event channels, runtime status, and observability options.
+- `Wora`: the runtime context passed to apps. It carries directories, host data, event channels, runtime status, and observability options. Health and readiness are reported through `Wora::report_health(...)`, `Wora::report_readiness(...)`, or the cloned `RuntimeStatusHandle`.
 - `WFS`: the virtual filesystem abstraction. `PhysicalVFS` is the host filesystem implementation.
 - `LockBackend`: the single-instance coordination abstraction. `ProcLockBackend` uses host lock files and `InMemoryLockBackend` is useful for tests and fully virtual runner flows.
 - `O11yProcessor`: the observability pipeline for fan-out into sinks.

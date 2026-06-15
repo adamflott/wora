@@ -112,10 +112,6 @@ mod linux_example {
             }
         }
 
-        async fn is_healthy(&mut self) -> HealthState {
-            HealthState::Ok
-        }
-
         async fn end(
             &mut self,
             _wora: &Wora<DaemonEvent, ()>,
