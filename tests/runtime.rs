@@ -262,7 +262,9 @@ impl App<(), ()> for ConfiguredRestartApp {
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
 }
 
-struct ControlDrivenApp;
+struct ControlDrivenApp {
+    name: &'static str,
+}
 
 struct DeferredReadyApp;
 
@@ -513,7 +515,7 @@ impl App<(), ()> for ControlDrivenApp {
     type Setup = ();
 
     fn name(&self) -> &'static str {
-        "control_driven"
+        self.name
     }
 
     async fn setup(
@@ -936,7 +938,15 @@ async fn executor_runtime_event_sources_can_drive_control_flow() -> Result<(), B
     tx.send(ControlEvent::Shutdown(None)).await?;
     drop(tx);
 
-    exec_async_runner(exec, ControlDrivenApp, PhysicalVFS::new(), test_o11y()?, None)
+    exec_async_runner(
+        exec,
+        ControlDrivenApp {
+            name: "control_event_runtime_sources",
+        },
+        PhysicalVFS::new(),
+        test_o11y()?,
+        None,
+    )
         .await
         .map_err(|err| std::io::Error::other(err.to_string()))?;
 
@@ -1565,7 +1575,9 @@ async fn container_executor_accepts_injected_control_events() -> Result<(), Box<
 
     exec_async_runner_with_restart_options_and_lock_backend(
         exec,
-        ControlDrivenApp,
+        ControlDrivenApp {
+            name: "container_control_runtime_sources",
+        },
         fs,
         test_o11y()?,
         None,
