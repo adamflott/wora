@@ -7,11 +7,10 @@ use nix::sys::{
     mman::{MlockAllFlags, mlockall},
     resource::{Resource, setrlimit},
 };
+use nix::unistd::{Group, Uid, User, setgid, setuid};
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 use tracing::info;
-use users::switch::set_both_gid;
-use users::{get_effective_username, get_group_by_name, get_user_by_name, switch::set_both_uid};
 
 use crate::dirs::Dirs;
 use crate::errors::SetupFailure;
@@ -89,13 +88,16 @@ pub trait AsyncExecutor<AppEv: Send + 'static, AppMetric>: Send + Sync + Clone {
 
     /// Switch to a non-root user and group.
     fn run_as_user_and_group(&self, user_name: &str, group_name: &str) -> Result<(), SetupFailure> {
-        let new_group = get_group_by_name(group_name).ok_or(SetupFailure::UnknownSystemUser(user_name.to_string()))?;
-        set_both_gid(new_group.gid(), new_group.gid())?;
-        info!("process now runs as group: {} (id: {})", group_name, new_group.gid());
+        let new_group = Group::from_name(group_name)?
+            .ok_or_else(|| SetupFailure::UnknownSystemUser(group_name.to_string()))?;
+        let new_user = User::from_name(user_name)?
+            .ok_or_else(|| SetupFailure::UnknownSystemUser(user_name.to_string()))?;
 
-        let new_user = get_user_by_name(user_name).ok_or(SetupFailure::UnknownSystemUser(user_name.to_string()))?;
-        set_both_uid(new_user.uid(), new_user.uid())?;
-        info!("process now runs as user: {} (id: {})", user_name, new_user.uid());
+        setgid(new_group.gid)?;
+        info!("process now runs as group: {} (id: {})", group_name, new_group.gid);
+
+        setuid(new_user.uid)?;
+        info!("process now runs as user: {} (id: {})", user_name, new_user.uid);
 
         Ok(())
     }
@@ -109,6 +111,6 @@ pub trait AsyncExecutor<AppEv: Send + 'static, AppMetric>: Send + Sync + Clone {
 
     /// Return whether the current effective user is root.
     fn is_running_as_root(&self) -> bool {
-        get_effective_username().unwrap_or("".into()) == "root"
+        Uid::effective().is_root()
     }
 }
