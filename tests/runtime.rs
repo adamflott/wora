@@ -933,10 +933,8 @@ async fn runner_loads_initial_config_and_applies_restart_policy() -> Result<(), 
 async fn executor_runtime_event_sources_can_drive_control_flow() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     let exec = UnixLikeBare::new("control_event").await.with_control_event_receiver(rx);
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        let _ = tx.send(ControlEvent::Shutdown(None)).await;
-    });
+    tx.send(ControlEvent::Shutdown(None)).await?;
+    drop(tx);
 
     exec_async_runner(exec, ControlDrivenApp, PhysicalVFS::new(), test_o11y()?, None)
         .await
