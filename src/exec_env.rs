@@ -250,6 +250,10 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
         true
     }
 
+    async fn on_runtime_draining(&self, app_name: &str, _dirs: &Dirs, _fs: impl WFS) -> Result<(), SetupFailure> {
+        self.send_notify_message(format!("STATUS={} draining", app_name))
+    }
+
     async fn on_runtime_stopping(&self, app_name: &str, _dirs: &Dirs, _fs: impl WFS) -> Result<(), SetupFailure> {
         self.send_notify_message(format!("STOPPING=1\nSTATUS={} stopping", app_name))
     }
@@ -506,20 +510,24 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
         true
     }
 
-    async fn on_runtime_stopping(&self, app_name: &str, _dirs: &Dirs, fs: impl WFS) -> Result<(), SetupFailure> {
-        if let Some(path) = &self.termination_log {
-            if let Some(parent) = path.parent() {
-                fs.create_dir(parent).await?;
-            }
-            fs.write(path, format!("stopping:{}\n", app_name).as_bytes()).await?;
-        }
-
+    async fn on_runtime_draining(&self, _app_name: &str, _dirs: &Dirs, fs: impl WFS) -> Result<(), SetupFailure> {
         if let Some(path) = &self.readiness_file {
             match fs.remove_file(path).await {
                 Ok(_) => {}
                 Err(VfsError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(err) => return Err(SetupFailure::Vfs(err)),
             }
+        }
+
+        Ok(())
+    }
+
+    async fn on_runtime_stopping(&self, app_name: &str, _dirs: &Dirs, fs: impl WFS) -> Result<(), SetupFailure> {
+        if let Some(path) = &self.termination_log {
+            if let Some(parent) = path.parent() {
+                fs.create_dir(parent).await?;
+            }
+            fs.write(path, format!("stopping:{}\n", app_name).as_bytes()).await?;
         }
 
         Ok(())

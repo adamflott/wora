@@ -297,6 +297,17 @@ struct BootTrackingApp {
     calls: Arc<Mutex<Vec<bool>>>,
 }
 
+struct DelayedShutdownApp {
+    delay: Duration,
+}
+
+#[derive(Clone, Debug)]
+struct DrainingTrackerExec {
+    dirs: Dirs,
+    phases: Arc<Mutex<Vec<&'static str>>>,
+    control_events: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<ControlEvent>>>>,
+}
+
 #[derive(Clone)]
 struct DeterministicRuntimeEnvironment {
     host_info: HostInfo,
@@ -320,6 +331,76 @@ impl RuntimeEnvironment for DeterministicRuntimeEnvironment {
     fn refresh_process_stats(&self) -> Option<ProcessStats> {
         self.process.clone()
     }
+}
+
+impl DrainingTrackerExec {
+    fn with_control_event_receiver(mut self, receiver: tokio::sync::mpsc::Receiver<ControlEvent>) -> Self {
+        self.control_events = Arc::new(tokio::sync::Mutex::new(Some(receiver)));
+        self
+    }
+}
+
+#[async_trait]
+impl AsyncExecutor<(), ()> for DrainingTrackerExec {
+    fn id(&self) -> &'static str {
+        "draining-tracker"
+    }
+
+    fn dirs(&self) -> &Dirs {
+        &self.dirs
+    }
+
+    async fn setup(&mut self, _wora: &Wora<(), ()>, fs: impl WFS) -> Result<(), SetupFailure> {
+        for dir in [
+            &self.dirs.root_dir,
+            &self.dirs.log_root_dir,
+            &self.dirs.metadata_root_dir,
+            &self.dirs.data_root_dir,
+            &self.dirs.runtime_root_dir,
+            &self.dirs.cache_root_dir,
+            &self.dirs.secrets_root_dir,
+        ] {
+            fs.create_dir(dir).await?;
+        }
+        Ok(())
+    }
+
+    async fn spawn_runtime_event_sources(&self, sender: Sender<Event<()>>) -> Result<Vec<tokio::task::JoinHandle<()>>, SetupFailure> {
+        let controls = self.control_events.clone();
+        Ok(vec![tokio::spawn(async move {
+            let Some(mut receiver) = controls.lock().await.take() else {
+                return;
+            };
+
+            while let Some(event) = receiver.recv().await {
+                if sender.send(Event::Control(event)).await.is_err() {
+                    break;
+                }
+            }
+        })])
+    }
+
+    async fn on_runtime_draining(&self, _app_name: &str, _dirs: &Dirs, _fs: impl WFS) -> Result<(), SetupFailure> {
+        let Ok(mut phases) = self.phases.lock() else {
+            return Err(SetupFailure::IO(std::io::Error::other("draining tracker lock poisoned")));
+        };
+        phases.push("draining");
+        Ok(())
+    }
+
+    async fn is_ready(&self, _wora: &Wora<(), ()>, _fs: impl WFS) -> bool {
+        true
+    }
+
+    async fn on_runtime_stopping(&self, _app_name: &str, _dirs: &Dirs, _fs: impl WFS) -> Result<(), SetupFailure> {
+        let Ok(mut phases) = self.phases.lock() else {
+            return Err(SetupFailure::IO(std::io::Error::other("draining tracker lock poisoned")));
+        };
+        phases.push("stopping");
+        Ok(())
+    }
+
+    async fn end(&self, _wora: &Wora<(), ()>, _fs: impl WFS) {}
 }
 
 #[async_trait]
@@ -460,6 +541,47 @@ impl App<(), ()> for ControlDrivenApp {
         }
 
         MainRetryAction::UseExitCode(9)
+    }
+
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
+}
+
+#[async_trait]
+impl App<(), ()> for DelayedShutdownApp {
+    type AppConfig = NoConfig;
+    type AppSecrets = NoSecrets;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        "delayed_shutdown"
+    }
+
+    async fn setup(
+        &mut self,
+        _wora: &Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    async fn main(
+        &mut self,
+        wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
+        while let Some(event) = wora.receiver.recv().await {
+            if matches!(event, Event::Control(ControlEvent::Shutdown(_))) {
+                tokio::time::sleep(self.delay).await;
+                return MainRetryAction::Success;
+            }
+        }
+
+        MainRetryAction::UseExitCode(13)
     }
 
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
@@ -876,6 +998,54 @@ async fn failed_health_can_trigger_restart_policy() -> Result<(), Box<dyn std::e
     let calls = calls.lock().map_err(|err| std::io::Error::other(err.to_string()))?;
     assert!(matches!(rc, Err(MainEarlyReturn::UseExitCode(1))));
     assert_eq!(*calls, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn shutdown_request_enters_draining_before_stopping() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("draining-before-stopping");
+    let dirs = test_dirs(root.clone());
+    let phases = Arc::new(Mutex::new(Vec::new()));
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    let exec = DrainingTrackerExec {
+        dirs,
+        phases: phases.clone(),
+        control_events: Arc::new(tokio::sync::Mutex::new(None)),
+    }
+    .with_control_event_receiver(rx);
+    let fs = PhysicalVFS::new();
+
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let _ = tx.send(ControlEvent::Shutdown(None)).await;
+    });
+
+    let start = std::time::Instant::now();
+    exec_async_runner_with_restart_options_and_lock_backend(
+        exec,
+        DelayedShutdownApp {
+            delay: Duration::from_millis(40),
+        },
+        fs,
+        test_o11y()?,
+        Some(root.join("boot")),
+        RestartPolicyOptions {
+            supervision: SupervisionOptions {
+                drain_grace_period: Duration::from_millis(20),
+                shutdown_grace_period: Duration::from_millis(50),
+                ..SupervisionOptions::default()
+            },
+            ..RestartPolicyOptions::default()
+        },
+        InMemoryLockBackend::default(),
+    )
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
+
+    let phases = phases.lock().map_err(|err| std::io::Error::other(err.to_string()))?;
+    assert_eq!(&*phases, &["draining", "stopping"]);
+    assert!(start.elapsed() >= Duration::from_millis(20));
+
     Ok(())
 }
 
@@ -1342,6 +1512,11 @@ async fn systemd_executor_sends_ready_and_stopping_notifications() -> Result<(),
     assert!(ready_message.contains("READY=1"));
     assert!(ready_message.contains("notify_app ready"));
 
+    <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_draining(&exec, "notify_app", &wora.dirs, PhysicalVFS::new()).await?;
+    let draining_size = receiver.recv(&mut buf)?;
+    let draining_message = std::str::from_utf8(&buf[..draining_size])?;
+    assert!(draining_message.contains("STATUS=notify_app draining"));
+
     <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_stopping(&exec, "notify_app", &wora.dirs, PhysicalVFS::new()).await?;
     let stopping_size = receiver.recv(&mut buf)?;
     let stopping_message = std::str::from_utf8(&buf[..stopping_size])?;
@@ -1370,8 +1545,10 @@ async fn container_executor_manages_readiness_and_termination_files() -> Result<
     <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_ready(&exec, "container_app", &wora.dirs, fs.clone()).await?;
     assert_eq!(fs.read_to_string(&readiness_path).await?, "ready:container_app\n");
 
-    <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_stopping(&exec, "container_app", &wora.dirs, fs.clone()).await?;
+    <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_draining(&exec, "container_app", &wora.dirs, fs.clone()).await?;
     assert!(!fs.dir_exists(&readiness_path).await?);
+
+    <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_stopping(&exec, "container_app", &wora.dirs, fs.clone()).await?;
     assert_eq!(fs.read_to_string(&termination_path).await?, "stopping:container_app\n");
 
     Ok(())

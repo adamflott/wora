@@ -48,6 +48,14 @@ pub trait AsyncExecutor<AppEv: Send + 'static, AppMetric>: Send + Sync + Clone {
     async fn on_runtime_ready(&self, _app_name: &str, _dirs: &Dirs, _fs: impl WFS) -> Result<(), SetupFailure> {
         Ok(())
     }
+    /// Notify the target environment that the runtime is draining.
+    ///
+    /// Executors can use this hook to withdraw readiness before the shutdown
+    /// grace period starts, allowing service managers and load balancers to
+    /// stop sending new work while existing requests drain.
+    async fn on_runtime_draining(&self, _app_name: &str, _dirs: &Dirs, _fs: impl WFS) -> Result<(), SetupFailure> {
+        Ok(())
+    }
     /// Report whether the executor is ready for application main execution.
     async fn is_ready(&self, wora: &Wora<AppEv, AppMetric>, fs: impl WFS) -> bool;
     /// Notify the target environment that the runtime is stopping.

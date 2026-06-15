@@ -107,6 +107,8 @@ pub enum ReadinessState {
     Ready,
     /// The application is still warming up or otherwise not ready.
     NotReady,
+    /// The application is draining existing work and should stop receiving new work.
+    Draining,
     /// The application is stopping and should no longer be considered ready.
     Stopping,
     /// Readiness has not been reported.
@@ -135,6 +137,16 @@ impl RuntimeStatusHandle {
     /// Report a new readiness state.
     pub fn report_readiness(&self, state: ReadinessState) {
         let _ = self.readiness.send(state);
+    }
+
+    /// Transition the runtime into a draining state.
+    pub fn begin_draining(&self) {
+        self.report_readiness(ReadinessState::Draining);
+    }
+
+    /// Transition the runtime into a stopping state.
+    pub fn begin_stopping(&self) {
+        self.report_readiness(ReadinessState::Stopping);
     }
 
     /// Subscribe to health state changes.
@@ -260,6 +272,16 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
     /// Report application readiness to the runtime supervisor.
     pub fn report_readiness(&self, state: ReadinessState) {
         self.status.report_readiness(state);
+    }
+
+    /// Mark the runtime as draining and no longer willing to accept new work.
+    pub fn begin_draining(&self) {
+        self.status.begin_draining();
+    }
+
+    /// Mark the runtime as stopping.
+    pub fn begin_stopping(&self) {
+        self.status.begin_stopping();
     }
 
     /// Return the latest application health state known to the runtime.
@@ -782,6 +804,8 @@ where
     loop {
         let status_handle = wora.status_handle();
         let app_event_sender = wora.sender.clone();
+        let app_name = wora.app_name.clone();
+        let runtime_dirs = wora.dirs.clone();
         status_handle.report_health(HealthState::Unknown);
         restart_counter.store(retry_count, Ordering::Relaxed);
         let _ = metrics_sender
@@ -794,18 +818,46 @@ where
         tokio::pin!(main_future);
 
         let mut shutdown_deadline: Option<Pin<Box<tokio::time::Sleep>>> = None;
+        let mut drain_deadline: Option<Pin<Box<tokio::time::Sleep>>> = None;
         let mut shutdown_reason = ShutdownReason::External;
+        let mut shutdown_timestamp = None;
+        let mut draining_started = false;
+        let mut stopping_started = false;
 
         let main_result = loop {
             tokio::select! {
                 result = &mut main_future => break result,
                 Some(event) = supervision_rx.recv() => {
                     let RuntimeSupervisionEvent::ShutdownRequested(reason, timestamp) = event;
-                    if shutdown_deadline.is_none() {
+                    if !draining_started {
+                        draining_started = true;
                         shutdown_reason = reason;
-                        status_handle.report_readiness(ReadinessState::Stopping);
+                        shutdown_timestamp = timestamp;
+                        status_handle.begin_draining();
+                        exec.on_runtime_draining(&app_name, &runtime_dirs, fs.clone()).await?;
+                        if restart_options.supervision.drain_grace_period.is_zero() {
+                            if !stopping_started {
+                                stopping_started = true;
+                                status_handle.begin_stopping();
+                                shutdown_deadline = Some(Box::pin(tokio::time::sleep(restart_options.supervision.shutdown_grace_period)));
+                                let _ = app_event_sender.send(Event::Control(ControlEvent::Shutdown(timestamp))).await;
+                            }
+                        } else {
+                            drain_deadline = Some(Box::pin(tokio::time::sleep(restart_options.supervision.drain_grace_period)));
+                        }
+                    }
+                }
+                _ = async {
+                    if let Some(deadline) = drain_deadline.as_mut() {
+                        deadline.await;
+                    }
+                }, if drain_deadline.is_some() => {
+                    drain_deadline = None;
+                    if !stopping_started {
+                        stopping_started = true;
+                        status_handle.begin_stopping();
                         shutdown_deadline = Some(Box::pin(tokio::time::sleep(restart_options.supervision.shutdown_grace_period)));
-                        let _ = app_event_sender.send(Event::Control(ControlEvent::Shutdown(timestamp))).await;
+                        let _ = app_event_sender.send(Event::Control(ControlEvent::Shutdown(shutdown_timestamp))).await;
                     }
                 }
                 _ = async {

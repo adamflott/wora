@@ -86,6 +86,9 @@ pub enum UnhealthyAction {
 /// Runtime supervision behavior.
 #[derive(Clone, Debug)]
 pub struct SupervisionOptions {
+    /// Time to remain in `ReadinessState::Draining` before transitioning to
+    /// `Stopping` and delivering the shutdown control event.
+    pub drain_grace_period: Duration,
     /// Maximum time to wait for graceful shutdown after a shutdown request.
     pub shutdown_grace_period: Duration,
     /// Exit code used when shutdown times out.
@@ -97,6 +100,7 @@ pub struct SupervisionOptions {
 impl Default for SupervisionOptions {
     fn default() -> Self {
         Self {
+            drain_grace_period: Duration::ZERO,
             shutdown_grace_period: Duration::from_secs(30),
             forced_shutdown_exit_code: 124,
             unhealthy_action: UnhealthyAction::default(),
