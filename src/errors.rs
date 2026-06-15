@@ -1,3 +1,4 @@
+use crate::boot::BootMarkerError;
 use crate::o11y::O11yError;
 #[cfg(target_os = "linux")]
 use caps::errors::CapsError;
@@ -23,6 +24,8 @@ pub enum WoraSetupError {
     FSNotify(#[from] notify::Error),
     #[error("dir missing")]
     DirectoryDoesNotExistOnFilesystem(std::path::PathBuf),
+    #[error("boot marker")]
+    BootMarker(#[from] BootMarkerError),
     #[error("metric {0}")]
     O11y(#[from] O11yError),
 }

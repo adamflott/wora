@@ -301,6 +301,10 @@ struct VirtualWatcherApp {
 
 struct MetricsApp;
 
+struct BootTrackingApp {
+    calls: Arc<Mutex<Vec<bool>>>,
+}
+
 #[derive(Clone)]
 struct DeterministicRuntimeEnvironment {
     host_info: HostInfo,
@@ -324,6 +328,48 @@ impl RuntimeEnvironment for DeterministicRuntimeEnvironment {
     fn refresh_process_stats(&self) -> Option<ProcessStats> {
         self.process.clone()
     }
+}
+
+#[async_trait]
+impl App<(), ()> for BootTrackingApp {
+    type AppConfig = NoConfig;
+    type AppSecrets = NoSecrets;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        "boot_tracking"
+    }
+
+    async fn setup(
+        &mut self,
+        _wora: &Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        let Ok(mut calls) = self.calls.lock() else {
+            return Err(std::io::Error::other("boot tracking app lock poisoned").into());
+        };
+        calls.push(is_first_boot);
+        Ok(())
+    }
+
+    async fn main(
+        &mut self,
+        _wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
+        MainRetryAction::Success
+    }
+
+    async fn is_healthy(&mut self) -> HealthState {
+        HealthState::Ok
+    }
+
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
 }
 
 fn deterministic_host_info() -> HostInfo {
@@ -983,6 +1029,73 @@ async fn runner_reports_already_running_when_lock_is_held() -> Result<(), Box<dy
 
     match result {
         Err(MainEarlyReturn::AlreadyRunning(path)) => assert_eq!(path, held_path),
+        other => panic!("unexpected runner result: {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn runner_marks_only_the_first_invocation_as_first_boot() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("boot-tracking");
+    let dirs = test_dirs(root.clone());
+    let fs = InMemoryVFS::new();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let boot_root = PathBuf::from("/boot-state");
+
+    exec_async_runner_with_restart_options_and_lock_backend(
+        TestExec { dirs: dirs.clone() },
+        BootTrackingApp { calls: calls.clone() },
+        fs.clone(),
+        test_o11y()?,
+        Some(boot_root.clone()),
+        RestartPolicyOptions::default(),
+        InMemoryLockBackend::default(),
+    )
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
+
+    exec_async_runner_with_restart_options_and_lock_backend(
+        TestExec { dirs },
+        BootTrackingApp { calls: calls.clone() },
+        fs,
+        test_o11y()?,
+        Some(boot_root),
+        RestartPolicyOptions::default(),
+        InMemoryLockBackend::default(),
+    )
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
+
+    let calls = calls.lock().map_err(|err| std::io::Error::other(err.to_string()))?;
+    assert_eq!(&*calls, &[true, false]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn runner_rejects_directory_boot_markers() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("boot-marker-invalid");
+    let dirs = test_dirs(root);
+    let fs = InMemoryVFS::new();
+    let boot_root = PathBuf::from("/boot-state");
+    fs.create_dir(&boot_root).await?;
+    fs.create_dir(boot_root.join(".boot_tracking.booted")).await?;
+
+    let result = exec_async_runner_with_restart_options_and_lock_backend(
+        TestExec { dirs },
+        BootTrackingApp {
+            calls: Arc::new(Mutex::new(Vec::new())),
+        },
+        fs,
+        test_o11y()?,
+        Some(boot_root),
+        RestartPolicyOptions::default(),
+        InMemoryLockBackend::default(),
+    )
+    .await;
+
+    match result {
+        Err(MainEarlyReturn::WoraSetup(WoraSetupError::BootMarker(_))) => {}
         other => panic!("unexpected runner result: {other:?}"),
     }
 

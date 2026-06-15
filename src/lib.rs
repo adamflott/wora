@@ -22,6 +22,7 @@ use tokio::task::JoinHandle;
 use tracing::Instrument;
 use tracing::{debug, error, info, trace, warn};
 
+mod boot;
 pub mod dirs;
 pub mod errors;
 pub mod events;
@@ -34,6 +35,7 @@ pub mod prelude;
 pub mod restart_policy;
 pub mod vfs;
 
+use crate::boot::{default_boot_root, resolve_boot_state};
 use crate::dirs::Dirs;
 use crate::errors::{MainEarlyReturn, ReloadError, SetupFailure, VfsError, WoraSetupError};
 use crate::events::*;
@@ -1088,25 +1090,11 @@ pub async fn exec_async_runner_with_restart_options_lock_backend_and_runtime_env
             })
             .await;
 
-            let mut boot_dir = maybe_boot_dir.unwrap_or_else(|| {
-                #[cfg(target_os = "linux")]
-                let fp = PathBuf::from("//var/run");
-                #[cfg(target_os = "macos")]
-                let fp = PathBuf::from("/tmp/");
-                fp
-            });
-            boot_dir.push(format!(".{}_booted", app.name()));
-
-            let mut is_first_boot = false;
-            match fs.create_dir(&boot_dir).await {
-                Ok(_) => {
-                    is_first_boot = true;
-                    debug!("dir:first_boot:created dir:{} is_first_boot:{}", boot_dir.display(), is_first_boot);
-                }
-                Err(_) => {
-                    debug!("dir:first_boot dir:{} is_first_boot:{}", boot_dir.display(), is_first_boot);
-                }
-            }
+            let boot_state = resolve_boot_state(fs.clone(), maybe_boot_dir.unwrap_or_else(default_boot_root), app.name())
+                .await
+                .map_err(WoraSetupError::from)?;
+            let is_first_boot = boot_state.is_first_boot();
+            debug!("boot:state app:{} state:{:?}", app.name(), boot_state);
 
             exec.setup(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:setup")).await?;
 
