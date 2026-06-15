@@ -88,10 +88,8 @@ pub trait AsyncExecutor<AppEv: Send + 'static, AppMetric>: Send + Sync + Clone {
 
     /// Switch to a non-root user and group.
     fn run_as_user_and_group(&self, user_name: &str, group_name: &str) -> Result<(), SetupFailure> {
-        let new_group = Group::from_name(group_name)?
-            .ok_or_else(|| SetupFailure::UnknownSystemUser(group_name.to_string()))?;
-        let new_user = User::from_name(user_name)?
-            .ok_or_else(|| SetupFailure::UnknownSystemUser(user_name.to_string()))?;
+        let new_group = Group::from_name(group_name)?.ok_or_else(|| SetupFailure::UnknownSystemUser(group_name.to_string()))?;
+        let new_user = User::from_name(user_name)?.ok_or_else(|| SetupFailure::UnknownSystemUser(user_name.to_string()))?;
 
         setgid(new_group.gid)?;
         info!("process now runs as group: {} (id: {})", group_name, new_group.gid);

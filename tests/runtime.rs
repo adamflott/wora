@@ -947,8 +947,8 @@ async fn executor_runtime_event_sources_can_drive_control_flow() -> Result<(), B
         test_o11y()?,
         None,
     )
-        .await
-        .map_err(|err| std::io::Error::other(err.to_string()))?;
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
 
     Ok(())
 }
