@@ -5,8 +5,6 @@ use thiserror::Error;
 use crate::errors::VfsError;
 use crate::vfs::WFS;
 
-const BOOT_MARKER_CONTENTS: &[u8] = b"booted\n";
-
 /// Explicit boot-state marker for a workload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BootState {
@@ -35,7 +33,8 @@ pub(crate) async fn resolve_boot_state<F: WFS>(fs: F, boot_root: PathBuf, app_na
     match fs.read(&marker_path).await {
         Ok(_) => Ok(BootState::SubsequentBoot),
         Err(err) if is_not_found(&err) => {
-            fs.write(&marker_path, BOOT_MARKER_CONTENTS)
+            let now = chrono::Utc::now();
+            fs.write(&marker_path, now.to_string().as_bytes())
                 .await
                 .map_err(|err| map_boot_marker_error(marker_path, err))?;
             Ok(BootState::FirstBoot)
