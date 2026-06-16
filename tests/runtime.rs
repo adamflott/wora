@@ -999,7 +999,7 @@ async fn runner_loads_initial_config_and_applies_restart_policy() -> Result<(), 
 async fn executor_runtime_event_sources_can_drive_control_flow() -> Result<(), Box<dyn std::error::Error>> {
     let root = unique_test_dir("control-event-runtime-sources");
     let (tx, rx) = tokio::sync::mpsc::channel(4);
-    let exec = UnixLikeBare::new("control_event").await.with_control_event_receiver(rx);
+    let exec = ContainerExecutor::new("control_event").await.with_control_event_receiver(rx);
 
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1031,7 +1031,7 @@ async fn executor_runtime_event_sources_can_drive_control_flow() -> Result<(), B
 async fn runner_options_map_runtime_signals_to_app_events() -> Result<(), Box<dyn std::error::Error>> {
     let root = unique_test_dir("signal-mapper");
     let (tx, rx) = tokio::sync::mpsc::channel(4);
-    let exec = UnixLikeBare::new("signal_mapped").await.with_signal_receiver(rx);
+    let exec = ContainerExecutor::new("signal_mapped").await.with_signal_receiver(rx);
 
     tx.send(RuntimeSignal::Hangup).await?;
     drop(tx);
