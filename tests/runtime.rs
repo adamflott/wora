@@ -996,22 +996,32 @@ async fn runner_loads_initial_config_and_applies_restart_policy() -> Result<(), 
 }
 
 #[tokio::test]
-#[ignore] // skipping. needs investigation
 async fn executor_runtime_event_sources_can_drive_control_flow() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("control-event-runtime-sources");
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     let exec = UnixLikeBare::new("control_event").await.with_control_event_receiver(rx);
-    tx.send(ControlEvent::Shutdown(None)).await?;
-    drop(tx);
 
-    exec_async_runner(
-        exec,
-        ControlDrivenApp {
-            name: "control_event_runtime_sources",
-        },
-        PhysicalVFS::new(),
-        test_o11y()?,
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let _ = tx.send(ControlEvent::Shutdown(None)).await;
+    });
+
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        exec_async_runner_with_options(
+            exec,
+            ControlDrivenApp {
+                name: "control_event_runtime_sources",
+            },
+            PhysicalVFS::new(),
+            test_o11y()?,
+            RunnerOptions::new()
+                .with_boot_dir(root.join("boot"))
+                .with_lock_backend(InMemoryLockBackend::default()),
+        ),
     )
     .await
+    .map_err(|_| std::io::Error::other("runtime event source test timed out"))?
     .map_err(|err| std::io::Error::other(err.to_string()))?;
 
     Ok(())

@@ -61,8 +61,9 @@ struct InMemoryWatchRegistration {
 ///
 /// `exec_async_runner` can now receive `notify`-shaped watch events from the
 /// active VFS implementation. `InMemoryVFS` therefore supports runner-level
-/// config and secret reload workflows as long as the lock path itself is backed
-/// by the host filesystem.
+/// config and secret reload workflows. Fully virtual runner flows should pair
+/// it with an in-memory lock backend through
+/// `RunnerOptions::with_lock_backend(...)`.
 #[async_trait]
 pub trait WFS: Debug + Clone + Send + Sync {
     /// Construct a new filesystem handle.
@@ -128,12 +129,14 @@ impl WFS for PhysicalVFS {
         let watch_path = path.as_ref().to_path_buf();
         let (tx, rx) = channel(8);
         let watcher = RecommendedWatcher::new(
-            move |res| {
-                futures::executor::block_on(async {
-                    if tx.send(res).await.is_err() {
-                        log::error!("notify:watch:send failed");
-                    }
-                })
+            move |res| match tx.try_send(res) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    log::warn!("notify:watch:send dropped event because receiver channel is full");
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    log::debug!("notify:watch:send skipped event because receiver channel is closed");
+                }
             },
             notify::Config::default(),
         )?;
