@@ -922,102 +922,114 @@ where
 // TODOs
 // - create a non-file locking variant
 
+/// Options used by the async runner.
+///
+/// This is the preferred extension point for app-typed runtime policies such
+/// as signal mapping. Existing convenience runner functions continue to build
+/// this options type internally.
+#[derive(Clone)]
+pub struct RunnerOptions<AppEv, L = ProcLockBackend, R = SystemRuntimeEnvironment> {
+    /// Optional boot-state directory. Defaults to WORA's host temp boot root.
+    pub boot_dir: Option<PathBuf>,
+    /// Restart and supervision behavior.
+    pub restart: RestartPolicyOptions,
+    /// Translate platform signals into application/runtime events.
+    pub signal_mapper: SignalMapper<AppEv>,
+    /// Lock backend used to serialize workload execution.
+    pub lock_backend: L,
+    /// Runtime environment provider used for host and process telemetry.
+    pub runtime_environment: R,
+}
+
+impl<AppEv: Send + Sync + 'static> Default for RunnerOptions<AppEv> {
+    fn default() -> Self {
+        Self {
+            boot_dir: None,
+            restart: RestartPolicyOptions::default(),
+            signal_mapper: default_signal_mapper(),
+            lock_backend: ProcLockBackend,
+            runtime_environment: SystemRuntimeEnvironment::default(),
+        }
+    }
+}
+
+impl<AppEv: Send + Sync + 'static> RunnerOptions<AppEv> {
+    /// Create default runner options.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl<AppEv: Send + Sync + 'static, L, R> RunnerOptions<AppEv, L, R> {
+    /// Set the boot-state directory.
+    pub fn with_boot_dir(mut self, boot_dir: impl Into<PathBuf>) -> Self {
+        self.boot_dir = Some(boot_dir.into());
+        self
+    }
+
+    /// Set restart and supervision behavior.
+    pub fn with_restart_options(mut self, restart: RestartPolicyOptions) -> Self {
+        self.restart = restart;
+        self
+    }
+
+    /// Set a custom platform signal mapper.
+    pub fn with_signal_mapper(mut self, mapper: impl Fn(RuntimeSignal) -> Option<Event<AppEv>> + Send + Sync + 'static) -> Self {
+        self.signal_mapper = Arc::new(mapper);
+        self
+    }
+
+    /// Set the lock backend used to serialize workload execution.
+    pub fn with_lock_backend<NewL>(self, lock_backend: NewL) -> RunnerOptions<AppEv, NewL, R> {
+        RunnerOptions {
+            boot_dir: self.boot_dir,
+            restart: self.restart,
+            signal_mapper: self.signal_mapper,
+            lock_backend,
+            runtime_environment: self.runtime_environment,
+        }
+    }
+
+    /// Set the runtime environment provider used for telemetry.
+    pub fn with_runtime_environment<NewR>(self, runtime_environment: NewR) -> RunnerOptions<AppEv, L, NewR> {
+        RunnerOptions {
+            boot_dir: self.boot_dir,
+            restart: self.restart,
+            signal_mapper: self.signal_mapper,
+            lock_backend: self.lock_backend,
+            runtime_environment,
+        }
+    }
+}
+
 /// Run apps via an `async` based executor
 pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static>(
     exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
     app: impl App<AppEv, AppMetric> + Send + 'static,
     fs: impl WFS + 'static,
     o11y: O11yProcessorOptions<AppMetric>,
-    maybe_boot_dir: Option<PathBuf>,
 ) -> Result<(), MainEarlyReturn> {
-    exec_async_runner_with_restart_options(exec, app, fs, o11y, maybe_boot_dir, RestartPolicyOptions::default()).await
+    exec_async_runner_with_options(exec, app, fs, o11y, RunnerOptions::default()).await
 }
 
-/// Run apps via an `async` based executor with an explicit restart policy.
-pub async fn exec_async_runner_with_restart_policy<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static>(
+/// Run apps via an `async` based executor with explicit runner options.
+#[allow(clippy::too_many_lines)]
+pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static, L: LockBackend, R: RuntimeEnvironment>(
     exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
     app: impl App<AppEv, AppMetric> + Send + 'static,
     fs: impl WFS + 'static,
     o11y: O11yProcessorOptions<AppMetric>,
-    maybe_boot_dir: Option<PathBuf>,
-    restart_policy: WorkloadRestartPolicy,
-    restart_pause: std::time::Duration,
+    options: RunnerOptions<AppEv, L, R>,
 ) -> Result<(), MainEarlyReturn> {
-    exec_async_runner_with_restart_options(
-        exec,
-        app,
-        fs,
-        o11y,
-        maybe_boot_dir,
-        RestartPolicyOptions {
-            policy: restart_policy,
-            pause: restart_pause,
-            ..RestartPolicyOptions::default()
-        },
-    )
-    .await
-}
-
-/// Run apps via an `async` based executor with explicit restart options.
-pub async fn exec_async_runner_with_restart_options<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static>(
-    exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
-    app: impl App<AppEv, AppMetric> + Send + 'static,
-    fs: impl WFS + 'static,
-    o11y: O11yProcessorOptions<AppMetric>,
-    maybe_boot_dir: Option<PathBuf>,
-    restart_options: RestartPolicyOptions,
-) -> Result<(), MainEarlyReturn> {
-    exec_async_runner_with_restart_options_and_lock_backend(exec, app, fs, o11y, maybe_boot_dir, restart_options, ProcLockBackend).await
-}
-
-/// Run apps via an `async` based executor with explicit restart options and a
-/// caller-supplied lock backend.
-///
-/// Use this when you want custom single-instance semantics, such as in-memory
-/// test locks or an environment-specific distributed lock implementation.
-pub async fn exec_async_runner_with_restart_options_and_lock_backend<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static, L: LockBackend>(
-    exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
-    app: impl App<AppEv, AppMetric> + Send + 'static,
-    fs: impl WFS + 'static,
-    o11y: O11yProcessorOptions<AppMetric>,
-    maybe_boot_dir: Option<PathBuf>,
-    restart_options: RestartPolicyOptions,
-    lock_backend: L,
-) -> Result<(), MainEarlyReturn> {
-    exec_async_runner_with_restart_options_lock_backend_and_runtime_environment(
-        exec,
-        app,
-        fs,
-        o11y,
-        maybe_boot_dir,
-        restart_options,
+    let RunnerOptions {
+        boot_dir,
+        restart,
+        signal_mapper,
         lock_backend,
-        SystemRuntimeEnvironment::default(),
-    )
-    .await
-}
-
-/// Run apps via an `async` based executor with explicit restart options, lock
-/// backend, and runtime environment provider.
-///
-/// Returns [`MainEarlyReturn::AlreadyRunning`] when the supplied lock backend
-/// reports that another instance already owns the runtime lock.
-#[allow(clippy::too_many_arguments)]
-pub async fn exec_async_runner_with_restart_options_lock_backend_and_runtime_environment<
-    AppEv: Send + Sync + 'static,
-    AppMetric: Debug + Send + Sync + 'static,
-    L: LockBackend,
-    R: RuntimeEnvironment,
->(
-    mut exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
-    mut app: impl App<AppEv, AppMetric> + Send + 'static,
-    fs: impl WFS + 'static,
-    o11y: O11yProcessorOptions<AppMetric>,
-    maybe_boot_dir: Option<PathBuf>,
-    restart_options: RestartPolicyOptions,
-    lock_backend: L,
-    runtime_environment: R,
-) -> Result<(), MainEarlyReturn> {
+        runtime_environment,
+    } = options;
+    let mut exec = exec;
+    let mut app = app;
     let mut lock_path = PathBuf::new();
     lock_path.push(&exec.dirs().runtime_root_dir);
     let lock_fp = if app.allow_concurrent_executions() {
@@ -1084,7 +1096,7 @@ pub async fn exec_async_runner_with_restart_options_lock_backend_and_runtime_env
             });
 
             let runtime_event_tasks = exec
-                .spawn_runtime_event_sources(runtime_event_tx.clone())
+                .spawn_runtime_event_sources_with_signal_mapper(runtime_event_tx.clone(), signal_mapper.clone())
                 .instrument(tracing::info_span!("exec:run:event_sources"))
                 .await?;
 
@@ -1158,7 +1170,7 @@ pub async fn exec_async_runner_with_restart_options_lock_backend_and_runtime_env
             })
             .await;
 
-            let boot_state = resolve_boot_state(fs.clone(), maybe_boot_dir.unwrap_or_else(default_boot_root), app.name())
+            let boot_state = resolve_boot_state(fs.clone(), boot_dir.unwrap_or_else(default_boot_root), app.name())
                 .await
                 .map_err(WoraSetupError::from)?;
             let is_first_boot = boot_state.is_first_boot();
@@ -1270,7 +1282,7 @@ pub async fn exec_async_runner_with_restart_options_lock_backend_and_runtime_env
                             exec.clone(),
                             fs.clone(),
                             metrics_sender.clone(),
-                            restart_options.clone(),
+                            restart.clone(),
                             &mut supervision_rx,
                             restart_counter.clone(),
                         )

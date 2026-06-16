@@ -15,7 +15,7 @@ use crate::Wora;
 use crate::dirs::Dirs;
 use crate::errors::{SetupFailure, VfsError};
 use crate::events::{ControlEvent, Event};
-use crate::{AsyncExecutor, WFS};
+use crate::{AsyncExecutor, RuntimeSignal, SignalMapper, WFS, default_signal_mapper};
 
 /// Shared Unix-like directory layout.
 #[derive(Clone, Debug)]
@@ -23,6 +23,7 @@ pub struct UnixLike {
     /// Directories used by the executor.
     pub dirs: Dirs,
     injected_control_events: Option<Arc<Mutex<Option<Receiver<ControlEvent>>>>>,
+    injected_signals: Option<Arc<Mutex<Option<Receiver<RuntimeSignal>>>>>,
 }
 
 impl UnixLike {
@@ -40,6 +41,7 @@ impl UnixLike {
         UnixLike {
             dirs,
             injected_control_events: None,
+            injected_signals: None,
         }
     }
 
@@ -48,17 +50,32 @@ impl UnixLike {
         self
     }
 
-    fn control_event_for_signal(signum: i32) -> Option<ControlEvent> {
+    pub(crate) fn with_signal_receiver(mut self, receiver: Receiver<RuntimeSignal>) -> Self {
+        self.injected_signals = Some(Arc::new(Mutex::new(Some(receiver))));
+        self
+    }
+
+    fn runtime_signal_for_raw(signum: i32) -> Option<RuntimeSignal> {
         match signum {
-            SIGHUP => Some(ControlEvent::ReloadConfiguration),
-            SIGTERM | SIGINT | SIGQUIT => Some(ControlEvent::Shutdown(Some(chrono::Utc::now().naive_utc()))),
-            SIGUSR1 => Some(ControlEvent::LogRotation),
-            SIGUSR2 => None,
+            SIGHUP => Some(RuntimeSignal::Hangup),
+            SIGINT => Some(RuntimeSignal::Interrupt),
+            SIGQUIT => Some(RuntimeSignal::Quit),
+            SIGTERM => Some(RuntimeSignal::Terminate),
+            SIGUSR1 => Some(RuntimeSignal::User1),
+            SIGUSR2 => Some(RuntimeSignal::User2),
             _ => None,
         }
     }
 
     pub(crate) async fn spawn_runtime_event_sources<AppEv: Send + 'static>(&self, sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        self.spawn_runtime_event_sources_with_signal_mapper(sender, default_signal_mapper()).await
+    }
+
+    pub(crate) async fn spawn_runtime_event_sources_with_signal_mapper<AppEv: Send + 'static>(
+        &self,
+        sender: Sender<Event<AppEv>>,
+        signal_mapper: SignalMapper<AppEv>,
+    ) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
         if let Some(injected_controls) = &self.injected_control_events {
             let send = sender;
             let injected_controls = injected_controls.clone();
@@ -74,17 +91,33 @@ impl UnixLike {
             })]);
         }
 
+        if let Some(injected_signals) = &self.injected_signals {
+            let send = sender;
+            let injected_signals = injected_signals.clone();
+            return Ok(vec![tokio::spawn(async move {
+                let Some(mut receiver) = injected_signals.lock().await.take() else {
+                    return;
+                };
+                while let Some(signal) = receiver.recv().await {
+                    if let Some(event) = signal_mapper(signal)
+                        && send.send(event).await.is_err()
+                    {
+                        break;
+                    }
+                }
+            })]);
+        }
+
         let mut tasks = Vec::new();
 
         for &signum in [SIGHUP, SIGTERM, SIGQUIT, SIGUSR1, SIGUSR2, SIGINT].iter() {
             let send = sender.clone();
+            let signal_mapper = signal_mapper.clone();
             let mut sig = tokio::signal::unix::signal(SignalKind::from_raw(signum))?;
             tasks.push(tokio::spawn(async move {
-                loop {
-                    sig.recv().await;
-
-                    if let Some(control_event) = UnixLike::control_event_for_signal(signum)
-                        && send.send(Event::Control(control_event)).await.is_err()
+                while sig.recv().await.is_some() {
+                    if let Some(event) = UnixLike::runtime_signal_for_raw(signum).and_then(|signal| signal_mapper(signal))
+                        && send.send(event).await.is_err()
                     {
                         break;
                     }
@@ -145,6 +178,12 @@ impl UnixLikeSystem {
         self.unix = self.unix.clone().with_control_event_receiver(receiver);
         self
     }
+
+    /// Inject a runtime signal receiver for deterministic testing and custom signal mapping.
+    pub fn with_signal_receiver(mut self, receiver: Receiver<RuntimeSignal>) -> Self {
+        self.unix = self.unix.clone().with_signal_receiver(receiver);
+        self
+    }
 }
 
 #[async_trait]
@@ -162,6 +201,14 @@ impl<AppEv: Send + 'static, AppMetric> AsyncExecutor<AppEv, AppMetric> for UnixL
 
     async fn spawn_runtime_event_sources(&self, sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
         self.unix.spawn_runtime_event_sources(sender).await
+    }
+
+    async fn spawn_runtime_event_sources_with_signal_mapper(
+        &self,
+        sender: Sender<Event<AppEv>>,
+        signal_mapper: SignalMapper<AppEv>,
+    ) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        self.unix.spawn_runtime_event_sources_with_signal_mapper(sender, signal_mapper).await
     }
 
     async fn is_ready(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> bool {
@@ -206,6 +253,12 @@ impl UnixLikeUser {
         self.unix = self.unix.clone().with_control_event_receiver(receiver);
         self
     }
+
+    /// Inject a runtime signal receiver for deterministic testing and custom signal mapping.
+    pub fn with_signal_receiver(mut self, receiver: Receiver<RuntimeSignal>) -> Self {
+        self.unix = self.unix.clone().with_signal_receiver(receiver);
+        self
+    }
 }
 
 #[async_trait]
@@ -225,6 +278,14 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
 
     async fn spawn_runtime_event_sources(&self, sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
         self.unix.spawn_runtime_event_sources(sender).await
+    }
+
+    async fn spawn_runtime_event_sources_with_signal_mapper(
+        &self,
+        sender: Sender<Event<AppEv>>,
+        signal_mapper: SignalMapper<AppEv>,
+    ) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        self.unix.spawn_runtime_event_sources_with_signal_mapper(sender, signal_mapper).await
     }
 
     async fn is_ready(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> bool {
@@ -268,6 +329,12 @@ impl UnixLikeBare {
         self.unix = self.unix.clone().with_control_event_receiver(receiver);
         self
     }
+
+    /// Inject a runtime signal receiver for deterministic testing and custom signal mapping.
+    pub fn with_signal_receiver(mut self, receiver: Receiver<RuntimeSignal>) -> Self {
+        self.unix = self.unix.clone().with_signal_receiver(receiver);
+        self
+    }
 }
 
 #[async_trait]
@@ -286,6 +353,14 @@ impl<AppEv: Send + 'static, AppMetric> AsyncExecutor<AppEv, AppMetric> for UnixL
 
     async fn spawn_runtime_event_sources(&self, sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
         self.unix.spawn_runtime_event_sources(sender).await
+    }
+
+    async fn spawn_runtime_event_sources_with_signal_mapper(
+        &self,
+        sender: Sender<Event<AppEv>>,
+        signal_mapper: SignalMapper<AppEv>,
+    ) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        self.unix.spawn_runtime_event_sources_with_signal_mapper(sender, signal_mapper).await
     }
 
     async fn is_ready(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> bool {

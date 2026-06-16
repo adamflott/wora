@@ -6,7 +6,7 @@ Write Once Run Anywhere (WORA): A Rust framework for building applications (daem
 
 This crate is an early-stage async framework. The main public API is usable, with Unix-like platforms as the primary target and environment-specific executors for `systemd`, `launchd`, and container-style deployments.
 
-- restart policies and shutdown supervision can be applied by `exec_async_runner_with_restart_options`
+- restart policies, shutdown supervision, and signal mapping can be applied with `RunnerOptions` through `exec_async_runner_with_options`
 - initial typed config and secret loading is built into the runner
 - event-driven apps can use `Wora::run_event_loop` to auto-apply typed reloads
 - observability can be routed through sinks via `O11yProcessor`

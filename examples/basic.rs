@@ -118,7 +118,7 @@ async fn main() -> Result<(), MainEarlyReturn> {
         .build()
         .map_err(|err| MainEarlyReturn::WoraSetup(WoraSetupError::Str(err.to_string())))?;
     match UnixLikeUser::new(app_name, fs.clone()).await {
-        Ok(exec) => exec_async_runner(exec, app, fs.clone(), o11y, None).await?,
+        Ok(exec) => exec_async_runner(exec, app, fs.clone(), o11y).await?,
         Err(exec_err) => {
             error!("exec error:{}", exec_err);
             return Err(MainEarlyReturn::Vfs(exec_err));

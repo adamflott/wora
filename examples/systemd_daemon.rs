@@ -157,7 +157,7 @@ mod linux_example {
                 .display()
         );
 
-        exec_async_runner(exec, app, PhysicalVFS::new(), o11y, None).await
+        exec_async_runner(exec, app, PhysicalVFS::new(), o11y).await
     }
 }
 

@@ -52,7 +52,7 @@ impl From<std::io::Error> for LockError {
 /// - make [`cleanup`](LockBackend::cleanup) idempotent
 ///
 /// The built-in runner uses this trait through
-/// `exec_async_runner_with_restart_options_and_lock_backend(...)`.
+/// [`crate::RunnerOptions::with_lock_backend`].
 #[async_trait]
 pub trait LockBackend: Clone + Send + Sync + 'static {
     /// Guard returned when a lock is acquired.

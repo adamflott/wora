@@ -29,7 +29,7 @@ use crate::errors::{SetupFailure, VfsError};
 use crate::events::{ControlEvent, Event};
 use crate::exec::AsyncExecutor;
 use crate::exec_unix::UnixLike;
-use crate::{WFS, Wora};
+use crate::{RuntimeSignal, SignalMapper, WFS, Wora};
 
 fn first_env_path(var_name: &str) -> Option<PathBuf> {
     env::var_os(var_name).and_then(|value| value.to_string_lossy().split(':').find(|segment| !segment.is_empty()).map(PathBuf::from))
@@ -172,6 +172,12 @@ impl SystemdExecutor {
         self
     }
 
+    /// Inject a runtime signal receiver for deterministic testing and custom signal mapping.
+    pub fn with_signal_receiver(mut self, receiver: Receiver<RuntimeSignal>) -> Self {
+        self.unix = self.unix.clone().with_signal_receiver(receiver);
+        self
+    }
+
     fn send_notify_message(&self, payload: String) -> Result<(), SetupFailure> {
         #[cfg(target_os = "linux")]
         {
@@ -233,6 +239,14 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
 
     async fn spawn_runtime_event_sources(&self, sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
         self.unix.spawn_runtime_event_sources(sender).await
+    }
+
+    async fn spawn_runtime_event_sources_with_signal_mapper(
+        &self,
+        sender: Sender<Event<AppEv>>,
+        signal_mapper: SignalMapper<AppEv>,
+    ) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        self.unix.spawn_runtime_event_sources_with_signal_mapper(sender, signal_mapper).await
     }
 
     async fn on_runtime_ready(&self, app_name: &str, _dirs: &Dirs, _fs: impl WFS) -> Result<(), SetupFailure> {
@@ -339,6 +353,12 @@ impl LaunchdExecutor {
         self
     }
 
+    /// Inject a runtime signal receiver for deterministic testing and custom signal mapping.
+    pub fn with_signal_receiver(mut self, receiver: Receiver<RuntimeSignal>) -> Self {
+        self.unix = self.unix.clone().with_signal_receiver(receiver);
+        self
+    }
+
     /// Build a launchd plist job description for this executor.
     #[cfg(target_os = "macos")]
     pub fn launchd_job<P: AsRef<Path>>(&self, label: &str, program: P, program_arguments: Vec<String>) -> Result<Launchd, LaunchdExecutorError> {
@@ -391,6 +411,14 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
 
     async fn spawn_runtime_event_sources(&self, sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
         self.unix.spawn_runtime_event_sources(sender).await
+    }
+
+    async fn spawn_runtime_event_sources_with_signal_mapper(
+        &self,
+        sender: Sender<Event<AppEv>>,
+        signal_mapper: SignalMapper<AppEv>,
+    ) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        self.unix.spawn_runtime_event_sources_with_signal_mapper(sender, signal_mapper).await
     }
 
     async fn is_ready(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> bool {
@@ -465,6 +493,12 @@ impl ContainerExecutor {
         self.unix = self.unix.clone().with_control_event_receiver(receiver);
         self
     }
+
+    /// Inject a runtime signal receiver for deterministic testing and custom signal mapping.
+    pub fn with_signal_receiver(mut self, receiver: Receiver<RuntimeSignal>) -> Self {
+        self.unix = self.unix.clone().with_signal_receiver(receiver);
+        self
+    }
 }
 
 #[async_trait]
@@ -495,6 +529,14 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
 
     async fn spawn_runtime_event_sources(&self, sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
         self.unix.spawn_runtime_event_sources(sender).await
+    }
+
+    async fn spawn_runtime_event_sources_with_signal_mapper(
+        &self,
+        sender: Sender<Event<AppEv>>,
+        signal_mapper: SignalMapper<AppEv>,
+    ) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        self.unix.spawn_runtime_event_sources_with_signal_mapper(sender, signal_mapper).await
     }
 
     async fn on_runtime_ready(&self, app_name: &str, _dirs: &Dirs, fs: impl WFS) -> Result<(), SetupFailure> {

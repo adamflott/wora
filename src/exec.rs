@@ -14,8 +14,44 @@ use tracing::info;
 
 use crate::dirs::Dirs;
 use crate::errors::SetupFailure;
-use crate::events::Event;
+use crate::events::{ControlEvent, Event};
 use crate::{WFS, Wora};
+
+/// Platform signal understood by WORA's built-in Unix-like executors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum RuntimeSignal {
+    /// Hangup, normally `SIGHUP`.
+    Hangup,
+    /// Interrupt, normally `SIGINT`.
+    Interrupt,
+    /// Quit, normally `SIGQUIT`.
+    Quit,
+    /// Termination request, normally `SIGTERM`.
+    Terminate,
+    /// User-defined signal 1, normally `SIGUSR1`.
+    User1,
+    /// User-defined signal 2, normally `SIGUSR2`.
+    User2,
+}
+
+/// Mapper used by the runner to translate platform signals into WORA events.
+pub type SignalMapper<AppEv> = std::sync::Arc<dyn Fn(RuntimeSignal) -> Option<Event<AppEv>> + Send + Sync + 'static>;
+
+/// Return WORA's default Unix-like signal mapping.
+///
+/// The default preserves the historical built-in executor behavior:
+/// `SIGHUP` requests configuration reload, `SIGTERM`/`SIGINT`/`SIGQUIT`
+/// request shutdown, `SIGUSR1` requests log rotation, and `SIGUSR2` is ignored.
+pub fn default_signal_mapper<AppEv>() -> SignalMapper<AppEv> {
+    std::sync::Arc::new(|signal| match signal {
+        RuntimeSignal::Hangup => Some(Event::Control(ControlEvent::ReloadConfiguration)),
+        RuntimeSignal::Interrupt | RuntimeSignal::Quit | RuntimeSignal::Terminate => {
+            Some(Event::Control(ControlEvent::Shutdown(Some(chrono::Utc::now().naive_utc()))))
+        }
+        RuntimeSignal::User1 => Some(Event::Control(ControlEvent::LogRotation)),
+        RuntimeSignal::User2 => None,
+    })
+}
 
 /// Runtime environment adapter used by `exec_async_runner`.
 ///
@@ -38,6 +74,19 @@ pub trait AsyncExecutor<AppEv: Send + 'static, AppMetric>: Send + Sync + Clone {
     /// The default implementation does nothing.
     async fn spawn_runtime_event_sources(&self, _sender: Sender<Event<AppEv>>) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
         Ok(vec![])
+    }
+
+    /// Start runtime event sources with a caller-supplied signal mapper.
+    ///
+    /// Custom executors that do not consume OS signals can keep the default
+    /// implementation. Signal-aware executors should use `signal_mapper` to
+    /// translate platform signals into app-specific events.
+    async fn spawn_runtime_event_sources_with_signal_mapper(
+        &self,
+        sender: Sender<Event<AppEv>>,
+        _signal_mapper: SignalMapper<AppEv>,
+    ) -> Result<Vec<JoinHandle<()>>, SetupFailure> {
+        self.spawn_runtime_event_sources(sender).await
     }
     /// Notify the target environment that the runtime is ready.
     ///

@@ -146,7 +146,7 @@ async fn main() -> Result<(), MainEarlyReturn> {
         greeting: "hello from onboarding".to_string(),
     };
 
-    exec_async_runner(exec, app, fs, o11y, None).await?;
+    exec_async_runner(exec, app, fs, o11y).await?;
 
     let entries = entries.lock().map_err(|err| MainEarlyReturn::WoraSetup(WoraSetupError::Str(err.to_string())))?;
     println!("captured {} observability events", entries.len());

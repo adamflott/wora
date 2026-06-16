@@ -266,6 +266,13 @@ struct ControlDrivenApp {
     name: &'static str,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SignalMappedEvent {
+    ReloadAll,
+}
+
+struct SignalMappedApp;
+
 struct DeferredReadyApp;
 
 struct HealthFailureApp {
@@ -549,6 +556,53 @@ impl App<(), ()> for ControlDrivenApp {
 }
 
 #[async_trait]
+impl App<SignalMappedEvent, ()> for SignalMappedApp {
+    type AppConfig = NoConfig;
+    type AppSecrets = NoSecrets;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        "signal_mapped"
+    }
+
+    async fn setup(
+        &mut self,
+        _wora: &Wora<SignalMappedEvent, ()>,
+        _exec: impl AsyncExecutor<SignalMappedEvent, ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    async fn main(
+        &mut self,
+        wora: &mut Wora<SignalMappedEvent, ()>,
+        _exec: impl AsyncExecutor<SignalMappedEvent, ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
+        while let Some(event) = wora.receiver.recv().await {
+            if matches!(event, Event::App(SignalMappedEvent::ReloadAll)) {
+                return MainRetryAction::Success;
+            }
+        }
+
+        MainRetryAction::UseExitCode(21)
+    }
+
+    async fn end(
+        &mut self,
+        _wora: &Wora<SignalMappedEvent, ()>,
+        _exec: impl AsyncExecutor<SignalMappedEvent, ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) {
+    }
+}
+
+#[async_trait]
 impl App<(), ()> for DelayedShutdownApp {
     type AppConfig = NoConfig;
     type AppSecrets = NoSecrets;
@@ -709,7 +763,7 @@ impl App<(), ()> for ReloadingApp {
 
     async fn setup(
         &mut self,
-        wora: &Wora<(), ()>,
+        _wora: &Wora<(), ()>,
         _exec: impl AsyncExecutor<(), ()>,
         _fs: impl WFS + 'static,
         _metrics: Sender<O11yEvent<()>>,
@@ -717,15 +771,6 @@ impl App<(), ()> for ReloadingApp {
     ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
         assert!(self.initial_config_loaded);
         assert_eq!(self.current_secret, "alpha");
-
-        let metadata_file = wora.dirs.metadata_root_dir.join("reloading.toml");
-        let secret_file = wora.dirs.secrets_root_dir.join("api_key");
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            let _ = tokio::fs::write(&metadata_file, "enabled = true").await;
-            let _ = tokio::fs::write(&secret_file, "bravo").await;
-        });
-
         Ok(())
     }
 
@@ -736,6 +781,19 @@ impl App<(), ()> for ReloadingApp {
         fs: impl WFS + 'static,
         _metrics: Sender<O11yEvent<()>>,
     ) -> MainRetryAction {
+        let metadata_file = wora.dirs.metadata_root_dir.join("reloading.toml");
+        let secret_file = wora.dirs.secrets_root_dir.join("api_key");
+        let sender = wora.sender.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = tokio::fs::write(&metadata_file, "enabled = true").await;
+            let _ = tokio::fs::write(&secret_file, "bravo").await;
+            let config_event = ConfigChange::new(ChangeKind::Modified, metadata_file.clone(), vec![metadata_file]);
+            let secret_event = SecretChange::new(ChangeKind::Modified, vec![secret_file]);
+            let _ = sender.send(Event::ConfigChanged(config_event)).await;
+            let _ = sender.send(Event::SecretChanged(secret_event)).await;
+        });
+
         while let Some(event) = wora.receiver.recv().await {
             let _ = wora.apply_reload_event(self, fs.clone(), &event).await;
             if self.current_enabled && self.current_secret == "bravo" {
@@ -826,17 +884,12 @@ impl App<(), ()> for VirtualWatcherApp {
 
     async fn setup(
         &mut self,
-        wora: &Wora<(), ()>,
+        _wora: &Wora<(), ()>,
         _exec: impl AsyncExecutor<(), ()>,
-        fs: impl WFS + 'static,
+        _fs: impl WFS + 'static,
         _metrics: Sender<O11yEvent<()>>,
         _is_first_boot: bool,
     ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
-        let metadata_file = wora.dirs.metadata_root_dir.join("virtual_watcher.toml");
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            let _ = fs.write(&metadata_file, b"enabled = true").await;
-        });
         Ok(())
     }
 
@@ -847,6 +900,13 @@ impl App<(), ()> for VirtualWatcherApp {
         fs: impl WFS + 'static,
         _metrics: Sender<O11yEvent<()>>,
     ) -> MainRetryAction {
+        let metadata_file = wora.dirs.metadata_root_dir.join("virtual_watcher.toml");
+        let write_fs = fs.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = write_fs.write(&metadata_file, b"enabled = true").await;
+        });
+
         match wora
             .run_event_loop(self, fs, |app, _wora, event| match event {
                 Event::ConfigChanged(change) if app.current_enabled && change.main_config_changed => EventLoopAction::Exit(MainRetryAction::Success),
@@ -914,14 +974,18 @@ async fn runner_loads_initial_config_and_applies_restart_policy() -> Result<(), 
     let fs = PhysicalVFS::new();
     let o11y = test_o11y()?;
 
-    exec_async_runner_with_restart_policy(
+    exec_async_runner_with_options(
         exec,
         app,
         fs,
         o11y,
-        Some(root.join("boot")),
-        WorkloadRestartPolicy::RetryInstantly,
-        Duration::from_millis(1),
+        RunnerOptions::new()
+            .with_boot_dir(root.join("boot"))
+            .with_restart_options(RestartPolicyOptions {
+                policy: WorkloadRestartPolicy::RetryInstantly,
+                pause: Duration::from_millis(1),
+                ..RestartPolicyOptions::default()
+            }),
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -946,7 +1010,37 @@ async fn executor_runtime_event_sources_can_drive_control_flow() -> Result<(), B
         },
         PhysicalVFS::new(),
         test_o11y()?,
-        None,
+    )
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn runner_options_map_runtime_signals_to_app_events() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("signal-mapper");
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    let exec = UnixLikeBare::new("signal_mapped").await.with_signal_receiver(rx);
+
+    tx.send(RuntimeSignal::Hangup).await?;
+    drop(tx);
+
+    exec_async_runner_with_options(
+        exec,
+        SignalMappedApp,
+        PhysicalVFS::new(),
+        test_o11y()?,
+        RunnerOptions::new()
+            .with_boot_dir(root.join("boot"))
+            .with_signal_mapper(|signal| match signal {
+                RuntimeSignal::Hangup => Some(Event::App(SignalMappedEvent::ReloadAll)),
+                RuntimeSignal::Terminate | RuntimeSignal::Interrupt | RuntimeSignal::Quit => {
+                    Some(Event::Control(ControlEvent::Shutdown(Some(Utc::now().naive_utc()))))
+                }
+                RuntimeSignal::User1 | RuntimeSignal::User2 => None,
+            })
+            .with_lock_backend(InMemoryLockBackend::default()),
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -961,7 +1055,7 @@ async fn delayed_readiness_reports_trigger_executor_ready_hook() -> Result<(), B
     let dirs = test_dirs(root.clone());
     std::fs::create_dir_all(&dirs.runtime_root_dir)?;
 
-    exec_async_runner(
+    exec_async_runner_with_options(
         ReadyMarkerExec {
             dirs,
             ready_file: ready_file.clone(),
@@ -969,7 +1063,7 @@ async fn delayed_readiness_reports_trigger_executor_ready_hook() -> Result<(), B
         DeferredReadyApp,
         PhysicalVFS::new(),
         test_o11y()?,
-        Some(root.join("boot")),
+        RunnerOptions::new().with_boot_dir(root.join("boot")),
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -985,22 +1079,23 @@ async fn failed_health_can_trigger_restart_policy() -> Result<(), Box<dyn std::e
     std::fs::create_dir_all(&dirs.runtime_root_dir)?;
 
     let calls = Arc::new(Mutex::new(0));
-    let rc = exec_async_runner_with_restart_options(
+    let rc = exec_async_runner_with_options(
         TestExec { dirs },
         HealthFailureApp { calls: calls.clone() },
         PhysicalVFS::new(),
         test_o11y()?,
-        Some(root.join("boot")),
-        RestartPolicyOptions {
-            policy: WorkloadRestartPolicy::RetryInstantly,
-            max_retries: Some(1),
-            supervision: SupervisionOptions {
-                shutdown_grace_period: Duration::from_millis(50),
-                unhealthy_action: UnhealthyAction::UseRestartPolicy,
-                ..SupervisionOptions::default()
-            },
-            ..RestartPolicyOptions::default()
-        },
+        RunnerOptions::new()
+            .with_boot_dir(root.join("boot"))
+            .with_restart_options(RestartPolicyOptions {
+                policy: WorkloadRestartPolicy::RetryInstantly,
+                max_retries: Some(1),
+                supervision: SupervisionOptions {
+                    shutdown_grace_period: Duration::from_millis(50),
+                    unhealthy_action: UnhealthyAction::UseRestartPolicy,
+                    ..SupervisionOptions::default()
+                },
+                ..RestartPolicyOptions::default()
+            }),
     )
     .await;
 
@@ -1030,23 +1125,24 @@ async fn shutdown_request_enters_draining_before_stopping() -> Result<(), Box<dy
     });
 
     let start = std::time::Instant::now();
-    exec_async_runner_with_restart_options_and_lock_backend(
+    exec_async_runner_with_options(
         exec,
         DelayedShutdownApp {
             delay: Duration::from_millis(40),
         },
         fs,
         test_o11y()?,
-        Some(root.join("boot")),
-        RestartPolicyOptions {
-            supervision: SupervisionOptions {
-                drain_grace_period: Duration::from_millis(20),
-                shutdown_grace_period: Duration::from_millis(50),
-                ..SupervisionOptions::default()
-            },
-            ..RestartPolicyOptions::default()
-        },
-        InMemoryLockBackend::default(),
+        RunnerOptions::new()
+            .with_boot_dir(root.join("boot"))
+            .with_restart_options(RestartPolicyOptions {
+                supervision: SupervisionOptions {
+                    drain_grace_period: Duration::from_millis(20),
+                    shutdown_grace_period: Duration::from_millis(50),
+                    ..SupervisionOptions::default()
+                },
+                ..RestartPolicyOptions::default()
+            })
+            .with_lock_backend(InMemoryLockBackend::default()),
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -1068,7 +1164,7 @@ async fn typed_config_and_secret_reload_helpers_apply_runtime_changes() -> Resul
     std::fs::write(dirs.metadata_root_dir.join("reloading.toml"), "enabled = false")?;
     std::fs::write(dirs.secrets_root_dir.join("api_key"), "alpha")?;
 
-    exec_async_runner(
+    exec_async_runner_with_options(
         TestExec { dirs },
         ReloadingApp {
             initial_config_loaded: false,
@@ -1077,7 +1173,7 @@ async fn typed_config_and_secret_reload_helpers_apply_runtime_changes() -> Resul
         },
         PhysicalVFS::new(),
         test_o11y()?,
-        Some(root.join("boot")),
+        RunnerOptions::new().with_boot_dir(root.join("boot")),
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -1093,12 +1189,12 @@ async fn run_event_loop_auto_applies_typed_reload_before_handler() -> Result<(),
     std::fs::create_dir_all(&dirs.runtime_root_dir)?;
     std::fs::write(dirs.metadata_root_dir.join("helper_loop.toml"), "enabled = false")?;
 
-    exec_async_runner(
+    exec_async_runner_with_options(
         TestExec { dirs },
         HelperLoopApp { current_enabled: false },
         PhysicalVFS::new(),
         test_o11y()?,
-        Some(root.join("boot")),
+        RunnerOptions::new().with_boot_dir(root.join("boot")),
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -1151,7 +1247,7 @@ async fn runner_reports_already_running_when_lock_is_held() -> Result<(), Box<dy
     let held_path = dirs.runtime_root_dir.join("configured_restart.lock");
     let _guard = lock_backend.try_lock(&held_path)?;
 
-    let result = exec_async_runner_with_restart_options_and_lock_backend(
+    let result = exec_async_runner_with_options(
         TestExec { dirs },
         ConfiguredRestartApp {
             configured: false,
@@ -1159,9 +1255,7 @@ async fn runner_reports_already_running_when_lock_is_held() -> Result<(), Box<dy
         },
         fs,
         o11y,
-        Some(root.join("boot")),
-        RestartPolicyOptions::default(),
-        lock_backend,
+        RunnerOptions::new().with_boot_dir(root.join("boot")).with_lock_backend(lock_backend),
     )
     .await;
 
@@ -1181,26 +1275,24 @@ async fn runner_marks_only_the_first_invocation_as_first_boot() -> Result<(), Bo
     let calls = Arc::new(Mutex::new(Vec::new()));
     let boot_root = PathBuf::from("/boot-state");
 
-    exec_async_runner_with_restart_options_and_lock_backend(
+    exec_async_runner_with_options(
         TestExec { dirs: dirs.clone() },
         BootTrackingApp { calls: calls.clone() },
         fs.clone(),
         test_o11y()?,
-        Some(boot_root.clone()),
-        RestartPolicyOptions::default(),
-        InMemoryLockBackend::default(),
+        RunnerOptions::new()
+            .with_boot_dir(boot_root.clone())
+            .with_lock_backend(InMemoryLockBackend::default()),
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
 
-    exec_async_runner_with_restart_options_and_lock_backend(
+    exec_async_runner_with_options(
         TestExec { dirs },
         BootTrackingApp { calls: calls.clone() },
         fs,
         test_o11y()?,
-        Some(boot_root),
-        RestartPolicyOptions::default(),
-        InMemoryLockBackend::default(),
+        RunnerOptions::new().with_boot_dir(boot_root).with_lock_backend(InMemoryLockBackend::default()),
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -1219,16 +1311,14 @@ async fn runner_rejects_directory_boot_markers() -> Result<(), Box<dyn std::erro
     fs.create_dir(&boot_root).await?;
     fs.create_dir(boot_root.join(".boot_tracking.booted")).await?;
 
-    let result = exec_async_runner_with_restart_options_and_lock_backend(
+    let result = exec_async_runner_with_options(
         TestExec { dirs },
         BootTrackingApp {
             calls: Arc::new(Mutex::new(Vec::new())),
         },
         fs,
         test_o11y()?,
-        Some(boot_root),
-        RestartPolicyOptions::default(),
-        InMemoryLockBackend::default(),
+        RunnerOptions::new().with_boot_dir(boot_root).with_lock_backend(InMemoryLockBackend::default()),
     )
     .await;
 
@@ -1249,14 +1339,14 @@ async fn exec_async_runner_supports_in_memory_vfs_watchers() -> Result<(), Box<d
     fs.create_dir(&dirs.metadata_root_dir).await?;
     fs.write(dirs.metadata_root_dir.join("virtual_watcher.toml"), b"enabled = false").await?;
 
-    exec_async_runner_with_restart_options_and_lock_backend(
+    exec_async_runner_with_options(
         TestExec { dirs },
         VirtualWatcherApp { current_enabled: false },
         fs,
         test_o11y()?,
-        Some(root.join("boot")),
-        RestartPolicyOptions::default(),
-        InMemoryLockBackend::default(),
+        RunnerOptions::new()
+            .with_boot_dir(root.join("boot"))
+            .with_lock_backend(InMemoryLockBackend::default()),
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -1320,9 +1410,15 @@ async fn runner_emits_host_process_and_runtime_metrics() -> Result<(), Box<dyn s
     std::fs::create_dir_all(&dirs.runtime_root_dir)?;
     let (o11y, mut rx) = test_o11y_with_receiver(Duration::from_millis(10))?;
 
-    exec_async_runner(TestExec { dirs }, MetricsApp, PhysicalVFS::new(), o11y, Some(root.join("boot")))
-        .await
-        .map_err(|err| std::io::Error::other(err.to_string()))?;
+    exec_async_runner_with_options(
+        TestExec { dirs },
+        MetricsApp,
+        PhysicalVFS::new(),
+        o11y,
+        RunnerOptions::new().with_boot_dir(root.join("boot")),
+    )
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
 
     let mut saw_host_stats = false;
     let mut saw_process_stats = false;
@@ -1376,15 +1472,14 @@ async fn runner_uses_injected_runtime_environment() -> Result<(), Box<dyn std::e
         }),
     };
 
-    exec_async_runner_with_restart_options_lock_backend_and_runtime_environment(
+    exec_async_runner_with_options(
         TestExec { dirs },
         MetricsApp,
         PhysicalVFS::new(),
         o11y,
-        Some(root.join("boot")),
-        RestartPolicyOptions::default(),
-        ProcLockBackend,
-        runtime_environment,
+        RunnerOptions::new()
+            .with_boot_dir(root.join("boot"))
+            .with_runtime_environment(runtime_environment),
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -1480,12 +1575,12 @@ async fn initial_secret_load_skips_missing_secret_directory() -> Result<(), Box<
     std::fs::create_dir_all(&dirs.runtime_root_dir)?;
     std::fs::write(dirs.metadata_root_dir.join("missing_secrets.toml"), "enabled = true")?;
 
-    exec_async_runner(
+    exec_async_runner_with_options(
         TestExec { dirs },
         MissingSecretsApp::default(),
         PhysicalVFS::new(),
         test_o11y()?,
-        Some(root.join("boot")),
+        RunnerOptions::new().with_boot_dir(root.join("boot")),
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -1574,16 +1669,14 @@ async fn container_executor_accepts_injected_control_events() -> Result<(), Box<
         let _ = tx.send(ControlEvent::Shutdown(None)).await;
     });
 
-    exec_async_runner_with_restart_options_and_lock_backend(
+    exec_async_runner_with_options(
         exec,
         ControlDrivenApp {
             name: "container_control_runtime_sources",
         },
         fs,
         test_o11y()?,
-        None,
-        RestartPolicyOptions::default(),
-        InMemoryLockBackend::default(),
+        RunnerOptions::new().with_lock_backend(InMemoryLockBackend::default()),
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -1628,17 +1721,18 @@ async fn retry_instantly_stops_at_max_retries() -> Result<(), Box<dyn std::error
         name: "retry_instantly_limit",
         calls: calls.clone(),
     };
-    let rc = exec_async_runner_with_restart_options(
+    let rc = exec_async_runner_with_options(
         TestExec { dirs },
         app,
         PhysicalVFS::new(),
         test_o11y()?,
-        Some(root.join("boot")),
-        RestartPolicyOptions {
-            policy: WorkloadRestartPolicy::RetryInstantly,
-            max_retries: Some(2),
-            ..RestartPolicyOptions::default()
-        },
+        RunnerOptions::new()
+            .with_boot_dir(root.join("boot"))
+            .with_restart_options(RestartPolicyOptions {
+                policy: WorkloadRestartPolicy::RetryInstantly,
+                max_retries: Some(2),
+                ..RestartPolicyOptions::default()
+            }),
     )
     .await;
 
@@ -1659,18 +1753,19 @@ async fn retry_pause_stops_at_max_retries() -> Result<(), Box<dyn std::error::Er
         name: "retry_pause_limit",
         calls: calls.clone(),
     };
-    let rc = exec_async_runner_with_restart_options(
+    let rc = exec_async_runner_with_options(
         TestExec { dirs },
         app,
         PhysicalVFS::new(),
         test_o11y()?,
-        Some(root.join("boot")),
-        RestartPolicyOptions {
-            policy: WorkloadRestartPolicy::RetryPause,
-            pause: Duration::ZERO,
-            max_retries: Some(1),
-            ..RestartPolicyOptions::default()
-        },
+        RunnerOptions::new()
+            .with_boot_dir(root.join("boot"))
+            .with_restart_options(RestartPolicyOptions {
+                policy: WorkloadRestartPolicy::RetryPause,
+                pause: Duration::ZERO,
+                max_retries: Some(1),
+                ..RestartPolicyOptions::default()
+            }),
     )
     .await;
 
@@ -1705,13 +1800,14 @@ async fn exit_with_workload_return_exits_immediately() -> Result<(), Box<dyn std
         name: "exit_with_workload_return",
         calls: calls.clone(),
     };
-    let rc = exec_async_runner_with_restart_options(
+    let rc = exec_async_runner_with_options(
         TestExec { dirs },
         app,
         PhysicalVFS::new(),
         test_o11y()?,
-        Some(root.join("boot")),
-        RestartPolicyOptions::new(WorkloadRestartPolicy::ExitWithWorkloadReturn),
+        RunnerOptions::new()
+            .with_boot_dir(root.join("boot"))
+            .with_restart_options(RestartPolicyOptions::new(WorkloadRestartPolicy::ExitWithWorkloadReturn)),
     )
     .await;
 
