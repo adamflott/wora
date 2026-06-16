@@ -105,16 +105,22 @@ pub enum SystemResourceStat {
 ///
 /// Executors should translate environment-specific lifecycle inputs into these
 /// events so applications can react without depending on a specific OS signal
-/// or control mechanism.
+/// or control mechanism. The runner supervises shutdown requests specially;
+/// reload, suspend, and log-rotation requests are delivered to the application
+/// as control notifications unless the app maps the original signal to a
+/// different event with [`crate::RunnerOptions::with_signal_mapper`].
 #[derive(Clone, Debug, Serialize)]
 pub enum ControlEvent {
-    /// Request configuration reload.
+    /// Request application-handled configuration reload.
+    ///
+    /// This event is not automatically converted into a typed
+    /// `Event::ConfigChanged` reload by the runner.
     ReloadConfiguration,
-    /// Request graceful suspension.
+    /// Request application-handled graceful suspension.
     Suspend(Option<chrono::NaiveDateTime>),
     /// Request graceful shutdown.
     Shutdown(Option<chrono::NaiveDateTime>),
-    /// Request log rotation or log sink reopen.
+    /// Request application-handled log rotation or log sink reopen.
     LogRotation,
 }
 

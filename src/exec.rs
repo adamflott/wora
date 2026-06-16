@@ -42,6 +42,8 @@ pub type SignalMapper<AppEv> = std::sync::Arc<dyn Fn(RuntimeSignal) -> Option<Ev
 /// The default preserves the historical built-in executor behavior:
 /// `SIGHUP` requests configuration reload, `SIGTERM`/`SIGINT`/`SIGQUIT`
 /// request shutdown, `SIGUSR1` requests log rotation, and `SIGUSR2` is ignored.
+/// Only shutdown is supervised by the runner; reload and log rotation are
+/// delivered to the application as control events.
 pub fn default_signal_mapper<AppEv>() -> SignalMapper<AppEv> {
     std::sync::Arc::new(|signal| match signal {
         RuntimeSignal::Hangup => Some(Event::Control(ControlEvent::ReloadConfiguration)),

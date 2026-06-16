@@ -18,6 +18,12 @@ use crate::events::{ControlEvent, Event};
 use crate::{AsyncExecutor, RuntimeSignal, SignalMapper, WFS, default_signal_mapper};
 
 /// Shared Unix-like directory layout.
+///
+/// Built-in Unix-like executors convert OS signals into [`RuntimeSignal`]
+/// values and then apply the runner's signal mapper. The default mapper
+/// preserves WORA's historical control-event behavior, while
+/// [`crate::RunnerOptions::with_signal_mapper`] lets applications map those
+/// signals to app-defined events.
 #[derive(Clone, Debug)]
 pub struct UnixLike {
     /// Directories used by the executor.

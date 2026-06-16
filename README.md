@@ -9,14 +9,15 @@ This crate is an early-stage async framework. The main public API is usable, wit
 - restart policies, shutdown supervision, and signal mapping can be applied with `RunnerOptions` through `exec_async_runner_with_options`
 - initial typed config and secret loading is built into the runner
 - event-driven apps can use `Wora::run_event_loop` to auto-apply typed reloads
+- `RunnerOptions::with_signal_mapper(...)` lets apps map Unix-like signals to control or app-defined events
 - observability can be routed through sinks via `O11yProcessor`
 
 ## Feature Tour
 
 - abstracts over common boilerplate with an API
 - execute the same code in different executors (with or without recompiling)
-- translates platform-specific control inputs into runtime control events
-- watches metadata and secrets directories and emits typed reload events
+- translates platform-specific control inputs into runtime control or app-defined events
+- watches existing metadata and secrets directories and emits typed reload events
 - supervises readiness, health, and graceful shutdown
 - exposes host, process, runtime, and tracing observability events
 - ships observability sinks and a processor for fan-out
@@ -45,6 +46,10 @@ WORA has five main pieces:
 
 `exec_async_runner` wires those pieces together by creating a lock file, initializing observability, building the `Wora` context, running executor and app setup, loading initial config and secrets, watching the metadata and secrets directories, invoking `App::main`, supervising shutdown/readiness/health, and then running teardown.
 
+The runner always installs recursive watchers on both `metadata_root_dir` and `secrets_root_dir` after executor and app setup. Executors should create both watch roots even when an app uses `NoConfig` or `NoSecrets`; initial loading skips missing config/secrets directories, but watcher installation expects those directories to exist.
+
+Typed config and secret reloads are driven by filesystem watcher events (`Event::ConfigChanged` and `Event::SecretChanged`). `ControlEvent::ReloadConfiguration`, `ControlEvent::Suspend`, and `ControlEvent::LogRotation` are app-level control notifications: the runner delivers them to the app but does not automatically reload files, suspend work, or rotate sinks for the app. Use `RunnerOptions::with_signal_mapper(...)` when the default Unix-like signal mapping should produce app-defined events instead.
+
 When a lock backend reports contention, the runner returns `MainEarlyReturn::AlreadyRunning(...)` instead of collapsing that case into a generic exit code.
 
 ## Getting Started
@@ -53,7 +58,7 @@ These instructions will get you a copy of the project up and running on your loc
 
 ### Prerequisites
 
-* Rust >= 1.95
+* Rust 1.95 or newer. The crate declares `rust-version = "1.95"` and the checked-in `rust-toolchain.toml` pins `1.95.0` for repository builds.
 
 ## Usage
 

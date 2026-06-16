@@ -925,8 +925,8 @@ where
 /// Options used by the async runner.
 ///
 /// This is the preferred extension point for app-typed runtime policies such
-/// as signal mapping. Existing convenience runner functions continue to build
-/// this options type internally.
+/// as signal mapping and for runner infrastructure choices such as lock
+/// backend, restart behavior, boot-state location, and telemetry provider.
 #[derive(Clone)]
 pub struct RunnerOptions<AppEv, L = ProcLockBackend, R = SystemRuntimeEnvironment> {
     /// Optional boot-state directory. Defaults to WORA's host temp boot root.
@@ -934,6 +934,12 @@ pub struct RunnerOptions<AppEv, L = ProcLockBackend, R = SystemRuntimeEnvironmen
     /// Restart and supervision behavior.
     pub restart: RestartPolicyOptions,
     /// Translate platform signals into application/runtime events.
+    ///
+    /// The default mapper turns `SIGHUP` into
+    /// `ControlEvent::ReloadConfiguration`, `SIGUSR1` into
+    /// `ControlEvent::LogRotation`, and termination signals into shutdown.
+    /// The runner supervises shutdown; reload/log-rotation controls are
+    /// delivered to the application.
     pub signal_mapper: SignalMapper<AppEv>,
     /// Lock backend used to serialize workload execution.
     pub lock_backend: L,
@@ -1002,7 +1008,12 @@ impl<AppEv: Send + Sync + 'static, L, R> RunnerOptions<AppEv, L, R> {
     }
 }
 
-/// Run apps via an `async` based executor
+/// Run apps via an `async` based executor with default [`RunnerOptions`].
+///
+/// The executor is expected to create all configured directory roots during
+/// setup, including `metadata_root_dir` and `secrets_root_dir`. The runner
+/// installs watchers on both roots after setup so it can emit typed config and
+/// secret reload events.
 pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static>(
     exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
     app: impl App<AppEv, AppMetric> + Send + 'static,
@@ -1013,6 +1024,11 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
 }
 
 /// Run apps via an `async` based executor with explicit runner options.
+///
+/// The executor is expected to create all configured directory roots during
+/// setup, including `metadata_root_dir` and `secrets_root_dir`. The runner
+/// installs watchers on both roots after setup so it can emit typed config and
+/// secret reload events.
 #[allow(clippy::too_many_lines)]
 pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static, L: LockBackend, R: RuntimeEnvironment>(
     exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
