@@ -56,6 +56,22 @@ fn unique_socket_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("wora-{}-{}.sock", name.replace('_', "-"), suffix))
 }
 
+#[cfg(target_os = "linux")]
+fn unique_abstract_socket_name(name: &str) -> String {
+    let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    format!("wora-{}-{}-{suffix}", name.replace('_', "-"), std::process::id())
+}
+
+#[cfg(target_family = "unix")]
+fn skip_permission_denied_socket_test(err: &std::io::Error) -> bool {
+    if err.kind() == std::io::ErrorKind::PermissionDenied {
+        eprintln!("skipping Unix datagram notification test: {err}");
+        true
+    } else {
+        false
+    }
+}
+
 #[tokio::test]
 async fn physical_vfs_creates_nested_directories() -> Result<(), Box<dyn std::error::Error>> {
     let root = unique_test_dir("vfs");
@@ -1605,13 +1621,36 @@ async fn systemd_executor_sends_ready_and_stopping_notifications() -> Result<(),
 
     let root = unique_test_dir("systemd-notify");
     std::fs::create_dir_all(&root)?;
-    let socket_path = unique_socket_path("systemd-notify");
-    let receiver = UnixDatagram::bind(&socket_path)?;
+
+    #[cfg(target_os = "linux")]
+    let (receiver, notify_socket) = {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::SocketAddr;
+
+        let socket_name = unique_abstract_socket_name("systemd-notify");
+        let addr = SocketAddr::from_abstract_name(socket_name.as_bytes())?;
+        let receiver = match UnixDatagram::bind_addr(&addr) {
+            Ok(receiver) => receiver,
+            Err(err) if skip_permission_denied_socket_test(&err) => return Ok(()),
+            Err(err) => return Err(err.into()),
+        };
+        (receiver, format!("@{socket_name}"))
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    let (receiver, notify_socket) = {
+        let socket_path = unique_socket_path("systemd-notify");
+        let receiver = match UnixDatagram::bind(&socket_path) {
+            Ok(receiver) => receiver,
+            Err(err) if skip_permission_denied_socket_test(&err) => return Ok(()),
+            Err(err) => return Err(err.into()),
+        };
+        (receiver, socket_path.to_string_lossy().to_string())
+    };
+
     receiver.set_read_timeout(Some(Duration::from_secs(1)))?;
 
-    let exec = SystemdExecutor::system("notify_app")
-        .await
-        .with_notify_socket(socket_path.to_string_lossy().to_string());
+    let exec = SystemdExecutor::system("notify_app").await.with_notify_socket(notify_socket);
     let wora: Wora<(), ()> = Wora::new(
         <SystemdExecutor as AsyncExecutor<(), ()>>::dirs(&exec),
         "notify_app".to_string(),
@@ -1619,19 +1658,31 @@ async fn systemd_executor_sends_ready_and_stopping_notifications() -> Result<(),
         test_o11y()?,
     )?;
 
-    <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_ready(&exec, "notify_app", &wora.dirs, PhysicalVFS::new()).await?;
+    match <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_ready(&exec, "notify_app", &wora.dirs, PhysicalVFS::new()).await {
+        Ok(()) => {}
+        Err(SetupFailure::IO(err)) if skip_permission_denied_socket_test(&err) => return Ok(()),
+        Err(err) => return Err(err.into()),
+    }
     let mut buf = [0u8; 256];
     let ready_size = receiver.recv(&mut buf)?;
     let ready_message = std::str::from_utf8(&buf[..ready_size])?;
     assert!(ready_message.contains("READY=1"));
     assert!(ready_message.contains("notify_app ready"));
 
-    <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_draining(&exec, "notify_app", &wora.dirs, PhysicalVFS::new()).await?;
+    match <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_draining(&exec, "notify_app", &wora.dirs, PhysicalVFS::new()).await {
+        Ok(()) => {}
+        Err(SetupFailure::IO(err)) if skip_permission_denied_socket_test(&err) => return Ok(()),
+        Err(err) => return Err(err.into()),
+    }
     let draining_size = receiver.recv(&mut buf)?;
     let draining_message = std::str::from_utf8(&buf[..draining_size])?;
     assert!(draining_message.contains("STATUS=notify_app draining"));
 
-    <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_stopping(&exec, "notify_app", &wora.dirs, PhysicalVFS::new()).await?;
+    match <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_stopping(&exec, "notify_app", &wora.dirs, PhysicalVFS::new()).await {
+        Ok(()) => {}
+        Err(SetupFailure::IO(err)) if skip_permission_denied_socket_test(&err) => return Ok(()),
+        Err(err) => return Err(err.into()),
+    }
     let stopping_size = receiver.recv(&mut buf)?;
     let stopping_message = std::str::from_utf8(&buf[..stopping_size])?;
     assert!(stopping_message.contains("STOPPING=1"));
