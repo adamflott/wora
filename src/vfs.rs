@@ -89,7 +89,7 @@ pub trait WFS: Debug + Clone + Send + Sync {
     /// Read a file into raw bytes.
     async fn read<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<Vec<u8>, VfsError>;
 
-    /// Return whether `path` exists.
+    /// Return whether `path` exists and is a directory.
     async fn dir_exists<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<bool, VfsError>;
 }
 
@@ -154,7 +154,11 @@ impl WFS for PhysicalVFS {
     }
 
     async fn dir_exists<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<bool, VfsError> {
-        tokio::fs::try_exists(path).await.map_err(VfsError::Io)
+        match tokio::fs::metadata(path).await {
+            Ok(metadata) => Ok(metadata.is_dir()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(VfsError::Io(err)),
+        }
     }
 }
 
@@ -424,7 +428,7 @@ impl WFS for InMemoryVFS {
 
     async fn dir_exists<P: AsRef<Path> + Send + Sync>(&self, path: P) -> Result<bool, VfsError> {
         let normalized = normalize_path(path.as_ref());
-        self.with_state(|state| Ok(state.nodes.contains_key(&normalized)))
+        self.with_state(|state| Ok(matches!(state.nodes.get(&normalized), Some(InMemoryNode::Directory))))
     }
 }
 
@@ -440,6 +444,7 @@ mod tests {
         fs.write("/app/config/demo.toml", b"enabled = true").await?;
 
         assert!(fs.dir_exists("/app/config").await?);
+        assert!(!fs.dir_exists("/app/config/demo.toml").await?);
         assert_eq!(fs.read_to_string("/app/config/demo.toml").await?, "enabled = true");
 
         let entries = fs.list_dir("/app/config").await?;
@@ -504,6 +509,8 @@ mod tests {
 
         let entries = fs.list_dir(parent).await?;
         assert_eq!(entries, vec![file_path.clone()]);
+        assert!(fs.dir_exists(parent).await?);
+        assert!(!fs.dir_exists(&file_path).await?);
         assert_eq!(fs.read_to_string(&file_path).await?, "hello");
 
         fs.remove_file(&file_path).await?;
