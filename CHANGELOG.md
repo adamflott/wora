@@ -5,6 +5,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- next-header -->
+## [0.0.15] - 2026-07-01
+
+### Features
+
+- Add `RunnerOptions` as the consolidated async runner configuration API for boot-state directory, restart behavior, signal mapping, lock backend, and runtime environment injection.
+- Add `exec_async_runner_with_options(...)` as the preferred runner entry point for customized runner behavior.
+- Add `RuntimeSignal`, `SignalMapper`, and `default_signal_mapper(...)` for mapping Unix-like runtime signals into WORA events.
+- Allow built-in Unix-like, `systemd`, `launchd`, and container executors to accept injected runtime signals for deterministic tests and custom signal mapping.
+
+### Changes
+
+- Simplify `exec_async_runner(...)` to run with default `RunnerOptions`.
+- Replace the older specialized runner helper exports with `exec_async_runner_with_options(...)` and `RunnerOptions` in the prelude.
+- Clarify that reload, suspend, and log-rotation control events are app-level notifications; typed config and secret reloads remain driven by filesystem watcher events.
+- Update examples to use the simplified `exec_async_runner(...)` signature.
+- Pin the repository toolchain to Rust `1.95.0`, matching the crate's declared `rust-version`.
+
+### Fixes
+
+- Make `WFS::dir_exists(...)` return `true` only for directories, not regular files.
+- Remove blocking `futures::executor::block_on` usage from the physical filesystem watcher callback.
+- Make watcher callbacks drop or skip events when the receiver channel is full or closed instead of blocking.
+- Make runtime event source tests more deterministic with injected controls/signals and in-memory filesystem/lock backends.
+- Harden the `systemd` notification test for Linux abstract sockets and permission-denied environments.
+
+### Tests
+
+- Re-enable coverage for executor runtime event sources driving control flow.
+- Add coverage for mapping runtime signals to app-defined events through `RunnerOptions::with_signal_mapper(...)`.
+- Update runner tests to cover the consolidated `RunnerOptions` API.
+
+### Documentation
+
+- Document runner signal mapping, watcher root expectations, and app-handled control events in README and Rustdoc.
+- Update README prerequisites to describe the pinned Rust `1.95.0` repository toolchain.
+
+### CI / Tooling
+
+- Update `actions/checkout` from v6 to v7.
+
 ## [0.0.14] - 2026-06-14
 
 ### Features
