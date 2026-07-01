@@ -1013,9 +1013,15 @@ async fn runner_loads_initial_config_and_applies_restart_policy() -> Result<(), 
 
 #[tokio::test]
 async fn executor_runtime_event_sources_can_drive_control_flow() -> Result<(), Box<dyn std::error::Error>> {
-    let root = unique_test_dir("control-event-runtime-sources");
+    let dirs = test_dirs(PathBuf::from("/control-event-runtime-sources"));
+    let phases = Arc::new(Mutex::new(Vec::new()));
     let (tx, rx) = tokio::sync::mpsc::channel(4);
-    let exec = ContainerExecutor::new("control_event").await.with_control_event_receiver(rx);
+    let exec = DrainingTrackerExec {
+        dirs,
+        phases,
+        control_events: Arc::new(tokio::sync::Mutex::new(None)),
+    }
+    .with_control_event_receiver(rx);
 
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1029,10 +1035,10 @@ async fn executor_runtime_event_sources_can_drive_control_flow() -> Result<(), B
             ControlDrivenApp {
                 name: "control_event_runtime_sources",
             },
-            PhysicalVFS::new(),
+            InMemoryVFS::new(),
             test_o11y()?,
             RunnerOptions::new()
-                .with_boot_dir(root.join("boot"))
+                .with_boot_dir(PathBuf::from("/control-event-boot"))
                 .with_lock_backend(InMemoryLockBackend::default()),
         ),
     )
