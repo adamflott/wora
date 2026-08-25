@@ -89,6 +89,11 @@ struct TestExec {
     dirs: Dirs,
 }
 
+#[derive(Clone, Debug)]
+struct PreconfiguredExec {
+    dirs: Dirs,
+}
+
 #[async_trait]
 impl AsyncExecutor<(), ()> for TestExec {
     fn id(&self) -> &'static str {
@@ -111,6 +116,27 @@ impl AsyncExecutor<(), ()> for TestExec {
         ] {
             fs.create_dir(dir).await?;
         }
+        Ok(())
+    }
+
+    async fn is_ready(&self, _wora: &Wora<(), ()>, _fs: impl WFS) -> bool {
+        true
+    }
+
+    async fn end(&self, _wora: &Wora<(), ()>, _fs: impl WFS) {}
+}
+
+#[async_trait]
+impl AsyncExecutor<(), ()> for PreconfiguredExec {
+    fn id(&self) -> &'static str {
+        "preconfigured-test"
+    }
+
+    fn dirs(&self) -> &Dirs {
+        &self.dirs
+    }
+
+    async fn setup(&mut self, _wora: &Wora<(), ()>, _fs: impl WFS) -> Result<(), SetupFailure> {
         Ok(())
     }
 
@@ -1810,6 +1836,40 @@ async fn initial_secret_load_skips_missing_secret_directory() -> Result<(), Box<
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn initial_config_load_propagates_non_missing_filesystem_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("invalid-config-root");
+    let dirs = test_dirs(root.clone());
+    for dir in [
+        &dirs.root_dir,
+        &dirs.log_root_dir,
+        &dirs.data_root_dir,
+        &dirs.runtime_root_dir,
+        &dirs.cache_root_dir,
+        &dirs.secrets_root_dir,
+    ] {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&dirs.metadata_root_dir, "not a directory")?;
+
+    let result = exec_async_runner_with_options(
+        PreconfiguredExec { dirs },
+        MetricsApp,
+        PhysicalVFS::new(),
+        test_o11y()?,
+        RunnerOptions::new().with_boot_dir(root.join("boot")),
+    )
+    .await;
+
+    match result {
+        Err(MainEarlyReturn::Vfs(VfsError::Io(err))) => {
+            assert!(matches!(err.kind(), std::io::ErrorKind::NotADirectory | std::io::ErrorKind::Other));
+        }
+        other => panic!("unexpected runner result: {other:?}"),
+    }
     Ok(())
 }
 

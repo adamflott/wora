@@ -582,10 +582,11 @@ where
                 .map_err(|err| WoraSetupError::Str(format!("failed to apply config {}: {}", wora.dirs.metadata_root_dir.display(), err)))?;
             Ok(())
         }
-        Err(ReloadError::Vfs(err)) => {
+        Err(ReloadError::Vfs(VfsError::Io(err))) if err.kind() == std::io::ErrorKind::NotFound => {
             debug!("config:init:skip path:{} error:{}", wora.dirs.metadata_root_dir.display(), err);
             Ok(())
         }
+        Err(ReloadError::Vfs(err)) => Err(MainEarlyReturn::Vfs(err)),
         Err(err) => Err(WoraSetupError::Str(err.to_string()).into()),
     }
 }
@@ -606,10 +607,11 @@ where
             }
             Ok(())
         }
-        Err(ReloadError::Vfs(err)) => {
+        Err(ReloadError::Vfs(VfsError::Io(err))) if err.kind() == std::io::ErrorKind::NotFound => {
             debug!("secrets:init:skip path:{} error:{}", wora.dirs.secrets_root_dir.display(), err);
             Ok(())
         }
+        Err(ReloadError::Vfs(err)) => Err(MainEarlyReturn::Vfs(err)),
         Err(err) => Err(WoraSetupError::Str(err.to_string()).into()),
     }
 }
