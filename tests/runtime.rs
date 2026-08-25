@@ -852,15 +852,20 @@ impl App<(), ()> for IgnoredHealthFailureApp {
         _fs: impl WFS + 'static,
         _metrics: Sender<O11yEvent<()>>,
     ) -> MainRetryAction {
-        tokio::select! {
-            event = wora.receiver.recv() => {
-                if matches!(event, Some(Event::Control(ControlEvent::Shutdown(_)))) {
-                    MainRetryAction::UseExitCode(22)
-                } else {
-                    MainRetryAction::UseExitCode(23)
+        let observation_window = tokio::time::sleep(Duration::from_millis(40));
+        tokio::pin!(observation_window);
+
+        loop {
+            tokio::select! {
+                event = wora.receiver.recv() => {
+                    match event {
+                        Some(Event::Control(ControlEvent::Shutdown(_))) => return MainRetryAction::UseExitCode(22),
+                        Some(_) => continue,
+                        None => return MainRetryAction::UseExitCode(23),
+                    }
                 }
+                _ = &mut observation_window => return MainRetryAction::Success,
             }
-            _ = tokio::time::sleep(Duration::from_millis(40)) => MainRetryAction::Success,
         }
     }
 
