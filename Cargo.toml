@@ -18,12 +18,10 @@ decimal-percentage = "0.1.4"
 derive-getters = "0.5.0"
 derive_builder = "0.20.2"
 directories = "6.0.0"
-futures = "0.3.32"
 libc = "0.2.186"
 log = "0.4.29"
 nix = { version = "0.31.3", features = ["process", "mman", "resource", "fs", "user"]}
 notify = { version = "8.2.0", features = ["serde"] }
-opentelemetry = "0.32.0"
 os_info = "3.15.0"
 proc-lock = "0.4.0"
 serde = { version = "1.0.228", features = ["derive"] }
