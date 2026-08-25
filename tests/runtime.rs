@@ -295,6 +295,8 @@ struct HealthFailureApp {
     calls: Arc<Mutex<u8>>,
 }
 
+struct IgnoredHealthFailureApp;
+
 #[derive(Default)]
 struct ReloadingConfig {
     enabled: bool,
@@ -753,6 +755,54 @@ impl App<(), ()> for HealthFailureApp {
 }
 
 #[async_trait]
+impl App<(), ()> for IgnoredHealthFailureApp {
+    type AppConfig = NoConfig;
+    type AppSecrets = NoSecrets;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        "ignored_health_failure"
+    }
+
+    async fn setup(
+        &mut self,
+        wora: &Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        let status = wora.status_handle();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            status.report_health(HealthState::Failed);
+        });
+        Ok(())
+    }
+
+    async fn main(
+        &mut self,
+        wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
+        tokio::select! {
+            event = wora.receiver.recv() => {
+                if matches!(event, Some(Event::Control(ControlEvent::Shutdown(_)))) {
+                    MainRetryAction::UseExitCode(22)
+                } else {
+                    MainRetryAction::UseExitCode(23)
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(40)) => MainRetryAction::Success,
+        }
+    }
+
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
+}
+
+#[async_trait]
 impl App<(), ()> for ReloadingApp {
     type AppConfig = ReloadingConfig;
     type AppSecrets = ReloadingSecrets;
@@ -1134,6 +1184,33 @@ async fn failed_health_can_trigger_restart_policy() -> Result<(), Box<dyn std::e
     let calls = calls.lock().map_err(|err| std::io::Error::other(err.to_string()))?;
     assert!(matches!(rc, Err(MainEarlyReturn::UseExitCode(1))));
     assert_eq!(*calls, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn ignored_health_failure_does_not_request_shutdown() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("health-ignore");
+    let dirs = test_dirs(root.clone());
+    std::fs::create_dir_all(&dirs.runtime_root_dir)?;
+
+    exec_async_runner_with_options(
+        TestExec { dirs },
+        IgnoredHealthFailureApp,
+        PhysicalVFS::new(),
+        test_o11y()?,
+        RunnerOptions::new()
+            .with_boot_dir(root.join("boot"))
+            .with_restart_options(RestartPolicyOptions {
+                supervision: SupervisionOptions {
+                    unhealthy_action: UnhealthyAction::Ignore,
+                    ..SupervisionOptions::default()
+                },
+                ..RestartPolicyOptions::default()
+            }),
+    )
+    .await
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
+
     Ok(())
 }
 

@@ -1095,13 +1095,14 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
 
             let health_supervision_sender = supervision_tx.clone();
             let health_event_sender = wora.sender.clone();
+            let unhealthy_action = restart.supervision.unhealthy_action.clone();
             let health_supervision_task = tokio::spawn(async move {
                 loop {
                     if health_rx.changed().await.is_err() {
                         break;
                     }
 
-                    if *health_rx.borrow() == HealthState::Failed {
+                    if *health_rx.borrow() == HealthState::Failed && !matches!(unhealthy_action, UnhealthyAction::Ignore) {
                         let timestamp = Some(Utc::now().naive_utc());
                         let _ = health_event_sender.send(Event::Control(ControlEvent::Shutdown(timestamp))).await;
                         let _ = health_supervision_sender
