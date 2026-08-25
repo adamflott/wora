@@ -68,9 +68,8 @@ jobs:
   # This job runs tests on cross compiled targets.
   #
   # We used to just have one test and do the same thing on normal targets and
-  # cross targets, but cross tests can take an obscenely long time. Especially
-  # the doc tests, where each one is compiled individually. (We haven't moved
-  # to Rust 2024 yet.)
+  # cross targets, but cross tests can take an obscenely long time, especially
+  # doc tests, where each one is compiled individually.
   cross:
     env:
       # Bump this as appropriate. We pin to a version to make sure CI

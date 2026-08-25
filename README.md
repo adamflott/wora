@@ -35,7 +35,7 @@ This crate is an early-stage async framework. The main public API is usable, wit
 
 ## Architecture
 
-WORA has five main pieces:
+WORA has six main pieces:
 
 - `App`: the workload lifecycle trait. Applications implement `setup`, `main`, `reload_config`, `reload_secrets`, and `end`.
 - `AsyncExecutor`: the environment adapter. Executors provide directories, setup, readiness, and teardown behavior.
@@ -44,9 +44,9 @@ WORA has five main pieces:
 - `LockBackend`: the single-instance coordination abstraction. `ProcLockBackend` uses host lock files and `InMemoryLockBackend` is useful for tests and fully virtual runner flows.
 - `O11yProcessor`: the observability pipeline for fan-out into sinks.
 
-`exec_async_runner` wires those pieces together by creating a lock file, initializing observability, building the `Wora` context, running executor and app setup, loading initial config and secrets, watching the metadata and secrets directories, invoking `App::main`, supervising shutdown/readiness/health, and then running teardown.
+`exec_async_runner` wires those pieces together by initializing observability, acquiring the runtime lock, building the `Wora` context, running executor setup, loading initial config and secrets, running app setup, watching the metadata and secrets directories, invoking `App::main`, supervising shutdown/readiness/health, and then running teardown.
 
-The runner always installs recursive watchers on both `metadata_root_dir` and `secrets_root_dir` after executor and app setup. Executors should create both watch roots even when an app uses `NoConfig` or `NoSecrets`; initial loading skips missing config/secrets directories, but watcher installation expects those directories to exist.
+The runner always installs recursive watchers on both `metadata_root_dir` and `secrets_root_dir` after executor and app setup. Executors must create both watch roots even when an app uses `NoConfig` or `NoSecrets`; initial loading skips roots that are absent, but watcher installation still requires them. The default filesystem lock backend creates the parent of its lock path before acquiring the lock, allowing executor setup to create the remaining roots afterward.
 
 Typed config and secret reloads are driven by filesystem watcher events (`Event::ConfigChanged` and `Event::SecretChanged`). `ControlEvent::ReloadConfiguration`, `ControlEvent::Suspend`, and `ControlEvent::LogRotation` are app-level control notifications: the runner delivers them to the app but does not automatically reload files, suspend work, or rotate sinks for the app. Use `RunnerOptions::with_signal_mapper(...)` when the default Unix-like signal mapping should produce app-defined events instead.
 
@@ -115,6 +115,6 @@ See also the list of [contributors](https://github.com/adamflott/wora/contributo
 
 ## License
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details
+This project is dual-licensed under either the [MIT License](LICENSE-MIT) or the [Apache License 2.0](LICENSE-APACHE), at your option.
 
 ## Acknowledgments

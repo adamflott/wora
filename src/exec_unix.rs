@@ -304,7 +304,9 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
 /// Executor that maps every directory to `/tmp`.
 ///
 /// Useful for smoke tests or constrained environments where the normal system
-/// and user directory layouts are not available.
+/// and user directory layouts are not available. This layout is not isolated:
+/// metadata and secret loading scans `/tmp`, and both recursive watchers observe
+/// unrelated changes there. Prefer an app-scoped executor for production use.
 #[derive(Clone, Debug)]
 pub struct UnixLikeBare {
     unix: UnixLike,

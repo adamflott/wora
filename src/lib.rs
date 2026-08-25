@@ -1012,10 +1012,10 @@ impl<AppEv: Send + Sync + 'static, L, R> RunnerOptions<AppEv, L, R> {
 
 /// Run apps via an `async` based executor with default [`RunnerOptions`].
 ///
-/// The executor is expected to create all configured directory roots during
-/// setup, including `metadata_root_dir` and `secrets_root_dir`. The runner
-/// installs watchers on both roots after setup so it can emit typed config and
-/// secret reload events.
+/// The executor must create `metadata_root_dir` and `secrets_root_dir` during
+/// setup, even for apps using [`NoConfig`] or [`NoSecrets`]. The runner installs
+/// watchers on both roots after setup. The default filesystem lock backend
+/// creates the parent of its lock path before executor setup.
 pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static>(
     exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
     app: impl App<AppEv, AppMetric> + Send + 'static,
@@ -1027,10 +1027,10 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
 
 /// Run apps via an `async` based executor with explicit runner options.
 ///
-/// The executor is expected to create all configured directory roots during
-/// setup, including `metadata_root_dir` and `secrets_root_dir`. The runner
-/// installs watchers on both roots after setup so it can emit typed config and
-/// secret reload events.
+/// The executor must create `metadata_root_dir` and `secrets_root_dir` during
+/// setup, even for apps using [`NoConfig`] or [`NoSecrets`]. The runner installs
+/// watchers on both roots after setup. Custom lock backends are responsible for
+/// any storage preparation required before executor setup.
 #[allow(clippy::too_many_lines)]
 pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static, L: LockBackend, R: RuntimeEnvironment>(
     exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
