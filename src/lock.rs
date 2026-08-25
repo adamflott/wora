@@ -74,6 +74,9 @@ impl LockBackend for ProcLockBackend {
     type Guard = Box<dyn Send>;
 
     fn try_lock(&self, path: &Path) -> Result<Self::Guard, LockError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         match try_lock(&proc_lock::LockPath::FullPath(path)) {
             Ok(guard) => Ok(Box::new(guard)),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(LockError::AlreadyLocked(path.to_path_buf())),
@@ -182,5 +185,21 @@ mod tests {
         if let Err(err) = backend.try_lock(&path) {
             panic!("lock should be reacquirable after drop: {err}");
         }
+    }
+
+    #[test]
+    fn proc_lock_backend_creates_a_missing_parent_directory() -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("wora-lock-parent-{}", std::process::id()));
+        let lock_path = root.join("nested").join("example.lock");
+        let backend = ProcLockBackend;
+
+        let guard = backend.try_lock(&lock_path)?;
+
+        assert!(lock_path.parent().is_some_and(Path::is_dir));
+        drop(guard);
+        if lock_path.exists() {
+            std::fs::remove_file(&lock_path)?;
+        }
+        Ok(())
     }
 }
