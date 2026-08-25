@@ -9,7 +9,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -46,6 +46,7 @@ use crate::restart_policy::*;
 use crate::vfs::*;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
+static CONCURRENT_LOCK_NONCE: AtomicU64 = AtomicU64::new(0);
 
 /// Runtime context passed to applications.
 ///
@@ -1050,13 +1051,7 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
     let mut app = app;
     let mut lock_path = PathBuf::new();
     lock_path.push(&exec.dirs().runtime_root_dir);
-    let lock_fp = if app.allow_concurrent_executions() {
-        let now = Utc::now();
-        let ts = now.timestamp_millis().to_string();
-        app.name().to_owned() + ts.as_str() + ".lock"
-    } else {
-        app.name().to_owned() + ".lock"
-    };
+    let lock_fp = lock_file_name(app.name(), app.allow_concurrent_executions());
 
     lock_path.push(&lock_fp);
 
@@ -1391,5 +1386,34 @@ async fn remove_lock_artifact<L: LockBackend>(lock_backend: &L, lock_path: &Path
         Err(err) => {
             error!("lock artifact:{:?} error:{}", lock_path, err);
         }
+    }
+}
+
+fn lock_file_name(app_name: &str, allow_concurrent_executions: bool) -> String {
+    if allow_concurrent_executions {
+        let nonce = CONCURRENT_LOCK_NONCE.fetch_add(1, Ordering::Relaxed);
+        format!("{app_name}-{}-{nonce}.lock", std::process::id())
+    } else {
+        format!("{app_name}.lock")
+    }
+}
+
+#[cfg(test)]
+mod runner_tests {
+    use super::lock_file_name;
+
+    #[test]
+    fn concurrent_lock_file_names_are_unique() {
+        let first = lock_file_name("demo", true);
+        let second = lock_file_name("demo", true);
+
+        assert_ne!(first, second);
+        assert!(first.starts_with(&format!("demo-{}-", std::process::id())));
+        assert!(first.ends_with(".lock"));
+    }
+
+    #[test]
+    fn single_instance_lock_file_name_remains_stable() {
+        assert_eq!(lock_file_name("demo", false), "demo.lock");
     }
 }
