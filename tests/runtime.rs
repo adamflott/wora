@@ -2033,6 +2033,30 @@ async fn launchd_agent_constructor_produces_distinct_layout() -> Result<(), Box<
 }
 
 #[tokio::test]
+async fn unix_system_executor_uses_app_scoped_directories() -> Result<(), Box<dyn std::error::Error>> {
+    let exec = UnixLikeSystem::new("scoped_app").await;
+    let dirs = <UnixLikeSystem as AsyncExecutor<(), ()>>::dirs(&exec);
+
+    assert_eq!(dirs.metadata_root_dir, PathBuf::from("/etc/scoped_app"));
+    assert_eq!(dirs.runtime_root_dir, PathBuf::from("/run/scoped_app"));
+    assert_eq!(dirs.secrets_root_dir, PathBuf::from("/run/scoped_app/secrets"));
+    assert_ne!(dirs.metadata_root_dir, dirs.secrets_root_dir);
+    Ok(())
+}
+
+#[tokio::test]
+async fn unix_bare_executor_separates_app_directories() -> Result<(), Box<dyn std::error::Error>> {
+    let exec = UnixLikeBare::new("scoped_app").await;
+    let dirs = <UnixLikeBare as AsyncExecutor<(), ()>>::dirs(&exec);
+
+    assert_eq!(dirs.root_dir, PathBuf::from("/tmp/wora/scoped_app"));
+    assert_eq!(dirs.metadata_root_dir, dirs.root_dir.join("metadata"));
+    assert_eq!(dirs.secrets_root_dir, dirs.root_dir.join("secrets"));
+    assert_ne!(dirs.metadata_root_dir, dirs.secrets_root_dir);
+    Ok(())
+}
+
+#[tokio::test]
 async fn retry_instantly_stops_at_max_retries() -> Result<(), Box<dyn std::error::Error>> {
     let root = unique_test_dir("retry-instantly");
     let dirs = test_dirs(root.clone());

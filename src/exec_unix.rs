@@ -34,15 +34,15 @@ pub struct UnixLike {
 
 impl UnixLike {
     /// Build a system-style Unix layout.
-    pub async fn new(_app_name: &str) -> Self {
+    pub async fn new(app_name: &str) -> Self {
         let dirs = Dirs {
             root_dir: PathBuf::from("/"),
-            log_root_dir: PathBuf::from("/var/log"),
-            metadata_root_dir: PathBuf::from("/etc/"),
-            data_root_dir: PathBuf::from("/usr/local/data"),
-            runtime_root_dir: PathBuf::from("/run/"),
-            cache_root_dir: PathBuf::from("/var/run/"),
-            secrets_root_dir: PathBuf::from("/var/run/"),
+            log_root_dir: PathBuf::from("/var/log").join(app_name),
+            metadata_root_dir: PathBuf::from("/etc").join(app_name),
+            data_root_dir: PathBuf::from("/usr/local/data").join(app_name),
+            runtime_root_dir: PathBuf::from("/run").join(app_name),
+            cache_root_dir: PathBuf::from("/var/cache").join(app_name),
+            secrets_root_dir: PathBuf::from("/run").join(app_name).join("secrets"),
         };
         UnixLike {
             dirs,
@@ -165,8 +165,8 @@ impl UnixLike {
 
 /// Executor for system-level Unix deployments.
 ///
-/// This executor uses paths such as `/var/log`, `/etc`, and `/run` and expects
-/// the process to have permission to use them.
+/// This executor uses app-scoped paths below `/var/log`, `/etc`, `/run`, and
+/// other system roots, and expects the process to have permission to use them.
 #[derive(Clone, Debug)]
 pub struct UnixLikeSystem {
     unix: UnixLike,
@@ -201,7 +201,9 @@ impl<AppEv: Send + 'static, AppMetric> AsyncExecutor<AppEv, AppMetric> for UnixL
         &self.unix.dirs
     }
 
-    async fn setup(&mut self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> Result<(), SetupFailure> {
+    async fn setup(&mut self, _wora: &Wora<AppEv, AppMetric>, fs: impl WFS) -> Result<(), SetupFailure> {
+        self.unix.create_directories(fs).await?;
+        self.unix.chdir_root()?;
         Ok(())
     }
 
@@ -301,12 +303,11 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync> AsyncExecutor<AppEv, 
     async fn end(&self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) {}
 }
 
-/// Executor that maps every directory to `/tmp`.
+/// Executor that maps directories below an app-scoped root in `/tmp`.
 ///
 /// Useful for smoke tests or constrained environments where the normal system
-/// and user directory layouts are not available. This layout is not isolated:
-/// metadata and secret loading scans `/tmp`, and both recursive watchers observe
-/// unrelated changes there. Prefer an app-scoped executor for production use.
+/// and user directory layouts are not available. Config, secrets, data, and
+/// runtime files use distinct subdirectories to prevent watcher cross-talk.
 #[derive(Clone, Debug)]
 pub struct UnixLikeBare {
     unix: UnixLike,
@@ -315,15 +316,15 @@ pub struct UnixLikeBare {
 impl UnixLikeBare {
     /// Create a bare Unix executor.
     pub async fn new(app_name: &str) -> Self {
-        let tmp = PathBuf::from("/tmp");
+        let tmp = PathBuf::from("/tmp").join("wora").join(app_name);
         let dirs = Dirs {
             root_dir: tmp.clone(),
-            log_root_dir: tmp.clone(),
-            metadata_root_dir: tmp.clone(),
-            data_root_dir: tmp.clone(),
-            runtime_root_dir: tmp.clone(),
-            cache_root_dir: tmp.clone(),
-            secrets_root_dir: tmp.clone(),
+            log_root_dir: tmp.join("log"),
+            metadata_root_dir: tmp.join("metadata"),
+            data_root_dir: tmp.join("data"),
+            runtime_root_dir: tmp.join("runtime"),
+            cache_root_dir: tmp.join("cache"),
+            secrets_root_dir: tmp.join("secrets"),
         };
 
         let mut unix = UnixLike::new(app_name).await;
@@ -355,7 +356,9 @@ impl<AppEv: Send + 'static, AppMetric> AsyncExecutor<AppEv, AppMetric> for UnixL
         &self.unix.dirs
     }
 
-    async fn setup(&mut self, _wora: &Wora<AppEv, AppMetric>, _fs: impl WFS) -> Result<(), SetupFailure> {
+    async fn setup(&mut self, _wora: &Wora<AppEv, AppMetric>, fs: impl WFS) -> Result<(), SetupFailure> {
+        self.unix.create_directories(fs).await?;
+        self.unix.chdir_root()?;
         Ok(())
     }
 
