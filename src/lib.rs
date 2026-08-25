@@ -1334,7 +1334,8 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                         .await;
                 }
                 Err(setup_err) => {
-                    error!("{:?}", setup_err)
+                    error!("app:run:setup error: {}", setup_err);
+                    rc = Err(MainEarlyReturn::ApplicationSetup(setup_err.to_string()));
                 }
             }
 

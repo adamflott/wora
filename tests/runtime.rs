@@ -297,6 +297,8 @@ struct HealthFailureApp {
 
 struct IgnoredHealthFailureApp;
 
+struct FailingSetupApp;
+
 #[derive(Default)]
 struct ReloadingConfig {
     enabled: bool,
@@ -803,6 +805,40 @@ impl App<(), ()> for IgnoredHealthFailureApp {
 }
 
 #[async_trait]
+impl App<(), ()> for FailingSetupApp {
+    type AppConfig = NoConfig;
+    type AppSecrets = NoSecrets;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        "failing_setup"
+    }
+
+    async fn setup(
+        &mut self,
+        _wora: &Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        Err(std::io::Error::other("intentional setup failure").into())
+    }
+
+    async fn main(
+        &mut self,
+        _wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
+        MainRetryAction::UseExitCode(24)
+    }
+
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
+}
+
+#[async_trait]
 impl App<(), ()> for ReloadingApp {
     type AppConfig = ReloadingConfig;
     type AppSecrets = ReloadingSecrets;
@@ -1211,6 +1247,27 @@ async fn ignored_health_failure_does_not_request_shutdown() -> Result<(), Box<dy
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))?;
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn runner_returns_application_setup_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("failing-setup");
+    let dirs = test_dirs(root.clone());
+
+    let result = exec_async_runner_with_options(
+        TestExec { dirs },
+        FailingSetupApp,
+        PhysicalVFS::new(),
+        test_o11y()?,
+        RunnerOptions::new().with_boot_dir(root.join("boot")),
+    )
+    .await;
+
+    match result {
+        Err(MainEarlyReturn::ApplicationSetup(message)) => assert_eq!(message, "intentional setup failure"),
+        other => panic!("unexpected runner result: {other:?}"),
+    }
     Ok(())
 }
 
