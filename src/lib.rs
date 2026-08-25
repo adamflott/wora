@@ -1314,6 +1314,10 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
 
                     watcher_task.abort();
                     secret_watcher_task.abort();
+                    // Readiness notification is startup supervision. Once main
+                    // has returned there is no reason to wait indefinitely for
+                    // an application that never transitioned to Ready.
+                    ready_task.abort();
                     match ready_task.await {
                         Ok(Ok(())) => {}
                         Ok(Err(err)) => return Err(MainEarlyReturn::SetupFailed(err)),

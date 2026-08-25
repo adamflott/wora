@@ -291,6 +291,8 @@ struct SignalMappedApp;
 
 struct DeferredReadyApp;
 
+struct NeverReadyApp;
+
 struct HealthFailureApp {
     calls: Arc<Mutex<u8>>,
 }
@@ -698,6 +700,41 @@ impl App<(), ()> for DeferredReadyApp {
         _metrics: Sender<O11yEvent<()>>,
     ) -> MainRetryAction {
         tokio::time::sleep(Duration::from_millis(40)).await;
+        MainRetryAction::Success
+    }
+
+    async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
+}
+
+#[async_trait]
+impl App<(), ()> for NeverReadyApp {
+    type AppConfig = NoConfig;
+    type AppSecrets = NoSecrets;
+    type Setup = ();
+
+    fn name(&self) -> &'static str {
+        "never_ready"
+    }
+
+    async fn setup(
+        &mut self,
+        wora: &Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+        _is_first_boot: bool,
+    ) -> Result<Self::Setup, Box<dyn std::error::Error>> {
+        wora.report_readiness(ReadinessState::NotReady);
+        Ok(())
+    }
+
+    async fn main(
+        &mut self,
+        _wora: &mut Wora<(), ()>,
+        _exec: impl AsyncExecutor<(), ()>,
+        _fs: impl WFS + 'static,
+        _metrics: Sender<O11yEvent<()>>,
+    ) -> MainRetryAction {
         MainRetryAction::Success
     }
 
@@ -1187,6 +1224,28 @@ async fn delayed_readiness_reports_trigger_executor_ready_hook() -> Result<(), B
     .map_err(|err| std::io::Error::other(err.to_string()))?;
 
     assert_eq!(std::fs::read_to_string(ready_file)?, "ready:deferred_ready");
+    Ok(())
+}
+
+#[tokio::test]
+async fn runner_does_not_wait_for_readiness_after_main_returns() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("never-ready");
+    let dirs = test_dirs(root.clone());
+
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        exec_async_runner_with_options(
+            TestExec { dirs },
+            NeverReadyApp,
+            PhysicalVFS::new(),
+            test_o11y()?,
+            RunnerOptions::new().with_boot_dir(root.join("boot")),
+        ),
+    )
+    .await
+    .map_err(|_| std::io::Error::other("runner waited indefinitely for readiness"))?
+    .map_err(|err| std::io::Error::other(err.to_string()))?;
+
     Ok(())
 }
 
