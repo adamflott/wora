@@ -1149,12 +1149,14 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
             let runtime_leadership = wora.leadership.clone();
             let runtime_metrics_restart_counter = restart_counter.clone();
             let runtime_environment = runtime_environment.clone();
+            let runtime_event_sender = wora.sender.clone();
             wora.schedule_task(hs_interval, move |tx| {
                 let runtime_status = runtime_status.clone();
                 let runtime_app_name = runtime_app_name.clone();
                 let runtime_leadership = runtime_leadership.clone();
                 let runtime_metrics_restart_counter = runtime_metrics_restart_counter.clone();
                 let runtime_environment = runtime_environment.clone();
+                let runtime_event_sender = runtime_event_sender.clone();
                 async move {
                     let host_stats = match runtime_environment.refresh_host_stats() {
                         Ok(stats) => stats,
@@ -1179,8 +1181,8 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                         health: runtime_status.health_state(),
                         readiness: runtime_status.readiness_state(),
                         restart_count: runtime_metrics_restart_counter.load(Ordering::Relaxed),
-                        event_backlog_capacity: tx.capacity(),
-                        event_backlog_max_capacity: tx.max_capacity(),
+                        event_backlog_capacity: runtime_event_sender.capacity(),
+                        event_backlog_max_capacity: runtime_event_sender.max_capacity(),
                     };
                     let _ = tx.send(o11y_new_ev_runtime_metrics(&runtime_metrics)).await;
 

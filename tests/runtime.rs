@@ -1688,6 +1688,8 @@ async fn runner_emits_host_process_and_runtime_metrics() -> Result<(), Box<dyn s
             O11yEventKind::RuntimeMetrics(metrics) => {
                 saw_runtime_metrics = true;
                 assert_eq!(metrics.app_name, "metrics_app");
+                assert_eq!(metrics.event_backlog_max_capacity, 1024);
+                assert!(metrics.event_backlog_capacity <= metrics.event_backlog_max_capacity);
             }
             _ => {}
         }
