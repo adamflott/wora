@@ -1857,6 +1857,7 @@ async fn initial_config_load_propagates_non_missing_filesystem_errors() -> Resul
     }
     std::fs::write(&dirs.metadata_root_dir, "not a directory")?;
 
+    let lock_path = dirs.runtime_root_dir.join("metrics_app.lock");
     let result = exec_async_runner_with_options(
         PreconfiguredExec { dirs },
         MetricsApp,
@@ -1872,6 +1873,7 @@ async fn initial_config_load_propagates_non_missing_filesystem_errors() -> Resul
         }
         other => panic!("unexpected runner result: {other:?}"),
     }
+    assert!(!lock_path.exists(), "runner left a lock artifact after an early config error");
     Ok(())
 }
 

@@ -1068,299 +1068,300 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
         Ok(lock_guard) => {
             info!("exec:run:lock_file created:{:?}", &lock_path);
 
-            let metrics_sender = o11y.sender().clone();
-            let status_interval = *o11y.status_interval();
-            let flush_interval = *o11y.flush_interval();
-            let hs_interval = *o11y.host_stats_interval();
-            let restart_counter = Arc::new(AtomicU32::new(0));
+            let result = async {
+                let metrics_sender = o11y.sender().clone();
+                let status_interval = *o11y.status_interval();
+                let flush_interval = *o11y.flush_interval();
+                let hs_interval = *o11y.host_stats_interval();
+                let restart_counter = Arc::new(AtomicU32::new(0));
 
-            let mut wora = Wora::new_with_runtime_environment(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE, o11y, runtime_environment.clone())?;
-            let mut health_rx = wora.status_handle().subscribe_health();
-            let readiness_rx = wora.status_handle().subscribe_readiness();
-            let (runtime_event_tx, mut runtime_event_rx) = channel::<Event<AppEv>>(EVENT_BUFFER_SIZE);
-            let (supervision_tx, mut supervision_rx) = channel::<RuntimeSupervisionEvent>(EVENT_BUFFER_SIZE);
-            let dispatch_app_sender = wora.sender.clone();
-            let dispatch_supervision_sender = supervision_tx.clone();
-            let runtime_dispatch_task = tokio::spawn(async move {
-                while let Some(event) = runtime_event_rx.recv().await {
-                    if let Event::Control(ControlEvent::Shutdown(timestamp)) = &event {
-                        let _ = dispatch_supervision_sender
-                            .send(RuntimeSupervisionEvent::ShutdownRequested(ShutdownReason::External, *timestamp))
-                            .await;
-                    }
-
-                    if dispatch_app_sender.send(event).await.is_err() {
-                        break;
-                    }
-                }
-            });
-
-            let health_supervision_sender = supervision_tx.clone();
-            let health_event_sender = wora.sender.clone();
-            let unhealthy_action = restart.supervision.unhealthy_action.clone();
-            let health_supervision_task = tokio::spawn(async move {
-                loop {
-                    if health_rx.changed().await.is_err() {
-                        break;
-                    }
-
-                    if *health_rx.borrow() == HealthState::Failed && !matches!(unhealthy_action, UnhealthyAction::Ignore) {
-                        let timestamp = Some(Utc::now().naive_utc());
-                        let _ = health_event_sender.send(Event::Control(ControlEvent::Shutdown(timestamp))).await;
-                        let _ = health_supervision_sender
-                            .send(RuntimeSupervisionEvent::ShutdownRequested(ShutdownReason::Unhealthy, timestamp))
-                            .await;
-                    }
-                }
-            });
-
-            let runtime_event_tasks = exec
-                .spawn_runtime_event_sources_with_signal_mapper(runtime_event_tx.clone(), signal_mapper.clone())
-                .instrument(tracing::info_span!("exec:run:event_sources"))
-                .await?;
-
-            let _ = metrics_sender.send(o11y_new_ev_hostinfo(wora.host.info())).await;
-            let _ = metrics_sender
-                .send(o11y_new_ev_runtime_metrics(&runtime_metrics_snapshot(
-                    &wora,
-                    restart_counter.load(Ordering::Relaxed),
-                )))
-                .await;
-            if let Some(process_stats) = runtime_environment.initial_process_stats() {
-                let _ = metrics_sender.send(o11y_new_ev_processstats(&process_stats)).await;
-            }
-
-            wora.schedule_task(status_interval, move |tx| async move {
-                let cap = tx.capacity();
-                let max_cap = tx.max_capacity();
-                let _ = tx.send(o11y_new_ev_status(cap, max_cap)).await;
-                TaskOp::Requeue
-            })
-            .await;
-
-            wora.schedule_task(flush_interval, move |tx| async move {
-                let _ = tx.send(o11y_new_ev_flush()).await;
-                TaskOp::Requeue
-            })
-            .await;
-
-            let runtime_status = wora.status_handle();
-            let runtime_app_name = wora.app_name.clone();
-            let runtime_leadership = wora.leadership.clone();
-            let runtime_metrics_restart_counter = restart_counter.clone();
-            let runtime_environment = runtime_environment.clone();
-            let runtime_event_sender = wora.sender.clone();
-            wora.schedule_task(hs_interval, move |tx| {
-                let runtime_status = runtime_status.clone();
-                let runtime_app_name = runtime_app_name.clone();
-                let runtime_leadership = runtime_leadership.clone();
-                let runtime_metrics_restart_counter = runtime_metrics_restart_counter.clone();
-                let runtime_environment = runtime_environment.clone();
-                let runtime_event_sender = runtime_event_sender.clone();
-                async move {
-                    let host_stats = match runtime_environment.refresh_host_stats() {
-                        Ok(stats) => stats,
-                        Err(err) => {
-                            error!("o11y:host stats refresh error: {}", err);
-                            None
+                let mut wora = Wora::new_with_runtime_environment(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE, o11y, runtime_environment.clone())?;
+                let mut health_rx = wora.status_handle().subscribe_health();
+                let readiness_rx = wora.status_handle().subscribe_readiness();
+                let (runtime_event_tx, mut runtime_event_rx) = channel::<Event<AppEv>>(EVENT_BUFFER_SIZE);
+                let (supervision_tx, mut supervision_rx) = channel::<RuntimeSupervisionEvent>(EVENT_BUFFER_SIZE);
+                let dispatch_app_sender = wora.sender.clone();
+                let dispatch_supervision_sender = supervision_tx.clone();
+                let runtime_dispatch_task = tokio::spawn(async move {
+                    while let Some(event) = runtime_event_rx.recv().await {
+                        if let Event::Control(ControlEvent::Shutdown(timestamp)) = &event {
+                            let _ = dispatch_supervision_sender
+                                .send(RuntimeSupervisionEvent::ShutdownRequested(ShutdownReason::External, *timestamp))
+                                .await;
                         }
-                    };
-                    if let Some(host_stats) = host_stats {
-                        let _ = tx.send(o11y_new_ev_hoststats(&host_stats)).await;
+
+                        if dispatch_app_sender.send(event).await.is_err() {
+                            break;
+                        }
                     }
+                });
 
-                    let process_stats = runtime_environment.refresh_process_stats();
-                    if let Some(process_stats) = process_stats {
-                        let _ = tx.send(o11y_new_ev_processstats(&process_stats)).await;
+                let health_supervision_sender = supervision_tx.clone();
+                let health_event_sender = wora.sender.clone();
+                let unhealthy_action = restart.supervision.unhealthy_action.clone();
+                let health_supervision_task = tokio::spawn(async move {
+                    loop {
+                        if health_rx.changed().await.is_err() {
+                            break;
+                        }
+
+                        if *health_rx.borrow() == HealthState::Failed && !matches!(unhealthy_action, UnhealthyAction::Ignore) {
+                            let timestamp = Some(Utc::now().naive_utc());
+                            let _ = health_event_sender.send(Event::Control(ControlEvent::Shutdown(timestamp))).await;
+                            let _ = health_supervision_sender
+                                .send(RuntimeSupervisionEvent::ShutdownRequested(ShutdownReason::Unhealthy, timestamp))
+                                .await;
+                        }
                     }
+                });
 
-                    let runtime_metrics = RuntimeMetrics {
-                        app_name: runtime_app_name.clone(),
-                        pid: std::process::id(),
-                        leadership: runtime_leadership.clone(),
-                        health: runtime_status.health_state(),
-                        readiness: runtime_status.readiness_state(),
-                        restart_count: runtime_metrics_restart_counter.load(Ordering::Relaxed),
-                        event_backlog_capacity: runtime_event_sender.capacity(),
-                        event_backlog_max_capacity: runtime_event_sender.max_capacity(),
-                    };
-                    let _ = tx.send(o11y_new_ev_runtime_metrics(&runtime_metrics)).await;
+                let runtime_event_tasks = exec
+                    .spawn_runtime_event_sources_with_signal_mapper(runtime_event_tx.clone(), signal_mapper.clone())
+                    .instrument(tracing::info_span!("exec:run:event_sources"))
+                    .await?;
 
+                let _ = metrics_sender.send(o11y_new_ev_hostinfo(wora.host.info())).await;
+                let _ = metrics_sender
+                    .send(o11y_new_ev_runtime_metrics(&runtime_metrics_snapshot(
+                        &wora,
+                        restart_counter.load(Ordering::Relaxed),
+                    )))
+                    .await;
+                if let Some(process_stats) = runtime_environment.initial_process_stats() {
+                    let _ = metrics_sender.send(o11y_new_ev_processstats(&process_stats)).await;
+                }
+
+                wora.schedule_task(status_interval, move |tx| async move {
+                    let cap = tx.capacity();
+                    let max_cap = tx.max_capacity();
+                    let _ = tx.send(o11y_new_ev_status(cap, max_cap)).await;
                     TaskOp::Requeue
-                }
-            })
-            .await;
+                })
+                .await;
 
-            let boot_state = resolve_boot_state(fs.clone(), boot_dir.unwrap_or_else(default_boot_root), app.name())
-                .await
-                .map_err(WoraSetupError::from)?;
-            let is_first_boot = boot_state.is_first_boot();
-            debug!("boot:state app:{} state:{:?}", app.name(), boot_state);
+                wora.schedule_task(flush_interval, move |tx| async move {
+                    let _ = tx.send(o11y_new_ev_flush()).await;
+                    TaskOp::Requeue
+                })
+                .await;
 
-            exec.setup(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:setup")).await?;
-
-            configure_app_from_metadata(&mut app, &wora, fs.clone()).await?;
-            load_initial_secrets(&mut app, &wora, fs.clone()).await?;
-
-            let mut rc = Err(MainEarlyReturn::UseExitCode(1));
-
-            match app
-                .setup(&wora, exec.clone(), fs.clone(), metrics_sender.clone(), is_first_boot)
-                .instrument(tracing::info_span!("app:run:setup"))
-                .await
-            {
-                Ok(_) => {
-                    trace!("checking executor directories exist...");
-
-                    for dir in [
-                        &wora.dirs.root_dir,
-                        &wora.dirs.log_root_dir,
-                        &wora.dirs.metadata_root_dir,
-                        &wora.dirs.data_root_dir,
-                        &wora.dirs.cache_root_dir,
-                    ] {
-                        if !fs.dir_exists(dir).await? {
-                            error!("directory {:?} does not exist", dir);
-                            return Err(MainEarlyReturn::WoraSetup(WoraSetupError::DirectoryDoesNotExistOnFilesystem(dir.clone())));
+                let runtime_status = wora.status_handle();
+                let runtime_app_name = wora.app_name.clone();
+                let runtime_leadership = wora.leadership.clone();
+                let runtime_metrics_restart_counter = restart_counter.clone();
+                let runtime_environment = runtime_environment.clone();
+                let runtime_event_sender = wora.sender.clone();
+                wora.schedule_task(hs_interval, move |tx| {
+                    let runtime_status = runtime_status.clone();
+                    let runtime_app_name = runtime_app_name.clone();
+                    let runtime_leadership = runtime_leadership.clone();
+                    let runtime_metrics_restart_counter = runtime_metrics_restart_counter.clone();
+                    let runtime_environment = runtime_environment.clone();
+                    let runtime_event_sender = runtime_event_sender.clone();
+                    async move {
+                        let host_stats = match runtime_environment.refresh_host_stats() {
+                            Ok(stats) => stats,
+                            Err(err) => {
+                                error!("o11y:host stats refresh error: {}", err);
+                                None
+                            }
+                        };
+                        if let Some(host_stats) = host_stats {
+                            let _ = tx.send(o11y_new_ev_hoststats(&host_stats)).await;
                         }
+
+                        let process_stats = runtime_environment.refresh_process_stats();
+                        if let Some(process_stats) = process_stats {
+                            let _ = tx.send(o11y_new_ev_processstats(&process_stats)).await;
+                        }
+
+                        let runtime_metrics = RuntimeMetrics {
+                            app_name: runtime_app_name.clone(),
+                            pid: std::process::id(),
+                            leadership: runtime_leadership.clone(),
+                            health: runtime_status.health_state(),
+                            readiness: runtime_status.readiness_state(),
+                            restart_count: runtime_metrics_restart_counter.load(Ordering::Relaxed),
+                            event_backlog_capacity: runtime_event_sender.capacity(),
+                            event_backlog_max_capacity: runtime_event_sender.max_capacity(),
+                        };
+                        let _ = tx.send(o11y_new_ev_runtime_metrics(&runtime_metrics)).await;
+
+                        TaskOp::Requeue
                     }
+                })
+                .await;
 
-                    info!(
-                        host.hostname = wora.host_hostname(),
-                        host.platform = wora.host_architecture(),
-                        host.os_name = wora.host_os_name(),
-                        host.os_version = wora.host_os_version(),
-                        host.cpu_count = wora.host_cpu_count(),
-                        host.cpu_max = wora.host_cpu_max(),
-                    );
-                    info!("dirs.root: {:?}", wora.dirs.root_dir);
-                    info!("dirs.log: {:?}", wora.dirs.log_root_dir);
-                    info!("dirs.metadata: {:?}", wora.dirs.metadata_root_dir);
-                    info!("dirs.data: {:?}", wora.dirs.data_root_dir);
-                    info!("dirs.runtime: {:?}", wora.dirs.runtime_root_dir);
-                    info!("dirs.cache: {:?}", wora.dirs.cache_root_dir);
-                    info!("dirs.secrets: {:?}", wora.dirs.secrets_root_dir);
+                let boot_state = resolve_boot_state(fs.clone(), boot_dir.unwrap_or_else(default_boot_root), app.name())
+                    .await
+                    .map_err(WoraSetupError::from)?;
+                let is_first_boot = boot_state.is_first_boot();
+                debug!("boot:state app:{} state:{:?}", app.name(), boot_state);
 
-                    let ready_task = tokio::spawn(wait_for_ready_notification::<AppEv, AppMetric, _, _>(
-                        exec.clone(),
-                        wora.app_name.clone(),
-                        wora.dirs.clone(),
-                        fs.clone(),
-                        readiness_rx,
-                    ));
+                exec.setup(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:setup")).await?;
 
-                    info!("notify:watch:dir: {:?}", &wora.dirs.metadata_root_dir);
-                    let mut watcher = fs.watch_dir(&wora.dirs.metadata_root_dir).await?;
-                    info!("notify:watch:secrets: {:?}", &wora.dirs.secrets_root_dir);
-                    let mut secret_watcher = fs.watch_dir(&wora.dirs.secrets_root_dir).await?;
-                    let metadata_root = wora.dirs.metadata_root_dir.clone();
-                    let app_name = wora.app_name.clone();
-                    let ev_sender = runtime_event_tx.clone();
-                    let secret_ev_sender = runtime_event_tx.clone();
+                configure_app_from_metadata(&mut app, &wora, fs.clone()).await?;
+                load_initial_secrets(&mut app, &wora, fs.clone()).await?;
 
-                    let watcher_task = tokio::spawn(async move {
-                        while let Some(res) = watcher.receiver().recv().await {
-                            match res {
-                                Ok(event) => {
-                                    info!("changed: {:?}", event);
-                                    match ev_sender
-                                        .send(Event::ConfigChanged(config_change_event(&app_name, &metadata_root, event)))
-                                        .await
-                                    {
-                                        Ok(_) => {}
-                                        Err(send_err) => {
-                                            error!("send error: {:?}", send_err);
-                                        }
-                                    }
-                                }
-                                Err(e) => error!("watch error: {:?}", e),
+                let mut rc = Err(MainEarlyReturn::UseExitCode(1));
+
+                match app
+                    .setup(&wora, exec.clone(), fs.clone(), metrics_sender.clone(), is_first_boot)
+                    .instrument(tracing::info_span!("app:run:setup"))
+                    .await
+                {
+                    Ok(_) => {
+                        trace!("checking executor directories exist...");
+
+                        for dir in [
+                            &wora.dirs.root_dir,
+                            &wora.dirs.log_root_dir,
+                            &wora.dirs.metadata_root_dir,
+                            &wora.dirs.data_root_dir,
+                            &wora.dirs.cache_root_dir,
+                        ] {
+                            if !fs.dir_exists(dir).await? {
+                                error!("directory {:?} does not exist", dir);
+                                return Err(MainEarlyReturn::WoraSetup(WoraSetupError::DirectoryDoesNotExistOnFilesystem(dir.clone())));
                             }
                         }
-                    });
-                    let secret_watcher_task = tokio::spawn(async move {
-                        while let Some(res) = secret_watcher.receiver().recv().await {
-                            match res {
-                                Ok(event) => {
-                                    info!("secret changed: {:?}", event);
-                                    match secret_ev_sender.send(Event::SecretChanged(secret_change_event(event))).await {
-                                        Ok(_) => {}
-                                        Err(send_err) => {
-                                            error!("send error: {:?}", send_err);
-                                        }
-                                    }
-                                }
-                                Err(e) => error!("watch error: {:?}", e),
-                            }
-                        }
-                    });
 
-                    info!(process_id = wora.pid.to_string(), app_name = app.name());
+                        info!(
+                            host.hostname = wora.host_hostname(),
+                            host.platform = wora.host_architecture(),
+                            host.os_name = wora.host_os_name(),
+                            host.os_version = wora.host_os_version(),
+                            host.cpu_count = wora.host_cpu_count(),
+                            host.cpu_max = wora.host_cpu_max(),
+                        );
+                        info!("dirs.root: {:?}", wora.dirs.root_dir);
+                        info!("dirs.log: {:?}", wora.dirs.log_root_dir);
+                        info!("dirs.metadata: {:?}", wora.dirs.metadata_root_dir);
+                        info!("dirs.data: {:?}", wora.dirs.data_root_dir);
+                        info!("dirs.runtime: {:?}", wora.dirs.runtime_root_dir);
+                        info!("dirs.cache: {:?}", wora.dirs.cache_root_dir);
+                        info!("dirs.secrets: {:?}", wora.dirs.secrets_root_dir);
 
-                    if exec.is_ready(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:is_ready")).await {
-                        rc = run_app_main_with_restart_policy(
-                            &mut app,
-                            &mut wora,
+                        let ready_task = tokio::spawn(wait_for_ready_notification::<AppEv, AppMetric, _, _>(
                             exec.clone(),
+                            wora.app_name.clone(),
+                            wora.dirs.clone(),
                             fs.clone(),
-                            metrics_sender.clone(),
-                            restart.clone(),
-                            &mut supervision_rx,
-                            restart_counter.clone(),
-                        )
-                        .await;
+                            readiness_rx,
+                        ));
 
-                        if matches!(rc, Err(MainEarlyReturn::UseExitCode(_))) {
-                            remove_lock_artifact(&lock_backend, &lock_path).await;
+                        info!("notify:watch:dir: {:?}", &wora.dirs.metadata_root_dir);
+                        let mut watcher = fs.watch_dir(&wora.dirs.metadata_root_dir).await?;
+                        info!("notify:watch:secrets: {:?}", &wora.dirs.secrets_root_dir);
+                        let mut secret_watcher = fs.watch_dir(&wora.dirs.secrets_root_dir).await?;
+                        let metadata_root = wora.dirs.metadata_root_dir.clone();
+                        let app_name = wora.app_name.clone();
+                        let ev_sender = runtime_event_tx.clone();
+                        let secret_ev_sender = runtime_event_tx.clone();
+
+                        let watcher_task = tokio::spawn(async move {
+                            while let Some(res) = watcher.receiver().recv().await {
+                                match res {
+                                    Ok(event) => {
+                                        info!("changed: {:?}", event);
+                                        match ev_sender
+                                            .send(Event::ConfigChanged(config_change_event(&app_name, &metadata_root, event)))
+                                            .await
+                                        {
+                                            Ok(_) => {}
+                                            Err(send_err) => {
+                                                error!("send error: {:?}", send_err);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => error!("watch error: {:?}", e),
+                                }
+                            }
+                        });
+                        let secret_watcher_task = tokio::spawn(async move {
+                            while let Some(res) = secret_watcher.receiver().recv().await {
+                                match res {
+                                    Ok(event) => {
+                                        info!("secret changed: {:?}", event);
+                                        match secret_ev_sender.send(Event::SecretChanged(secret_change_event(event))).await {
+                                            Ok(_) => {}
+                                            Err(send_err) => {
+                                                error!("send error: {:?}", send_err);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => error!("watch error: {:?}", e),
+                                }
+                            }
+                        });
+
+                        info!(process_id = wora.pid.to_string(), app_name = app.name());
+
+                        if exec.is_ready(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:is_ready")).await {
+                            rc = run_app_main_with_restart_policy(
+                                &mut app,
+                                &mut wora,
+                                exec.clone(),
+                                fs.clone(),
+                                metrics_sender.clone(),
+                                restart.clone(),
+                                &mut supervision_rx,
+                                restart_counter.clone(),
+                            )
+                            .await;
+                        } else {
+                            warn!(comp = "exec", method = "run", is_ready = false);
                         }
-                    } else {
-                        warn!(comp = "exec", method = "run", is_ready = false);
-                    }
 
-                    watcher_task.abort();
-                    secret_watcher_task.abort();
-                    // Readiness notification is startup supervision. Once main
-                    // has returned there is no reason to wait indefinitely for
-                    // an application that never transitioned to Ready.
-                    ready_task.abort();
-                    match ready_task.await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(err)) => return Err(MainEarlyReturn::SetupFailed(err)),
-                        Err(join_err) if join_err.is_cancelled() => {}
-                        Err(join_err) => {
-                            return Err(MainEarlyReturn::WoraSetup(WoraSetupError::Str(format!(
-                                "readiness supervision task failed: {join_err}"
-                            ))));
+                        watcher_task.abort();
+                        secret_watcher_task.abort();
+                        // Readiness notification is startup supervision. Once main
+                        // has returned there is no reason to wait indefinitely for
+                        // an application that never transitioned to Ready.
+                        ready_task.abort();
+                        match ready_task.await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(err)) => return Err(MainEarlyReturn::SetupFailed(err)),
+                            Err(join_err) if join_err.is_cancelled() => {}
+                            Err(join_err) => {
+                                return Err(MainEarlyReturn::WoraSetup(WoraSetupError::Str(format!(
+                                    "readiness supervision task failed: {join_err}"
+                                ))));
+                            }
                         }
+
+                        exec.on_runtime_stopping(&wora.app_name, &wora.dirs, fs.clone())
+                            .instrument(tracing::info_span!("exec:run:on_runtime_stopping"))
+                            .await?;
+
+                        app.end(&wora, exec.clone(), fs.clone(), metrics_sender.clone())
+                            .instrument(tracing::info_span!("app:run:end"))
+                            .await;
                     }
-
-                    exec.on_runtime_stopping(&wora.app_name, &wora.dirs, fs.clone())
-                        .instrument(tracing::info_span!("exec:run:on_runtime_stopping"))
-                        .await?;
-
-                    app.end(&wora, exec.clone(), fs.clone(), metrics_sender.clone())
-                        .instrument(tracing::info_span!("app:run:end"))
-                        .await;
+                    Err(setup_err) => {
+                        error!("app:run:setup error: {}", setup_err);
+                        rc = Err(MainEarlyReturn::ApplicationSetup(setup_err.to_string()));
+                    }
                 }
-                Err(setup_err) => {
-                    error!("app:run:setup error: {}", setup_err);
-                    rc = Err(MainEarlyReturn::ApplicationSetup(setup_err.to_string()));
+
+                exec.end(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:end")).await;
+
+                health_supervision_task.abort();
+                runtime_dispatch_task.abort();
+                for task in runtime_event_tasks {
+                    task.abort();
                 }
-            }
 
-            exec.end(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:end")).await;
-
-            health_supervision_task.abort();
-            runtime_dispatch_task.abort();
-            for task in runtime_event_tasks {
-                task.abort();
+                rc
             }
+            .await;
 
             drop(lock_guard);
             remove_lock_artifact(&lock_backend, &lock_path).await;
 
             let _ = o11y_tx.send(o11y_new_ev_finish()).await;
 
-            rc
+            result
         }
         Err(LockError::AlreadyLocked(path)) => {
             info!("lock already held: {:?}", &path);
