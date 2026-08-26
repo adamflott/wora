@@ -5,6 +5,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- next-header -->
+## [0.0.16] - 2026-08-25
+
+### Changes
+
+- Scope system executor directories to the application name under `/var/log`, `/etc`, `/usr/local/data`, `/run`, and `/var/cache`.
+- Give the bare Unix executor an app-scoped root with separate log, metadata, data, runtime, cache, and secrets directories to prevent filesystem watcher cross-talk.
+- Make the built-in system and bare Unix executors create their configured directories and change to their root directory during setup.
+- Report application setup failures through the new `MainEarlyReturn::ApplicationSetup` variant.
+- Update crate dependencies and remove unused direct dependencies on `futures` and `opentelemetry`.
+
+### Fixes
+
+- Honor `UnhealthyAction::Ignore` without generating a shutdown request when application health changes to failed.
+- Cancel pending readiness supervision after application main returns so teardown cannot hang while the application remains not ready, while preserving already-completed readiness errors.
+- Ignore only `NotFound` errors while initially loading configuration and secrets; propagate all other virtual filesystem errors.
+- Measure `RuntimeMetrics` event backlog capacity from the application event channel instead of the observability channel.
+- Create missing parent directories before acquiring a filesystem-backed runtime lock.
+- Generate collision-resistant lock names for concurrent executions using the process ID and an in-process nonce.
+- Guarantee that runtime lock guards and lock artifacts are cleaned up on every runner exit path, including setup and supervision failures.
+
+### Tests
+
+- Add runtime coverage for application setup failures, readiness teardown, initial config and secret loading errors, unhealthy-action handling, app-scoped executor layouts, concurrent execution locks, and lock cleanup across failure paths.
+- Add lock backend coverage for creating missing lock parent directories.
+
+### Documentation
+
+- Correct the README architecture count, runner setup order, executor directory requirements, and dual-license description.
+- Add a project TODO document.
+
 ## [0.0.15] - 2026-07-01
 
 ### Features
