@@ -5,6 +5,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- next-header -->
+## [0.0.17] - 2026-08-26
+
+### Changes
+
+- Track runner-owned background tasks in an internal lifecycle registry and use shared `CancellationToken` cancellation during teardown.
+- Await cooperative task shutdown for a bounded grace period, abort unresponsive tasks, and report infrastructure task failures through `MainEarlyReturn::InfrastructureTask`.
+
+### Tests
+
+- Add task-lifecycle coverage for cooperative cancellation, post-shutdown emission prevention, forced abort fallback, and infrastructure failure reporting.
+
 ## [0.0.16] - 2026-08-25
 
 ### Changes

@@ -44,7 +44,7 @@ WORA has six main pieces:
 - `LockBackend`: the single-instance coordination abstraction. `ProcLockBackend` uses host lock files and `InMemoryLockBackend` is useful for tests and fully virtual runner flows.
 - `O11yProcessor`: the observability pipeline for fan-out into sinks.
 
-`exec_async_runner` wires those pieces together by initializing observability, acquiring the runtime lock, building the `Wora` context, running executor setup, loading initial config and secrets, running app setup, watching the metadata and secrets directories, invoking `App::main`, supervising shutdown/readiness/health, and then running teardown.
+`exec_async_runner` wires those pieces together by initializing observability, acquiring the runtime lock, building the `Wora` context, running executor setup, loading initial config and secrets, running app setup, watching the metadata and secrets directories, invoking `App::main`, supervising shutdown/readiness/health, and then running teardown. Runner-owned background work shares a cancellation token: teardown requests cooperative cancellation, waits for a bounded grace period, and aborts tasks that do not stop.
 
 The runner always installs recursive watchers on both `metadata_root_dir` and `secrets_root_dir` after executor and app setup. Executors must create both watch roots even when an app uses `NoConfig` or `NoSecrets`; initial loading skips roots that are absent, but watcher installation still requires them. The default filesystem lock backend creates the parent of its lock path before acquiring the lock, allowing executor setup to create the remaining roots afterward.
 

@@ -19,6 +19,7 @@ use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tracing::{debug, error, info, trace, warn};
 
@@ -46,7 +47,99 @@ use crate::restart_policy::*;
 use crate::vfs::*;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
+#[cfg(not(test))]
+const TASK_SHUTDOWN_GRACE_PERIOD: tokio::time::Duration = tokio::time::Duration::from_secs(1);
+#[cfg(test)]
+const TASK_SHUTDOWN_GRACE_PERIOD: tokio::time::Duration = tokio::time::Duration::from_millis(50);
 static CONCURRENT_LOCK_NONCE: AtomicU64 = AtomicU64::new(0);
+
+struct RuntimeTaskRegistry {
+    cancellation: CancellationToken,
+    tasks: Vec<(&'static str, JoinHandle<Result<(), String>>)>,
+}
+
+impl RuntimeTaskRegistry {
+    fn new() -> Self {
+        Self {
+            cancellation: CancellationToken::new(),
+            tasks: Vec::new(),
+        }
+    }
+
+    fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
+    fn spawn<F>(&mut self, name: &'static str, future: F)
+    where
+        F: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        self.tasks.push((name, tokio::spawn(future)));
+    }
+
+    fn adopt(&mut self, name: &'static str, mut task: JoinHandle<()>) {
+        let cancelled = self.cancellation_token();
+        self.spawn(name, async move {
+            tokio::select! {
+                result = &mut task => result.map_err(|err| err.to_string()),
+                _ = cancelled.cancelled() => {
+                    task.abort();
+                    match task.await {
+                        Ok(()) => Ok(()),
+                        Err(err) if err.is_cancelled() => Ok(()),
+                        Err(err) => Err(err.to_string()),
+                    }
+                }
+            }
+        });
+    }
+
+    async fn shutdown(&mut self) -> Result<(), MainEarlyReturn> {
+        self.cancellation.cancel();
+        let mut tasks = std::mem::take(&mut self.tasks);
+        let joined = tokio::time::timeout(TASK_SHUTDOWN_GRACE_PERIOD, async {
+            let mut first_failure = None;
+            for (name, task) in &mut tasks {
+                match task.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        first_failure.get_or_insert_with(|| format!("{name}: {err}"));
+                    }
+                    Err(err) if err.is_cancelled() => {}
+                    Err(err) => {
+                        first_failure.get_or_insert_with(|| format!("{name}: {err}"));
+                    }
+                };
+            }
+            first_failure
+        })
+        .await;
+
+        let failure = match joined {
+            Ok(failure) => failure,
+            Err(_) => {
+                for (_, task) in &tasks {
+                    task.abort();
+                }
+                for (_, task) in &mut tasks {
+                    let _ = task.await;
+                }
+                None
+            }
+        };
+
+        failure.map_or(Ok(()), |failure| Err(MainEarlyReturn::InfrastructureTask(failure)))
+    }
+}
+
+impl Drop for RuntimeTaskRegistry {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        for (_, task) in &self.tasks {
+            task.abort();
+        }
+    }
+}
 
 /// Runtime context passed to applications.
 ///
@@ -1075,10 +1168,16 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                 let readiness_rx = wora.status_handle().subscribe_readiness();
                 let (runtime_event_tx, mut runtime_event_rx) = channel::<Event<AppEv>>(EVENT_BUFFER_SIZE);
                 let (supervision_tx, mut supervision_rx) = channel::<RuntimeSupervisionEvent>(EVENT_BUFFER_SIZE);
+                let mut runtime_tasks = RuntimeTaskRegistry::new();
                 let dispatch_app_sender = wora.sender.clone();
                 let dispatch_supervision_sender = supervision_tx.clone();
-                let runtime_dispatch_task = tokio::spawn(async move {
-                    while let Some(event) = runtime_event_rx.recv().await {
+                let cancelled = runtime_tasks.cancellation_token();
+                runtime_tasks.spawn("runtime event dispatch", async move {
+                    loop {
+                        let event = tokio::select! {
+                            _ = cancelled.cancelled() => break,
+                            event = runtime_event_rx.recv() => match event { Some(event) => event, None => break },
+                        };
                         if let Event::Control(ControlEvent::Shutdown(timestamp)) = &event {
                             let _ = dispatch_supervision_sender
                                 .send(RuntimeSupervisionEvent::ShutdownRequested(ShutdownReason::External, *timestamp))
@@ -1089,15 +1188,18 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                             break;
                         }
                     }
+                    Ok(())
                 });
 
                 let health_supervision_sender = supervision_tx.clone();
                 let health_event_sender = wora.sender.clone();
                 let unhealthy_action = restart.supervision.unhealthy_action.clone();
-                let health_supervision_task = tokio::spawn(async move {
+                let cancelled = runtime_tasks.cancellation_token();
+                runtime_tasks.spawn("health supervision", async move {
                     loop {
-                        if health_rx.changed().await.is_err() {
-                            break;
+                        tokio::select! {
+                            _ = cancelled.cancelled() => break,
+                            result = health_rx.changed() => if result.is_err() { break },
                         }
 
                         if *health_rx.borrow() == HealthState::Failed && !matches!(unhealthy_action, UnhealthyAction::Ignore) {
@@ -1108,12 +1210,16 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                                 .await;
                         }
                     }
+                    Ok(())
                 });
 
                 let runtime_event_tasks = exec
                     .spawn_runtime_event_sources_with_signal_mapper(runtime_event_tx.clone(), signal_mapper.clone())
                     .instrument(tracing::info_span!("exec:run:event_sources"))
                     .await?;
+                for task in runtime_event_tasks {
+                    runtime_tasks.adopt("executor event source", task);
+                }
 
                 let _ = metrics_sender.send(o11y_new_ev_hostinfo(wora.host.info())).await;
                 let _ = metrics_sender
@@ -1126,19 +1232,31 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                     let _ = metrics_sender.send(o11y_new_ev_processstats(&process_stats)).await;
                 }
 
-                wora.schedule_task(status_interval, move |tx| async move {
-                    let cap = tx.capacity();
-                    let max_cap = tx.max_capacity();
-                    let _ = tx.send(o11y_new_ev_status(cap, max_cap)).await;
-                    TaskOp::Requeue
-                })
-                .await;
+                let status_tx = wora.o11y.sender().clone();
+                let cancelled = runtime_tasks.cancellation_token();
+                runtime_tasks.spawn("status reporting", async move {
+                    loop {
+                        tokio::select! {
+                            _ = cancelled.cancelled() => break,
+                            _ = tokio::time::sleep(status_interval) => {
+                                let _ = status_tx.send(o11y_new_ev_status(status_tx.capacity(), status_tx.max_capacity())).await;
+                            }
+                        }
+                    }
+                    Ok(())
+                });
 
-                wora.schedule_task(flush_interval, move |tx| async move {
-                    let _ = tx.send(o11y_new_ev_flush()).await;
-                    TaskOp::Requeue
-                })
-                .await;
+                let flush_tx = wora.o11y.sender().clone();
+                let cancelled = runtime_tasks.cancellation_token();
+                runtime_tasks.spawn("observability flushing", async move {
+                    loop {
+                        tokio::select! {
+                            _ = cancelled.cancelled() => break,
+                            _ = tokio::time::sleep(flush_interval) => { let _ = flush_tx.send(o11y_new_ev_flush()).await; }
+                        }
+                    }
+                    Ok(())
+                });
 
                 let runtime_status = wora.status_handle();
                 let runtime_app_name = wora.app_name.clone();
@@ -1146,14 +1264,21 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                 let runtime_metrics_restart_counter = restart_counter.clone();
                 let runtime_environment = runtime_environment.clone();
                 let runtime_event_sender = wora.sender.clone();
-                wora.schedule_task(hs_interval, move |tx| {
-                    let runtime_status = runtime_status.clone();
-                    let runtime_app_name = runtime_app_name.clone();
-                    let runtime_leadership = runtime_leadership.clone();
-                    let runtime_metrics_restart_counter = runtime_metrics_restart_counter.clone();
-                    let runtime_environment = runtime_environment.clone();
-                    let runtime_event_sender = runtime_event_sender.clone();
-                    async move {
+                let host_stats_tx = wora.o11y.sender().clone();
+                let cancelled = runtime_tasks.cancellation_token();
+                runtime_tasks.spawn("host and process sampling", async move {
+                    loop {
+                        tokio::select! {
+                            _ = cancelled.cancelled() => break,
+                            _ = tokio::time::sleep(hs_interval) => {}
+                        }
+                        let tx = host_stats_tx.clone();
+                        let runtime_status = runtime_status.clone();
+                        let runtime_app_name = runtime_app_name.clone();
+                        let runtime_leadership = runtime_leadership.clone();
+                        let runtime_metrics_restart_counter = runtime_metrics_restart_counter.clone();
+                        let runtime_environment = runtime_environment.clone();
+                        let runtime_event_sender = runtime_event_sender.clone();
                         let host_stats = match runtime_environment.refresh_host_stats() {
                             Ok(stats) => stats,
                             Err(err) => {
@@ -1181,11 +1306,9 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                             event_backlog_max_capacity: runtime_event_sender.max_capacity(),
                         };
                         let _ = tx.send(o11y_new_ev_runtime_metrics(&runtime_metrics)).await;
-
-                        TaskOp::Requeue
                     }
-                })
-                .await;
+                    Ok(())
+                });
 
                 let boot_state = resolve_boot_state(fs.clone(), boot_dir.unwrap_or_else(default_boot_root), app.name())
                     .await
@@ -1237,13 +1360,19 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                         info!("dirs.cache: {:?}", wora.dirs.cache_root_dir);
                         info!("dirs.secrets: {:?}", wora.dirs.secrets_root_dir);
 
-                        let ready_task = tokio::spawn(wait_for_ready_notification::<AppEv, AppMetric, _, _>(
-                            exec.clone(),
-                            wora.app_name.clone(),
-                            wora.dirs.clone(),
-                            fs.clone(),
-                            readiness_rx,
-                        ));
+                        let cancelled = runtime_tasks.cancellation_token();
+                        let readiness_exec = exec.clone();
+                        let readiness_app_name = wora.app_name.clone();
+                        let readiness_dirs = wora.dirs.clone();
+                        let readiness_fs = fs.clone();
+                        runtime_tasks.spawn("readiness notification", async move {
+                            tokio::select! {
+                                _ = cancelled.cancelled() => Ok(()),
+                                result = wait_for_ready_notification::<AppEv, AppMetric, _, _>(
+                                    readiness_exec, readiness_app_name, readiness_dirs, readiness_fs, readiness_rx,
+                                ) => result.map_err(|err| err.to_string()),
+                            }
+                        });
 
                         info!("notify:watch:dir: {:?}", &wora.dirs.metadata_root_dir);
                         let mut watcher = fs.watch_dir(&wora.dirs.metadata_root_dir).await?;
@@ -1254,8 +1383,13 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                         let ev_sender = runtime_event_tx.clone();
                         let secret_ev_sender = runtime_event_tx.clone();
 
-                        let watcher_task = tokio::spawn(async move {
-                            while let Some(res) = watcher.receiver().recv().await {
+                        let cancelled = runtime_tasks.cancellation_token();
+                        runtime_tasks.spawn("metadata watcher", async move {
+                            loop {
+                                let res = tokio::select! {
+                                    _ = cancelled.cancelled() => break,
+                                    res = watcher.receiver().recv() => match res { Some(res) => res, None => break },
+                                };
                                 match res {
                                     Ok(event) => {
                                         info!("changed: {:?}", event);
@@ -1272,9 +1406,15 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                                     Err(e) => error!("watch error: {:?}", e),
                                 }
                             }
+                            Ok(())
                         });
-                        let secret_watcher_task = tokio::spawn(async move {
-                            while let Some(res) = secret_watcher.receiver().recv().await {
+                        let cancelled = runtime_tasks.cancellation_token();
+                        runtime_tasks.spawn("secret watcher", async move {
+                            loop {
+                                let res = tokio::select! {
+                                    _ = cancelled.cancelled() => break,
+                                    res = secret_watcher.receiver().recv() => match res { Some(res) => res, None => break },
+                                };
                                 match res {
                                     Ok(event) => {
                                         info!("secret changed: {:?}", event);
@@ -1288,6 +1428,7 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                                     Err(e) => error!("watch error: {:?}", e),
                                 }
                             }
+                            Ok(())
                         });
 
                         info!(process_id = wora.pid.to_string(), app_name = app.name());
@@ -1308,23 +1449,6 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                             warn!(comp = "exec", method = "run", is_ready = false);
                         }
 
-                        watcher_task.abort();
-                        secret_watcher_task.abort();
-                        // Readiness notification is startup supervision. Once main
-                        // has returned there is no reason to wait indefinitely for
-                        // an application that never transitioned to Ready.
-                        ready_task.abort();
-                        match ready_task.await {
-                            Ok(Ok(())) => {}
-                            Ok(Err(err)) => return Err(MainEarlyReturn::SetupFailed(err)),
-                            Err(join_err) if join_err.is_cancelled() => {}
-                            Err(join_err) => {
-                                return Err(MainEarlyReturn::WoraSetup(WoraSetupError::Str(format!(
-                                    "readiness supervision task failed: {join_err}"
-                                ))));
-                            }
-                        }
-
                         exec.on_runtime_stopping(&wora.app_name, &wora.dirs, fs.clone())
                             .instrument(tracing::info_span!("exec:run:on_runtime_stopping"))
                             .await?;
@@ -1341,11 +1465,7 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
 
                 exec.end(&wora, fs.clone()).instrument(tracing::info_span!("exec:run:end")).await;
 
-                health_supervision_task.abort();
-                runtime_dispatch_task.abort();
-                for task in runtime_event_tasks {
-                    task.abort();
-                }
+                runtime_tasks.shutdown().await?;
 
                 rc
             }
@@ -1400,7 +1520,10 @@ fn lock_file_name(app_name: &str, allow_concurrent_executions: bool) -> String {
 
 #[cfg(test)]
 mod runner_tests {
-    use super::lock_file_name;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use super::{MainEarlyReturn, RuntimeTaskRegistry, lock_file_name};
 
     #[test]
     fn concurrent_lock_file_names_are_unique() {
@@ -1415,5 +1538,67 @@ mod runner_tests {
     #[test]
     fn single_instance_lock_file_name_remains_stable() {
         assert_eq!(lock_file_name("demo", false), "demo.lock");
+    }
+
+    #[tokio::test]
+    async fn runtime_tasks_cooperate_with_cancellation_and_stop_emitting() {
+        let mut tasks = RuntimeTaskRegistry::new();
+        let cancelled = tasks.cancellation_token();
+        let emissions = Arc::new(AtomicUsize::new(0));
+        let task_emissions = emissions.clone();
+        let observed = Arc::new(AtomicBool::new(false));
+        let task_observed = observed.clone();
+        tasks.spawn("cooperative", async move {
+            loop {
+                tokio::select! {
+                    _ = cancelled.cancelled() => {
+                        task_observed.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(1)) => {
+                        task_emissions.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }
+            Ok(())
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+        assert!(tasks.shutdown().await.is_ok());
+        let after_shutdown = emissions.load(Ordering::SeqCst);
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+        assert!(observed.load(Ordering::SeqCst));
+        assert_eq!(emissions.load(Ordering::SeqCst), after_shutdown);
+    }
+
+    #[tokio::test]
+    async fn runtime_tasks_abort_tasks_that_ignore_cancellation() {
+        let mut tasks = RuntimeTaskRegistry::new();
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        tasks.spawn("stuck", async move {
+            struct DropNotice(Option<tokio::sync::oneshot::Sender<()>>);
+            impl Drop for DropNotice {
+                fn drop(&mut self) {
+                    if let Some(sender) = self.0.take() {
+                        let _ = sender.send(());
+                    }
+                }
+            }
+            let _notice = DropNotice(Some(dropped_tx));
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+
+        assert!(tasks.shutdown().await.is_ok());
+        assert!(dropped_rx.await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn runtime_task_failures_are_reported() {
+        let mut tasks = RuntimeTaskRegistry::new();
+        tasks.spawn("broken", async { Err("boom".to_string()) });
+
+        let result = tasks.shutdown().await;
+        assert!(matches!(result, Err(MainEarlyReturn::InfrastructureTask(message)) if message == "broken: boom"));
     }
 }

@@ -86,36 +86,6 @@ Implementation outline:
 - Add tests that mutate files during snapshot acquisition, exercise retry limits,
   and verify that parsers never receive a mixed in-memory generation.
 
-## Task ownership and cancellation
-
-The runner currently discards handles returned by periodic observability tasks.
-Detached tasks can outlive the application lifecycle briefly, and teardown cannot
-cancel and await all runner-owned work deterministically.
-
-Implementation outline:
-
-- Add an internal runtime task registry that owns every task spawned by the
-  runner: status reporting, flushing, host/process sampling, watcher forwarding,
-  readiness notification, health supervision, dispatch, and executor event
-  sources.
-- Give tasks a shared cancellation mechanism. `tokio_util::sync::CancellationToken`
-  is a suitable option if adding `tokio-util` is acceptable; otherwise use a
-  `watch` channel carrying runner lifecycle state.
-- Change periodic loops to `select!` between their timer and cancellation instead
-  of relying only on `JoinHandle::abort`.
-- During teardown, signal cancellation first, then await all handles with a
-  bounded grace period. Abort only tasks that do not cooperate before the
-  deadline.
-- Preserve important task failures rather than silently dropping them. Define
-  whether the first infrastructure failure terminates the runner or is collected
-  into a teardown error.
-- Consider returning a task-registration handle through `Wora` so applications
-  can register lifecycle-bound background tasks without managing a parallel
-  shutdown system.
-- Add tests proving no task emits after finish, cooperative tasks observe
-  cancellation, stuck tasks are aborted after the deadline, and task failures are
-  reported consistently.
-
 ## Cross-platform API gating
 
 Unix executors and signal APIs are currently exposed without a clear
@@ -144,4 +114,3 @@ Implementation outline:
   practical.
 - Add compile-time tests or small target-gated examples to ensure the portable
   prelude remains usable without Unix-only symbols.
-

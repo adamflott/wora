@@ -96,6 +96,8 @@ pub enum MainEarlyReturn {
     SetupFailed(#[from] SetupFailure),
     #[error("application setup: {0}")]
     ApplicationSetup(String),
+    #[error("runtime infrastructure task failed: {0}")]
+    InfrastructureTask(String),
     #[error("already running: {0}")]
     AlreadyRunning(std::path::PathBuf),
     #[error("exit code: {0}")]
