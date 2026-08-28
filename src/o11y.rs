@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
@@ -16,6 +18,7 @@ use thiserror::Error;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tracing::{Id, Level};
 use tracing_subscriber::Layer;
@@ -23,7 +26,7 @@ use tracing_subscriber::Layer;
 use crate::{HealthState, Leadership, ReadinessState};
 
 /// Timestamped observability event emitted by WORA or an application.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct O11yEvent<T> {
     /// Event creation time.
     pub timestamp: chrono::DateTime<chrono::Utc>,
@@ -135,7 +138,7 @@ pub fn o11y_new_ev_app<T>(m: T) -> O11yEvent<T> {
 }
 
 /// Tracing span lifecycle action.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum O11ySpanEventKind {
     /// Span was entered.
     Enter,
@@ -145,7 +148,7 @@ pub enum O11ySpanEventKind {
     Close,
 }
 /// Observability event payload.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum O11yEventKind<T> {
     /// Observability pipeline was initialized with the given log directory.
     Init(PathBuf),
@@ -341,12 +344,177 @@ pub struct RuntimeMetrics {
 /// Error returned by observability sinks and processors.
 #[derive(Debug, Error)]
 pub enum O11ySinkError {
-    #[error("o11y sink: io")]
+    #[error("o11y sink: io: {0}")]
     Io(#[from] std::io::Error),
-    #[error("o11y sink: serialization")]
+    #[error("o11y sink: serialization: {0}")]
     Serialization(#[from] serde_json::Error),
     #[error("o11y sink: mutex poisoned")]
     Poisoned,
+    /// An exporter-specific operation failed.
+    #[error("o11y sink: backend: {0}")]
+    Backend(String),
+}
+
+/// Behavior when one sink fails while processing an event.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum O11yFailurePolicy {
+    /// Disable the failed sink, keep remaining sinks alive, and retain the
+    /// error in [`O11yPipelineStatus`].
+    #[default]
+    Isolate,
+    /// Stop the observability processor immediately.
+    FailFast,
+}
+
+/// Settings that may be changed while an application is running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct O11yRuntimeSettings {
+    /// Periodic sink flush interval.
+    pub flush_interval: std::time::Duration,
+    /// Queue status reporting interval.
+    pub status_interval: std::time::Duration,
+    /// Host and process sampling interval.
+    pub host_stats_interval: std::time::Duration,
+    /// Sink failure behavior.
+    pub failure_policy: O11yFailurePolicy,
+}
+
+/// Atomic update containing only settings that should change.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct O11ySettingsPatch {
+    flush_interval: Option<std::time::Duration>,
+    status_interval: Option<std::time::Duration>,
+    host_stats_interval: Option<std::time::Duration>,
+    failure_policy: Option<O11yFailurePolicy>,
+}
+
+impl O11ySettingsPatch {
+    /// Create an empty settings patch.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Change the periodic sink flush interval.
+    pub fn flush_interval(mut self, value: std::time::Duration) -> Self {
+        self.flush_interval = Some(value);
+        self
+    }
+
+    /// Change the queue status reporting interval.
+    pub fn status_interval(mut self, value: std::time::Duration) -> Self {
+        self.status_interval = Some(value);
+        self
+    }
+
+    /// Change the host and process sampling interval.
+    pub fn host_stats_interval(mut self, value: std::time::Duration) -> Self {
+        self.host_stats_interval = Some(value);
+        self
+    }
+
+    /// Change sink failure behavior.
+    pub fn failure_policy(mut self, value: O11yFailurePolicy) -> Self {
+        self.failure_policy = Some(value);
+        self
+    }
+
+    fn apply(self, settings: &mut O11yRuntimeSettings) -> Result<(), O11yControlError> {
+        for (name, value) in [
+            ("flush", self.flush_interval),
+            ("status", self.status_interval),
+            ("host stats", self.host_stats_interval),
+        ] {
+            if value.is_some_and(|interval| interval.is_zero()) {
+                return Err(O11yControlError::InvalidSettings(format!("{name} interval must be greater than zero")));
+            }
+        }
+        if let Some(value) = self.flush_interval {
+            settings.flush_interval = value;
+        }
+        if let Some(value) = self.status_interval {
+            settings.status_interval = value;
+        }
+        if let Some(value) = self.host_stats_interval {
+            settings.host_stats_interval = value;
+        }
+        if let Some(value) = self.failure_policy {
+            settings.failure_policy = value;
+        }
+        Ok(())
+    }
+}
+
+/// Error returned by runtime observability control operations.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum O11yControlError {
+    /// The pipeline has been built but its runner has not started.
+    #[error("observability pipeline is not running")]
+    NotRunning,
+    /// The observability processor is no longer running.
+    #[error("observability control channel is closed")]
+    Closed,
+    /// A requested sink does not exist.
+    #[error("observability sink {0:?} was not found")]
+    SinkNotFound(String),
+    /// A runtime setting is invalid.
+    #[error("invalid observability settings: {0}")]
+    InvalidSettings(String),
+    /// A sink rejected a control operation.
+    #[error("observability sink control failed: {0}")]
+    Sink(String),
+}
+
+/// Runtime state of a named sink.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum O11ySinkState {
+    /// The sink is receiving events.
+    Enabled,
+    /// The sink was disabled through the control handle.
+    Disabled,
+    /// The sink was isolated after returning an error.
+    Failed(String),
+}
+
+/// Current state of a named observability sink.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct O11ySinkStatus {
+    /// Stable sink name supplied to the pipeline builder.
+    pub name: String,
+    /// Whether the sink is enabled, disabled, or failed.
+    pub state: O11ySinkState,
+}
+
+/// Runtime state of a managed observability service.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum O11yServiceState {
+    /// The pipeline has been built but the runner has not started.
+    Pending,
+    /// The service future is currently running.
+    Running,
+    /// The service stopped without returning an error.
+    Stopped,
+    /// The service returned an error.
+    Failed(String),
+}
+
+/// Current state of a managed observability service.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct O11yServiceStatus {
+    /// Stable service name supplied to the pipeline builder.
+    pub name: String,
+    /// Current lifecycle state.
+    pub state: O11yServiceState,
+}
+
+/// Snapshot of mutable observability pipeline state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct O11yPipelineStatus {
+    /// Current interval and failure-policy settings.
+    pub settings: O11yRuntimeSettings,
+    /// Status of every registered sink, keyed by stable name.
+    pub sinks: HashMap<String, O11ySinkStatus>,
+    /// Status of every managed exporter service, keyed by stable name.
+    pub services: HashMap<String, O11yServiceStatus>,
 }
 
 #[async_trait::async_trait]
@@ -358,6 +526,16 @@ pub trait O11ySink<T>: Send {
     /// Flush buffered sink state.
     async fn flush(&mut self) -> Result<(), O11ySinkError> {
         Ok(())
+    }
+
+    /// Clear backend state when supported.
+    async fn clear(&mut self) -> Result<(), O11ySinkError> {
+        Err(O11ySinkError::Backend("clear is not supported by this sink".to_string()))
+    }
+
+    /// Reconnect backend resources when supported.
+    async fn reconnect(&mut self) -> Result<(), O11ySinkError> {
+        Err(O11ySinkError::Backend("reconnect is not supported by this sink".to_string()))
     }
 }
 
@@ -397,6 +575,64 @@ impl<T: Debug + Send + Sync + 'static> O11ySink<T> for O11yMemorySink {
         let mut entries = self.entries.lock().map_err(|_| O11ySinkError::Poisoned)?;
         entries.push(format!("{} {} {:?}", event.timestamp.to_rfc3339(), event_kind_name(&event.kind), event.kind));
         Ok(())
+    }
+
+    async fn clear(&mut self) -> Result<(), O11ySinkError> {
+        self.entries.lock().map_err(|_| O11ySinkError::Poisoned)?.clear();
+        Ok(())
+    }
+}
+
+/// Sink that writes debug-formatted events to standard output.
+#[derive(Default)]
+pub struct O11yStdoutSink;
+
+#[async_trait::async_trait]
+impl<T: Debug + Send + Sync + 'static> O11ySink<T> for O11yStdoutSink {
+    async fn handle_event(&mut self, event: &O11yEvent<T>) -> Result<(), O11ySinkError> {
+        println!("{} {} {:?}", event.timestamp.to_rfc3339(), event_kind_name(&event.kind), event.kind);
+        Ok(())
+    }
+
+    async fn clear(&mut self) -> Result<(), O11ySinkError> {
+        Ok(())
+    }
+}
+
+/// Sink that intentionally discards every event.
+#[derive(Default)]
+pub struct O11yDiscardSink;
+
+#[async_trait::async_trait]
+impl<T: Send + Sync + 'static> O11ySink<T> for O11yDiscardSink {
+    async fn handle_event(&mut self, _event: &O11yEvent<T>) -> Result<(), O11ySinkError> {
+        Ok(())
+    }
+
+    async fn clear(&mut self) -> Result<(), O11ySinkError> {
+        Ok(())
+    }
+}
+
+/// Sink that forwards cloned events to another Tokio channel.
+pub struct O11yChannelSink<T> {
+    sender: Sender<O11yEvent<T>>,
+}
+
+impl<T> O11yChannelSink<T> {
+    /// Create a forwarding sink using `sender`.
+    pub fn new(sender: Sender<O11yEvent<T>>) -> Self {
+        Self { sender }
+    }
+}
+
+#[async_trait::async_trait]
+impl<T: Clone + Send + Sync + 'static> O11ySink<T> for O11yChannelSink<T> {
+    async fn handle_event(&mut self, event: &O11yEvent<T>) -> Result<(), O11ySinkError> {
+        self.sender
+            .send(event.clone())
+            .await
+            .map_err(|_| O11ySinkError::Backend("observability forwarding channel is closed".to_string()))
     }
 }
 
@@ -460,37 +696,73 @@ impl<T: Debug + Send + Sync + 'static> O11ySink<T> for O11yJsonLinesSink {
         }
         Ok(())
     }
+
+    async fn clear(&mut self) -> Result<(), O11ySinkError> {
+        if let Some(writer) = self.writer.as_mut() {
+            writer.flush().await?;
+        }
+        self.writer = None;
+        OpenOptions::new().create(true).write(true).truncate(true).open(&self.path).await?;
+        Ok(())
+    }
 }
 
 /// Observability processor that fans events out to one or more sinks.
 pub struct O11yProcessor<T> {
-    sinks: Vec<Box<dyn O11ySink<T>>>,
+    sinks: Vec<O11ySinkEntry<T>>,
+    failure_policy: O11yFailurePolicy,
+}
+
+struct O11ySinkEntry<T> {
+    name: String,
+    state: O11ySinkState,
+    sink: Box<dyn O11ySink<T>>,
 }
 
 impl<T: Sync> O11yProcessor<T> {
     /// Create a processor with `sinks`.
     pub fn new(sinks: Vec<Box<dyn O11ySink<T>>>) -> Self {
-        Self { sinks }
+        Self {
+            sinks: sinks
+                .into_iter()
+                .enumerate()
+                .map(|(index, sink)| O11ySinkEntry {
+                    name: format!("sink-{index}"),
+                    state: O11ySinkState::Enabled,
+                    sink,
+                })
+                .collect(),
+            failure_policy: O11yFailurePolicy::Isolate,
+        }
+    }
+
+    fn from_entries(sinks: Vec<O11ySinkEntry<T>>, failure_policy: O11yFailurePolicy) -> Self {
+        Self { sinks, failure_policy }
+    }
+
+    /// Select how failures from individual sinks are handled.
+    pub fn with_failure_policy(mut self, failure_policy: O11yFailurePolicy) -> Self {
+        self.failure_policy = failure_policy;
+        self
     }
 
     /// Process a single event.
     pub async fn process_event(&mut self, event: &O11yEvent<T>) -> Result<(), O11ySinkError> {
-        for sink in &mut self.sinks {
-            sink.handle_event(event).await?;
-            if matches!(event.kind, O11yEventKind::Flush | O11yEventKind::Finish) {
-                sink.flush().await?;
-            }
-        }
-        Ok(())
+        self.process_event_isolated(event).await
     }
 
     /// Run until `receiver` closes.
     pub async fn run(mut self, mut receiver: Receiver<O11yEvent<T>>) -> Result<(), O11ySinkError> {
         while let Some(event) = receiver.recv().await {
-            self.process_event(&event).await?;
+            self.process_event_isolated(&event).await?;
+            if matches!(event.kind, O11yEventKind::Finish) {
+                break;
+            }
         }
         for sink in &mut self.sinks {
-            sink.flush().await?;
+            if matches!(sink.state, O11ySinkState::Enabled) {
+                sink.sink.flush().await?;
+            }
         }
         Ok(())
     }
@@ -501,6 +773,147 @@ impl<T: Sync> O11yProcessor<T> {
         T: Send + 'static,
     {
         tokio::spawn(self.run(receiver))
+    }
+
+    pub(crate) async fn run_controlled(
+        mut self,
+        mut receiver: Receiver<O11yEvent<T>>,
+        mut commands: Receiver<O11yCommand>,
+        settings_tx: watch::Sender<O11yRuntimeSettings>,
+    ) -> Result<(), O11ySinkError> {
+        loop {
+            tokio::select! {
+                event = receiver.recv() => match event {
+                    Some(event) => {
+                        self.process_event_isolated(&event).await?;
+                        if matches!(event.kind, O11yEventKind::Finish) { break; }
+                    }
+                    None => break,
+                },
+                command = commands.recv(), if !commands.is_closed() => if let Some(command) = command {
+                    self.handle_command(command, &settings_tx).await;
+                }
+            }
+        }
+        for sink in &mut self.sinks {
+            if matches!(sink.state, O11ySinkState::Enabled) {
+                sink.sink.flush().await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn process_event_isolated(&mut self, event: &O11yEvent<T>) -> Result<(), O11ySinkError> {
+        for sink in &mut self.sinks {
+            if !matches!(sink.state, O11ySinkState::Enabled) {
+                continue;
+            }
+            let result = match &event.kind {
+                O11yEventKind::Flush => sink.sink.flush().await,
+                O11yEventKind::Clear => sink.sink.clear().await,
+                O11yEventKind::Reconnect => sink.sink.reconnect().await,
+                _ => match sink.sink.handle_event(event).await {
+                    Ok(()) if matches!(event.kind, O11yEventKind::Finish) => sink.sink.flush().await,
+                    result => result,
+                },
+            };
+            if let Err(error) = result {
+                if self.failure_policy == O11yFailurePolicy::FailFast {
+                    return Err(error);
+                }
+                tracing::error!(sink = %sink.name, %error, "disabling failed observability sink");
+                sink.state = O11ySinkState::Failed(error.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_command(&mut self, command: O11yCommand, settings_tx: &watch::Sender<O11yRuntimeSettings>) {
+        match command {
+            O11yCommand::Apply { patch, response } => {
+                let mut settings = *settings_tx.borrow();
+                let result = patch.apply(&mut settings).map(|()| {
+                    self.failure_policy = settings.failure_policy;
+                    settings_tx.send_replace(settings);
+                    settings
+                });
+                let _ = response.send(result);
+            }
+            O11yCommand::Settings { response } => {
+                let _ = response.send(Ok(*settings_tx.borrow()));
+            }
+            O11yCommand::Status { services, response } => {
+                let sinks = self
+                    .sinks
+                    .iter()
+                    .map(|sink| {
+                        (
+                            sink.name.clone(),
+                            O11ySinkStatus {
+                                name: sink.name.clone(),
+                                state: sink.state.clone(),
+                            },
+                        )
+                    })
+                    .collect();
+                let _ = response.send(Ok(O11yPipelineStatus {
+                    settings: *settings_tx.borrow(),
+                    sinks,
+                    services,
+                }));
+            }
+            O11yCommand::Enable { name, response } => {
+                let result = self
+                    .sinks
+                    .iter_mut()
+                    .find(|sink| sink.name == name)
+                    .ok_or(O11yControlError::SinkNotFound(name))
+                    .map(|sink| sink.state = O11ySinkState::Enabled);
+                let _ = response.send(result);
+            }
+            O11yCommand::Disable { name, response } => {
+                let result = self
+                    .sinks
+                    .iter_mut()
+                    .find(|sink| sink.name == name)
+                    .ok_or(O11yControlError::SinkNotFound(name))
+                    .map(|sink| sink.state = O11ySinkState::Disabled);
+                let _ = response.send(result);
+            }
+            O11yCommand::Flush { response } => {
+                let _ = response.send(control_sinks(&mut self.sinks, SinkControl::Flush).await);
+            }
+            O11yCommand::Clear { response } => {
+                let _ = response.send(control_sinks(&mut self.sinks, SinkControl::Clear).await);
+            }
+            O11yCommand::Reconnect { response } => {
+                let _ = response.send(control_sinks(&mut self.sinks, SinkControl::Reconnect).await);
+            }
+        }
+    }
+}
+
+enum SinkControl {
+    Flush,
+    Clear,
+    Reconnect,
+}
+
+async fn control_sinks<T>(sinks: &mut [O11ySinkEntry<T>], control: SinkControl) -> Result<(), O11yControlError> {
+    let mut first_error = None;
+    for sink in sinks.iter_mut().filter(|sink| matches!(sink.state, O11ySinkState::Enabled)) {
+        let result = match control {
+            SinkControl::Flush => sink.sink.flush().await,
+            SinkControl::Clear => sink.sink.clear().await,
+            SinkControl::Reconnect => sink.sink.reconnect().await,
+        };
+        if let Err(error) = result {
+            first_error.get_or_insert_with(|| O11yControlError::Sink(format!("{}: {error}", sink.name)));
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
@@ -520,12 +933,408 @@ impl O11yMetricValue {
 }
 
 /// Options used by the runner to schedule and send observability events.
+#[doc(hidden)]
 #[derive(Debug, Builder, Getters)]
 pub struct O11yProcessorOptions<T> {
     sender: Sender<O11yEvent<T>>,
     flush_interval: std::time::Duration,
     status_interval: std::time::Duration,
     host_stats_interval: std::time::Duration,
+}
+
+pub(crate) enum O11yCommand {
+    Apply {
+        patch: O11ySettingsPatch,
+        response: oneshot::Sender<Result<O11yRuntimeSettings, O11yControlError>>,
+    },
+    Settings {
+        response: oneshot::Sender<Result<O11yRuntimeSettings, O11yControlError>>,
+    },
+    Status {
+        services: HashMap<String, O11yServiceStatus>,
+        response: oneshot::Sender<Result<O11yPipelineStatus, O11yControlError>>,
+    },
+    Enable {
+        name: String,
+        response: oneshot::Sender<Result<(), O11yControlError>>,
+    },
+    Disable {
+        name: String,
+        response: oneshot::Sender<Result<(), O11yControlError>>,
+    },
+    Flush {
+        response: oneshot::Sender<Result<(), O11yControlError>>,
+    },
+    Clear {
+        response: oneshot::Sender<Result<(), O11yControlError>>,
+    },
+    Reconnect {
+        response: oneshot::Sender<Result<(), O11yControlError>>,
+    },
+}
+
+/// Cloneable runtime control plane for an observability pipeline.
+///
+/// Commands are ordered relative to other commands. Event producers use a
+/// separate bounded channel, so callers should await a control operation
+/// before emitting events that depend on its new state.
+pub struct O11yControlHandle {
+    sender: Sender<O11yCommand>,
+    started: watch::Receiver<bool>,
+    services: Arc<Mutex<HashMap<String, O11yServiceStatus>>>,
+}
+
+impl Clone for O11yControlHandle {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            started: self.started.clone(),
+            services: self.services.clone(),
+        }
+    }
+}
+
+impl O11yControlHandle {
+    fn ensure_running(&self) -> Result<(), O11yControlError> {
+        if *self.started.borrow() { Ok(()) } else { Err(O11yControlError::NotRunning) }
+    }
+
+    /// Atomically apply a runtime settings patch and return the new settings.
+    pub async fn apply(&self, patch: O11ySettingsPatch) -> Result<O11yRuntimeSettings, O11yControlError> {
+        self.ensure_running()?;
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(O11yCommand::Apply { patch, response })
+            .await
+            .map_err(|_| O11yControlError::Closed)?;
+        receiver.await.map_err(|_| O11yControlError::Closed)?
+    }
+
+    /// Read the processor's current runtime settings.
+    pub async fn settings(&self) -> Result<O11yRuntimeSettings, O11yControlError> {
+        self.ensure_running()?;
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(O11yCommand::Settings { response })
+            .await
+            .map_err(|_| O11yControlError::Closed)?;
+        receiver.await.map_err(|_| O11yControlError::Closed)?
+    }
+
+    /// Return current settings and state for every named sink and service.
+    pub async fn status(&self) -> Result<O11yPipelineStatus, O11yControlError> {
+        self.ensure_running()?;
+        let (response, receiver) = oneshot::channel();
+        let services = self.services.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        self.sender
+            .send(O11yCommand::Status { services, response })
+            .await
+            .map_err(|_| O11yControlError::Closed)?;
+        receiver.await.map_err(|_| O11yControlError::Closed)?
+    }
+
+    /// Enable a named sink, including one disabled after an isolated failure.
+    pub async fn enable_sink(&self, name: impl Into<String>) -> Result<(), O11yControlError> {
+        self.sink_command(name.into(), true).await
+    }
+
+    /// Disable a named sink without removing its state.
+    pub async fn disable_sink(&self, name: impl Into<String>) -> Result<(), O11yControlError> {
+        self.sink_command(name.into(), false).await
+    }
+
+    async fn sink_command(&self, name: String, enable: bool) -> Result<(), O11yControlError> {
+        self.ensure_running()?;
+        let (response, receiver) = oneshot::channel();
+        let command = if enable {
+            O11yCommand::Enable { name, response }
+        } else {
+            O11yCommand::Disable { name, response }
+        };
+        self.sender.send(command).await.map_err(|_| O11yControlError::Closed)?;
+        receiver.await.map_err(|_| O11yControlError::Closed)?
+    }
+
+    /// Flush every enabled sink.
+    pub async fn flush(&self) -> Result<(), O11yControlError> {
+        self.simple_command(|response| O11yCommand::Flush { response }).await
+    }
+
+    /// Clear backend state for every enabled sink.
+    pub async fn clear(&self) -> Result<(), O11yControlError> {
+        self.simple_command(|response| O11yCommand::Clear { response }).await
+    }
+
+    /// Reconnect every enabled sink.
+    pub async fn reconnect(&self) -> Result<(), O11yControlError> {
+        self.simple_command(|response| O11yCommand::Reconnect { response }).await
+    }
+
+    async fn simple_command(&self, command: impl FnOnce(oneshot::Sender<Result<(), O11yControlError>>) -> O11yCommand) -> Result<(), O11yControlError> {
+        self.ensure_running()?;
+        let (response, receiver) = oneshot::channel();
+        self.sender.send(command(response)).await.map_err(|_| O11yControlError::Closed)?;
+        receiver.await.map_err(|_| O11yControlError::Closed)?
+    }
+}
+
+/// An owned observability pipeline ready to be run with a WORA application.
+pub struct O11yPipeline<T> {
+    options: O11yProcessorOptions<T>,
+    receiver: Receiver<O11yEvent<T>>,
+    processor: O11yProcessor<T>,
+    services: Vec<O11yService>,
+    commands: Receiver<O11yCommand>,
+    settings_tx: watch::Sender<O11yRuntimeSettings>,
+    settings_rx: watch::Receiver<O11yRuntimeSettings>,
+    control: O11yControlHandle,
+    started_tx: watch::Sender<bool>,
+    service_statuses: Arc<Mutex<HashMap<String, O11yServiceStatus>>>,
+}
+
+pub(crate) struct O11yPipelineParts<T> {
+    pub options: O11yProcessorOptions<T>,
+    pub receiver: Receiver<O11yEvent<T>>,
+    pub processor: O11yProcessor<T>,
+    pub services: Vec<O11yService>,
+    pub commands: Receiver<O11yCommand>,
+    pub settings_tx: watch::Sender<O11yRuntimeSettings>,
+    pub settings_rx: watch::Receiver<O11yRuntimeSettings>,
+    pub started_tx: watch::Sender<bool>,
+    pub service_statuses: Arc<Mutex<HashMap<String, O11yServiceStatus>>>,
+}
+
+impl<T> O11yPipeline<T> {
+    /// Create a pipeline builder with production-friendly defaults.
+    pub fn builder() -> O11yPipelineBuilder<T> {
+        O11yPipelineBuilder::default()
+    }
+
+    /// Clone the event sender for tracing layers or application producers.
+    pub fn sender(&self) -> Sender<O11yEvent<T>> {
+        self.options.sender.clone()
+    }
+
+    /// Create a tracing layer connected to this pipeline.
+    pub fn tracing_layer(&self, level: Level) -> Observability<T> {
+        Observability { tx: self.sender(), level }
+    }
+
+    /// Clone the runtime control handle for storage inside the application.
+    pub fn control_handle(&self) -> O11yControlHandle {
+        self.control.clone()
+    }
+
+    pub(crate) fn into_parts(self) -> O11yPipelineParts<T> {
+        O11yPipelineParts {
+            options: self.options,
+            receiver: self.receiver,
+            processor: self.processor,
+            services: self.services,
+            commands: self.commands,
+            settings_tx: self.settings_tx,
+            settings_rx: self.settings_rx,
+            started_tx: self.started_tx,
+            service_statuses: self.service_statuses,
+        }
+    }
+}
+
+pub(crate) struct O11yService {
+    pub name: String,
+    pub future: Pin<Box<dyn Future<Output = Result<(), String>> + Send>>,
+}
+
+/// Builder for a complete observability channel and sink processor.
+pub struct O11yPipelineBuilder<T> {
+    capacity: usize,
+    flush_interval: std::time::Duration,
+    status_interval: std::time::Duration,
+    host_stats_interval: std::time::Duration,
+    failure_policy: O11yFailurePolicy,
+    sinks: Vec<(String, Box<dyn O11ySink<T>>)>,
+    services: Vec<O11yService>,
+}
+
+impl<T> Default for O11yPipelineBuilder<T> {
+    fn default() -> Self {
+        Self {
+            capacity: 64,
+            flush_interval: std::time::Duration::from_secs(30),
+            status_interval: std::time::Duration::from_secs(30),
+            host_stats_interval: std::time::Duration::from_secs(30),
+            failure_policy: O11yFailurePolicy::Isolate,
+            sinks: Vec::new(),
+            services: Vec::new(),
+        }
+    }
+}
+
+impl<T: Sync> O11yPipelineBuilder<T> {
+    /// Set the bounded event channel capacity.
+    pub fn capacity(mut self, capacity: usize) -> Self {
+        self.capacity = capacity;
+        self
+    }
+
+    /// Add a sink to the pipeline.
+    pub fn sink(mut self, name: impl Into<String>, sink: impl O11ySink<T> + 'static) -> Self {
+        self.sinks.push((name.into(), Box::new(sink)));
+        self
+    }
+
+    /// Add a long-running exporter service whose lifecycle is owned by the runner.
+    pub fn service<E, F>(mut self, name: impl Into<String>, service: F) -> Self
+    where
+        E: std::error::Error,
+        F: Future<Output = Result<(), E>> + Send + 'static,
+    {
+        self.services.push(O11yService {
+            name: name.into(),
+            future: Box::pin(async move { service.await.map_err(|error| error.to_string()) }),
+        });
+        self
+    }
+
+    /// Set the periodic sink flush interval.
+    pub fn flush_interval(mut self, interval: std::time::Duration) -> Self {
+        self.flush_interval = interval;
+        self
+    }
+
+    /// Set the queue status event interval.
+    pub fn status_interval(mut self, interval: std::time::Duration) -> Self {
+        self.status_interval = interval;
+        self
+    }
+
+    /// Set the host and process sampling interval.
+    pub fn host_stats_interval(mut self, interval: std::time::Duration) -> Self {
+        self.host_stats_interval = interval;
+        self
+    }
+
+    /// Select how failures from individual sinks are handled.
+    pub fn failure_policy(mut self, policy: O11yFailurePolicy) -> Self {
+        self.failure_policy = policy;
+        self
+    }
+
+    /// Build the channel, runtime options, and processor as one owned value.
+    pub fn build(self) -> Result<O11yPipeline<T>, O11yPipelineBuildError> {
+        if self.capacity == 0 {
+            return Err(O11yPipelineBuildError::ZeroCapacity);
+        }
+        if self.sinks.is_empty() {
+            return Err(O11yPipelineBuildError::NoSinks);
+        }
+        for (name, interval) in [
+            ("flush", self.flush_interval),
+            ("status", self.status_interval),
+            ("host stats", self.host_stats_interval),
+        ] {
+            if interval.is_zero() {
+                return Err(O11yPipelineBuildError::ZeroInterval(name));
+            }
+        }
+        let mut service_names = std::collections::HashSet::new();
+        for service in &self.services {
+            if service.name.trim().is_empty() {
+                return Err(O11yPipelineBuildError::InvalidServiceName);
+            }
+            if !service_names.insert(service.name.clone()) {
+                return Err(O11yPipelineBuildError::DuplicateServiceName(service.name.clone()));
+            }
+        }
+        let mut sink_names = std::collections::HashSet::new();
+        let mut sinks = Vec::with_capacity(self.sinks.len());
+        for (name, sink) in self.sinks {
+            if name.trim().is_empty() {
+                return Err(O11yPipelineBuildError::InvalidSinkName);
+            }
+            if !sink_names.insert(name.clone()) {
+                return Err(O11yPipelineBuildError::DuplicateSinkName(name));
+            }
+            sinks.push(O11ySinkEntry {
+                name,
+                state: O11ySinkState::Enabled,
+                sink,
+            });
+        }
+        let (sender, receiver) = tokio::sync::mpsc::channel(self.capacity);
+        let settings = O11yRuntimeSettings {
+            flush_interval: self.flush_interval,
+            status_interval: self.status_interval,
+            host_stats_interval: self.host_stats_interval,
+            failure_policy: self.failure_policy,
+        };
+        let (settings_tx, settings_rx) = watch::channel(settings);
+        let (started_tx, started) = watch::channel(false);
+        let (control_tx, commands) = tokio::sync::mpsc::channel(32);
+        let service_statuses = Arc::new(Mutex::new(
+            self.services
+                .iter()
+                .map(|service| {
+                    (
+                        service.name.clone(),
+                        O11yServiceStatus {
+                            name: service.name.clone(),
+                            state: O11yServiceState::Pending,
+                        },
+                    )
+                })
+                .collect(),
+        ));
+        let options = O11yProcessorOptions {
+            sender,
+            flush_interval: self.flush_interval,
+            status_interval: self.status_interval,
+            host_stats_interval: self.host_stats_interval,
+        };
+        let processor = O11yProcessor::from_entries(sinks, self.failure_policy);
+        Ok(O11yPipeline {
+            options,
+            receiver,
+            processor,
+            services: self.services,
+            commands,
+            settings_tx,
+            settings_rx,
+            control: O11yControlHandle {
+                sender: control_tx,
+                started,
+                services: service_statuses.clone(),
+            },
+            started_tx,
+            service_statuses,
+        })
+    }
+}
+
+/// Invalid owned-pipeline configuration.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum O11yPipelineBuildError {
+    /// A bounded Tokio channel cannot have zero capacity.
+    #[error("observability channel capacity must be greater than zero")]
+    ZeroCapacity,
+    /// A pipeline without sinks would silently discard all events.
+    #[error("observability pipeline must contain at least one sink")]
+    NoSinks,
+    /// Periodic runtime tasks require a non-zero interval.
+    #[error("observability {0} interval must be greater than zero")]
+    ZeroInterval(&'static str),
+    /// Sink names are used as stable runtime identifiers and cannot be empty.
+    #[error("observability sink name cannot be empty")]
+    InvalidSinkName,
+    /// Sink names must be unique within a pipeline.
+    #[error("duplicate observability sink name: {0}")]
+    DuplicateSinkName(String),
+    /// Service names are used in supervision errors and cannot be empty.
+    #[error("observability service name cannot be empty")]
+    InvalidServiceName,
+    /// Service names must be unique within a pipeline.
+    #[error("duplicate observability service name: {0}")]
+    DuplicateServiceName(String),
 }
 
 struct MEVisitor<T>(Level, Sender<O11yEvent<T>>);
@@ -961,5 +1770,88 @@ impl HostInfo {
         self.maxcpus = sys.cpus().len();
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod pipeline_tests {
+    use super::*;
+
+    struct FailingSink;
+
+    #[async_trait::async_trait]
+    impl O11ySink<()> for FailingSink {
+        async fn handle_event(&mut self, _event: &O11yEvent<()>) -> Result<(), O11ySinkError> {
+            Err(O11ySinkError::Backend("intentional failure".to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn control_handle_updates_settings_and_toggles_named_sink() -> Result<(), Box<dyn std::error::Error>> {
+        let entries = Arc::new(Mutex::new(Vec::new()));
+        let pipeline = O11yPipeline::<()>::builder()
+            .sink("failing", FailingSink)
+            .sink("memory", O11yMemorySink::new(entries.clone()))
+            .service("exporter", std::future::pending::<Result<(), std::io::Error>>())
+            .build()?;
+        let control = pipeline.control_handle();
+        assert_eq!(control.settings().await, Err(O11yControlError::NotRunning));
+        let parts = pipeline.into_parts();
+        parts.started_tx.send_replace(true);
+        let mut settings_rx = parts.settings_rx;
+        let sender = parts.options.sender.clone();
+        let task = tokio::spawn(parts.processor.run_controlled(parts.receiver, parts.commands, parts.settings_tx));
+
+        let updated = control
+            .apply(
+                O11ySettingsPatch::new()
+                    .flush_interval(std::time::Duration::from_secs(7))
+                    .host_stats_interval(std::time::Duration::from_secs(11))
+                    .failure_policy(O11yFailurePolicy::FailFast),
+            )
+            .await?;
+        assert_eq!(updated.flush_interval, std::time::Duration::from_secs(7));
+        assert_eq!(updated.host_stats_interval, std::time::Duration::from_secs(11));
+        assert_eq!(updated.failure_policy, O11yFailurePolicy::FailFast);
+        settings_rx.changed().await?;
+        assert_eq!(*settings_rx.borrow(), updated);
+        control.apply(O11ySettingsPatch::new().failure_policy(O11yFailurePolicy::Isolate)).await?;
+
+        sender.send(o11y_new_ev_status(1, 2)).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let status = control.status().await?;
+        assert!(matches!(status.sinks["failing"].state, O11ySinkState::Failed(_)));
+        assert_eq!(status.services["exporter"].state, O11yServiceState::Pending);
+
+        control.disable_sink("memory").await?;
+        assert_eq!(control.status().await?.sinks["memory"].state, O11ySinkState::Disabled);
+        sender.send(o11y_new_ev_status(1, 2)).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        control.enable_sink("memory").await?;
+        assert_eq!(control.status().await?.sinks["memory"].state, O11ySinkState::Enabled);
+        sender.send(o11y_new_ev_status(1, 2)).await?;
+        control.flush().await?;
+        sender.send(o11y_new_ev_finish()).await?;
+        task.await??;
+
+        assert_eq!(entries.lock().map_err(|error| std::io::Error::other(error.to_string()))?.len(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn settings_patch_rejects_zero_intervals_atomically() {
+        let mut settings = O11yRuntimeSettings {
+            flush_interval: std::time::Duration::from_secs(1),
+            status_interval: std::time::Duration::from_secs(2),
+            host_stats_interval: std::time::Duration::from_secs(3),
+            failure_policy: O11yFailurePolicy::Isolate,
+        };
+        let original = settings;
+        let result = O11ySettingsPatch::new()
+            .flush_interval(std::time::Duration::from_secs(9))
+            .status_interval(std::time::Duration::ZERO)
+            .apply(&mut settings);
+        assert!(matches!(result, Err(O11yControlError::InvalidSettings(_))));
+        assert_eq!(settings, original);
     }
 }

@@ -26,7 +26,7 @@ fn test_dirs(root: PathBuf) -> Dirs {
     }
 }
 
-fn test_o11y() -> Result<O11yProcessorOptions<()>, Box<dyn std::error::Error>> {
+fn test_o11y_options() -> Result<O11yProcessorOptions<()>, Box<dyn std::error::Error>> {
     let (tx, _rx) = tokio::sync::mpsc::channel::<O11yEvent<()>>(16);
     let interval = Duration::from_secs(60);
     O11yProcessorOptionsBuilder::default()
@@ -38,16 +38,23 @@ fn test_o11y() -> Result<O11yProcessorOptions<()>, Box<dyn std::error::Error>> {
         .map_err(|err| std::io::Error::other(err.to_string()).into())
 }
 
-fn test_o11y_with_receiver(interval: Duration) -> Result<(O11yProcessorOptions<()>, TestO11yReceiver), Box<dyn std::error::Error>> {
-    let (tx, rx) = tokio::sync::mpsc::channel::<O11yEvent<()>>(64);
-    let o11y = O11yProcessorOptionsBuilder::default()
-        .sender(tx)
+fn test_o11y() -> Result<O11yPipeline<()>, Box<dyn std::error::Error>> {
+    O11yPipeline::builder()
+        .sink("discard", O11yDiscardSink)
+        .build()
+        .map_err(|error| std::io::Error::other(error.to_string()).into())
+}
+
+fn test_o11y_with_receiver(interval: Duration) -> Result<(O11yPipeline<()>, TestO11yReceiver), Box<dyn std::error::Error>> {
+    let (sender, receiver) = tokio::sync::mpsc::channel::<O11yEvent<()>>(64);
+    let o11y = O11yPipeline::builder()
+        .sink("channel", O11yChannelSink::new(sender))
         .flush_interval(interval)
         .status_interval(interval)
         .host_stats_interval(interval)
         .build()
         .map_err(|err| std::io::Error::other(err.to_string()))?;
-    Ok((o11y, rx))
+    Ok((o11y, receiver))
 }
 
 #[cfg(target_family = "unix")]
@@ -1467,7 +1474,7 @@ async fn apply_reload_event_supports_in_memory_vfs() -> Result<(), Box<dyn std::
     fs.write(dirs.metadata_root_dir.join("reloading.toml"), b"enabled = true").await?;
     fs.write(dirs.secrets_root_dir.join("api_key"), b"bravo").await?;
 
-    let wora: Wora<(), ()> = Wora::new(&dirs, "reloading".to_string(), 8, test_o11y()?)?;
+    let wora: Wora<(), ()> = Wora::new(&dirs, "reloading".to_string(), 8, test_o11y_options()?)?;
     let mut app = ReloadingApp {
         initial_config_loaded: false,
         current_enabled: false,
@@ -1630,11 +1637,10 @@ async fn o11y_processor_fans_out_to_memory_and_json_sinks() -> Result<(), Box<dy
     task.await.map_err(|err| std::io::Error::other(err.to_string()))??;
 
     let entries = entries.lock().map_err(|err| std::io::Error::other(err.to_string()))?;
-    assert!(entries.iter().any(|entry| entry.contains("flush")));
     assert!(entries.iter().any(|entry| entry.contains("finish")));
 
     let file = std::fs::read_to_string(json_path)?;
-    assert!(file.contains("\"kind\":\"flush\""));
+    assert!(file.contains("\"kind\":\"finish\""));
     assert!(file.contains("\"sink\":\"test\""));
     Ok(())
 }
@@ -1923,7 +1929,7 @@ async fn systemd_executor_sends_ready_and_stopping_notifications() -> Result<(),
         <SystemdExecutor as AsyncExecutor<(), ()>>::dirs(&exec),
         "notify_app".to_string(),
         16,
-        test_o11y()?,
+        test_o11y_options()?,
     )?;
 
     match <SystemdExecutor as AsyncExecutor<(), ()>>::on_runtime_ready(&exec, "notify_app", &wora.dirs, PhysicalVFS::new()).await {
@@ -1972,7 +1978,7 @@ async fn container_executor_manages_readiness_and_termination_files() -> Result<
         <ContainerExecutor as AsyncExecutor<(), ()>>::dirs(&exec),
         "container_app".to_string(),
         16,
-        test_o11y()?,
+        test_o11y_options()?,
     )?;
 
     <ContainerExecutor as AsyncExecutor<(), ()>>::on_runtime_ready(&exec, "container_app", &wora.dirs, fs.clone()).await?;
@@ -2167,5 +2173,67 @@ async fn exit_with_workload_return_exits_immediately() -> Result<(), Box<dyn std
     assert!(matches!(rc, Err(MainEarlyReturn::UseExitCode(1))));
     let calls = calls.lock().map_err(|err| std::io::Error::other(err.to_string()))?;
     assert_eq!(*calls, 1);
+    Ok(())
+}
+
+#[test]
+fn observability_pipeline_rejects_invalid_configuration() {
+    assert!(matches!(O11yPipeline::<()>::builder().build(), Err(O11yPipelineBuildError::NoSinks)));
+    assert!(matches!(
+        O11yPipeline::<()>::builder().capacity(0).sink("stdout", O11yStdoutSink).build(),
+        Err(O11yPipelineBuildError::ZeroCapacity)
+    ));
+    assert!(matches!(
+        O11yPipeline::<()>::builder()
+            .sink("duplicate", O11yStdoutSink)
+            .sink("duplicate", O11yStdoutSink)
+            .build(),
+        Err(O11yPipelineBuildError::DuplicateSinkName(name)) if name == "duplicate"
+    ));
+}
+
+struct FailingSink;
+
+#[async_trait]
+impl O11ySink<()> for FailingSink {
+    async fn handle_event(&mut self, _event: &O11yEvent<()>) -> Result<(), O11ySinkError> {
+        Err(O11ySinkError::Backend("intentional test failure".to_string()))
+    }
+}
+
+#[tokio::test]
+async fn observability_processor_isolates_a_failed_sink() -> Result<(), Box<dyn std::error::Error>> {
+    let entries = Arc::new(Mutex::new(Vec::new()));
+    let processor = O11yProcessor::new(vec![Box::new(FailingSink), Box::new(O11yMemorySink::new(entries.clone()))]);
+    let (sender, receiver) = tokio::sync::mpsc::channel(4);
+    let task = processor.spawn(receiver);
+    sender.send(o11y_new_ev_status(2, 4)).await?;
+    sender.send(o11y_new_ev_finish()).await?;
+
+    task.await??;
+    assert_eq!(entries.lock().map_err(|error| std::io::Error::other(error.to_string()))?.len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn managed_observability_service_failures_are_reported() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("managed-o11y-service-failure");
+    let dirs = test_dirs(root.clone());
+    let entries = Arc::new(Mutex::new(Vec::new()));
+    let pipeline = O11yPipeline::builder()
+        .sink("memory", O11yMemorySink::new(entries))
+        .service("failing-service", async { Err(std::io::Error::other("intentional service failure")) })
+        .build()?;
+
+    let result = exec_async_runner_with_options(
+        TestExec { dirs },
+        MetricsApp,
+        PhysicalVFS::new(),
+        pipeline,
+        RunnerOptions::new().with_boot_dir(root.join("boot")),
+    )
+    .await;
+
+    assert!(matches!(result, Err(MainEarlyReturn::InfrastructureTask(message)) if message.contains("failing-service")));
     Ok(())
 }

@@ -109,28 +109,19 @@ impl App<OnboardingEvent, ()> for OnboardingApp {
 async fn main() -> Result<(), MainEarlyReturn> {
     let entries = Arc::new(Mutex::new(Vec::new()));
     let log_path = std::env::temp_dir().join("wora-onboarding.jsonl");
-    let processor = O11yProcessor::new(vec![
-        Box::new(O11yMemorySink::new(entries.clone())),
-        Box::new(O11yJsonLinesSink::new(log_path.clone()).with_name("onboarding")),
-    ]);
-    let (tx, rx) = tokio::sync::mpsc::channel::<O11yEvent<()>>(64);
-    let _processor_task = processor.spawn(rx);
-
-    tracing_subscriber::registry()
-        .with(Observability {
-            tx: tx.clone(),
-            level: Level::INFO,
-        })
-        .init();
-
-    let fs = PhysicalVFS::new();
-    let o11y = O11yProcessorOptionsBuilder::default()
-        .sender(tx)
+    let pipeline = O11yPipeline::builder()
+        .capacity(64)
+        .sink("memory", O11yMemorySink::new(entries.clone()))
+        .sink("json-lines", O11yJsonLinesSink::new(log_path.clone()).with_name("onboarding"))
         .flush_interval(Duration::from_millis(25))
         .status_interval(Duration::from_millis(25))
         .host_stats_interval(Duration::from_millis(25))
         .build()
         .map_err(|err| MainEarlyReturn::WoraSetup(WoraSetupError::Str(err.to_string())))?;
+
+    tracing_subscriber::registry().with(pipeline.tracing_layer(Level::INFO)).init();
+
+    let fs = PhysicalVFS::new();
 
     let app_name = "onboarding";
     let exec = UnixLikeUser::new(app_name, fs.clone()).await.map_err(MainEarlyReturn::Vfs)?;
@@ -146,7 +137,7 @@ async fn main() -> Result<(), MainEarlyReturn> {
         greeting: "hello from onboarding".to_string(),
     };
 
-    exec_async_runner(exec, app, fs, o11y).await?;
+    exec_async_runner(exec, app, fs, pipeline).await?;
 
     let entries = entries.lock().map_err(|err| MainEarlyReturn::WoraSetup(WoraSetupError::Str(err.to_string())))?;
     println!("captured {} observability events", entries.len());

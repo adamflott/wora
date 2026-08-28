@@ -163,7 +163,7 @@ pub struct Wora<AppEv, AppMetric> {
     /// leadership state
     pub leadership: Leadership,
     /// Observability channel and scheduling options.
-    pub o11y: O11yProcessorOptions<AppMetric>,
+    pub(crate) o11y: O11yProcessorOptions<AppMetric>,
     /// Shared runtime status for health and readiness supervision.
     status: RuntimeStatusHandle,
 }
@@ -1114,24 +1114,132 @@ pub async fn exec_async_runner<AppEv: Send + Sync + 'static, AppMetric: Debug + 
     exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
     app: impl App<AppEv, AppMetric> + Send + 'static,
     fs: impl WFS + 'static,
-    o11y: O11yProcessorOptions<AppMetric>,
+    o11y: O11yPipeline<AppMetric>,
 ) -> Result<(), MainEarlyReturn> {
     exec_async_runner_with_options(exec, app, fs, o11y, RunnerOptions::default()).await
 }
 
-/// Run apps via an `async` based executor with explicit runner options.
+/// Run apps with an owned observability pipeline and explicit runner options.
 ///
-/// The executor must create `metadata_root_dir` and `secrets_root_dir` during
-/// setup, even for apps using [`NoConfig`] or [`NoSecrets`]. The runner installs
-/// watchers on both roots after setup. Custom lock backends are responsible for
-/// any storage preparation required before executor setup.
-#[allow(clippy::too_many_lines)]
+/// The runner supervises the application, observability processor, and
+/// exporter services as one lifecycle. Infrastructure failures request a
+/// graceful application shutdown and are returned as
+/// [`MainEarlyReturn::InfrastructureTask`].
 pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static, L: LockBackend, R: RuntimeEnvironment>(
+    exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
+    app: impl App<AppEv, AppMetric> + Send + 'static,
+    fs: impl WFS + 'static,
+    o11y: O11yPipeline<AppMetric>,
+    options: RunnerOptions<AppEv, L, R>,
+) -> Result<(), MainEarlyReturn> {
+    let parts = o11y.into_parts();
+    parts.started_tx.send_replace(true);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(None::<String>);
+    let mut processor_task = tokio::spawn(parts.processor.run_controlled(parts.receiver, parts.commands, parts.settings_tx));
+    let mut service_tasks = tokio::task::JoinSet::new();
+    for service in parts.services {
+        let statuses = parts.service_statuses.clone();
+        set_o11y_service_state(&statuses, &service.name, crate::o11y::O11yServiceState::Running);
+        service_tasks.spawn(async move {
+            let result = service.future.await;
+            let state = match &result {
+                Ok(()) => crate::o11y::O11yServiceState::Stopped,
+                Err(error) => crate::o11y::O11yServiceState::Failed(error.clone()),
+            };
+            set_o11y_service_state(&statuses, &service.name, state);
+            (service.name, result)
+        });
+    }
+    let runner = exec_async_runner_inner(exec, app, fs, parts.options, options, Some(parts.settings_rx), Some(shutdown_rx));
+    tokio::pin!(runner);
+
+    let mut processor_finished = false;
+    let mut infrastructure_error = None;
+    let runner_result = tokio::select! {
+        result = &mut runner => result,
+        result = &mut processor_task => {
+            processor_finished = true;
+            infrastructure_error = Some(match result {
+                Ok(Ok(())) => "observability processor stopped unexpectedly".to_string(),
+                Ok(Err(error)) => format!("observability processor failed: {error}"),
+                Err(error) => format!("observability processor join failed: {error}"),
+            });
+            shutdown_tx.send_replace(infrastructure_error.clone());
+            runner.await
+        },
+        result = service_tasks.join_next(), if !service_tasks.is_empty() => {
+            infrastructure_error = Some(service_task_error(result));
+            shutdown_tx.send_replace(infrastructure_error.clone());
+            runner.await
+        },
+    };
+
+    if !processor_finished {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), &mut processor_task).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => {
+                infrastructure_error.get_or_insert_with(|| format!("observability processor failed: {error}"));
+            }
+            Ok(Err(error)) => {
+                infrastructure_error.get_or_insert_with(|| format!("observability processor join failed: {error}"));
+            }
+            Err(_) => {
+                processor_task.abort();
+                infrastructure_error.get_or_insert_with(|| "observability processor shutdown timed out".to_string());
+            }
+        };
+    }
+
+    while let Some(result) = service_tasks.try_join_next() {
+        infrastructure_error.get_or_insert_with(|| service_task_error(Some(result)));
+    }
+    service_tasks.abort_all();
+    while service_tasks.join_next().await.is_some() {}
+    let mut statuses = parts.service_statuses.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    for status in statuses.values_mut() {
+        if status.state == crate::o11y::O11yServiceState::Running {
+            status.state = crate::o11y::O11yServiceState::Stopped;
+        }
+    }
+    parts.started_tx.send_replace(false);
+
+    match infrastructure_error {
+        Some(error) => Err(MainEarlyReturn::InfrastructureTask(error)),
+        None => runner_result,
+    }
+}
+
+fn set_o11y_service_state(
+    statuses: &std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, crate::o11y::O11yServiceStatus>>>,
+    name: &str,
+    state: crate::o11y::O11yServiceState,
+) {
+    let mut statuses = statuses.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(status) = statuses.get_mut(name) {
+        status.state = state;
+    }
+}
+
+type O11yServiceTaskResult = Result<(String, Result<(), String>), tokio::task::JoinError>;
+
+fn service_task_error(result: Option<O11yServiceTaskResult>) -> String {
+    match result {
+        Some(Ok((name, Ok(())))) => format!("observability service {name} stopped unexpectedly"),
+        Some(Ok((name, Err(error)))) => format!("observability service {name} failed: {error}"),
+        Some(Err(error)) => format!("observability service join failed: {error}"),
+        None => "observability service set stopped unexpectedly".to_string(),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn exec_async_runner_inner<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static, L: LockBackend, R: RuntimeEnvironment>(
     exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
     app: impl App<AppEv, AppMetric> + Send + 'static,
     fs: impl WFS + 'static,
     o11y: O11yProcessorOptions<AppMetric>,
     options: RunnerOptions<AppEv, L, R>,
+    runtime_settings: Option<tokio::sync::watch::Receiver<O11yRuntimeSettings>>,
+    infrastructure_shutdown: Option<tokio::sync::watch::Receiver<Option<String>>>,
 ) -> Result<(), MainEarlyReturn> {
     let RunnerOptions {
         boot_dir,
@@ -1149,6 +1257,20 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
     lock_path.push(&lock_fp);
 
     let o11y_tx = o11y.sender().clone();
+    let initial_runtime_settings = O11yRuntimeSettings {
+        flush_interval: *o11y.flush_interval(),
+        status_interval: *o11y.status_interval(),
+        host_stats_interval: *o11y.host_stats_interval(),
+        failure_policy: O11yFailurePolicy::Isolate,
+    };
+    let (static_settings_tx, runtime_settings) = match runtime_settings {
+        Some(receiver) => (None, receiver),
+        None => {
+            let (sender, receiver) = tokio::sync::watch::channel(initial_runtime_settings);
+            (Some(sender), receiver)
+        }
+    };
+    let _static_settings_tx = static_settings_tx;
 
     let _ = o11y_tx.send(o11y_new_ev_init(exec.dirs().log_root_dir.clone())).await;
 
@@ -1158,9 +1280,6 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
 
             let result = async {
                 let metrics_sender = o11y.sender().clone();
-                let status_interval = *o11y.status_interval();
-                let flush_interval = *o11y.flush_interval();
-                let hs_interval = *o11y.host_stats_interval();
                 let restart_counter = Arc::new(AtomicU32::new(0));
 
                 let mut wora = Wora::new_with_runtime_environment(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE, o11y, runtime_environment.clone())?;
@@ -1169,6 +1288,28 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                 let (runtime_event_tx, mut runtime_event_rx) = channel::<Event<AppEv>>(EVENT_BUFFER_SIZE);
                 let (supervision_tx, mut supervision_rx) = channel::<RuntimeSupervisionEvent>(EVENT_BUFFER_SIZE);
                 let mut runtime_tasks = RuntimeTaskRegistry::new();
+                if let Some(mut shutdown) = infrastructure_shutdown {
+                    let shutdown_event_sender = runtime_event_tx.clone();
+                    let shutdown_supervision_sender = supervision_tx.clone();
+                    let cancelled = runtime_tasks.cancellation_token();
+                    runtime_tasks.spawn("infrastructure shutdown", async move {
+                        loop {
+                            if shutdown.borrow().is_some() {
+                                let timestamp = Some(Utc::now().naive_utc());
+                                let _ = shutdown_event_sender.send(Event::Control(ControlEvent::Shutdown(timestamp))).await;
+                                let _ = shutdown_supervision_sender
+                                    .send(RuntimeSupervisionEvent::ShutdownRequested(ShutdownReason::External, timestamp))
+                                    .await;
+                                break;
+                            }
+                            tokio::select! {
+                                _ = cancelled.cancelled() => break,
+                                changed = shutdown.changed() => if changed.is_err() { break },
+                            }
+                        }
+                        Ok(())
+                    });
+                }
                 let dispatch_app_sender = wora.sender.clone();
                 let dispatch_supervision_sender = supervision_tx.clone();
                 let cancelled = runtime_tasks.cancellation_token();
@@ -1234,13 +1375,16 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
 
                 let status_tx = wora.o11y.sender().clone();
                 let cancelled = runtime_tasks.cancellation_token();
+                let mut status_settings = runtime_settings.clone();
                 runtime_tasks.spawn("status reporting", async move {
                     loop {
+                        let interval = status_settings.borrow().status_interval;
                         tokio::select! {
                             _ = cancelled.cancelled() => break,
-                            _ = tokio::time::sleep(status_interval) => {
+                            _ = tokio::time::sleep(interval) => {
                                 let _ = status_tx.send(o11y_new_ev_status(status_tx.capacity(), status_tx.max_capacity())).await;
-                            }
+                            },
+                            changed = status_settings.changed() => if changed.is_err() { break },
                         }
                     }
                     Ok(())
@@ -1248,11 +1392,14 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
 
                 let flush_tx = wora.o11y.sender().clone();
                 let cancelled = runtime_tasks.cancellation_token();
+                let mut flush_settings = runtime_settings.clone();
                 runtime_tasks.spawn("observability flushing", async move {
                     loop {
+                        let interval = flush_settings.borrow().flush_interval;
                         tokio::select! {
                             _ = cancelled.cancelled() => break,
-                            _ = tokio::time::sleep(flush_interval) => { let _ = flush_tx.send(o11y_new_ev_flush()).await; }
+                            _ = tokio::time::sleep(interval) => { let _ = flush_tx.send(o11y_new_ev_flush()).await; },
+                            changed = flush_settings.changed() => if changed.is_err() { break },
                         }
                     }
                     Ok(())
@@ -1266,11 +1413,17 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
                 let runtime_event_sender = wora.sender.clone();
                 let host_stats_tx = wora.o11y.sender().clone();
                 let cancelled = runtime_tasks.cancellation_token();
+                let mut host_stats_settings = runtime_settings.clone();
                 runtime_tasks.spawn("host and process sampling", async move {
                     loop {
+                        let interval = host_stats_settings.borrow().host_stats_interval;
                         tokio::select! {
                             _ = cancelled.cancelled() => break,
-                            _ = tokio::time::sleep(hs_interval) => {}
+                            _ = tokio::time::sleep(interval) => {},
+                            changed = host_stats_settings.changed() => {
+                                if changed.is_err() { break; }
+                                continue;
+                            },
                         }
                         let tx = host_stats_tx.clone();
                         let runtime_status = runtime_status.clone();

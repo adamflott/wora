@@ -179,62 +179,26 @@ async fn main() -> Result<(), MainEarlyReturn> {
         config: DaemonConfig::default(),
     };
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<O11yEvent<()>>(10);
-    let _o11y_consumer_task = tokio::spawn(async move {
-        while let Some(res) = rx.recv().await {
-            match res.kind {
-                O11yEventKind::Status(cap, sz) => {
-                    println!("{}: status cap:{} max:{}", res.timestamp, cap, sz);
-                }
-                O11yEventKind::App(_o11y) => {}
-                O11yEventKind::HostInfo(_hi) => {}
-                O11yEventKind::HostStats(_hs) => {}
-                O11yEventKind::ProcessStats(_ps) => {}
-                O11yEventKind::RuntimeMetrics(_rm) => {}
-                O11yEventKind::Flush => {
-                    println!("{}: flush", res.timestamp);
-                }
-                O11yEventKind::Finish => {
-                    println!("{}: finish", res.timestamp);
-                }
-                O11yEventKind::Init(log_dir) => {
-                    println!("{}: init log_dir:{:?}", res.timestamp, log_dir);
-                }
-                O11yEventKind::Log(level, target, name) => {
-                    println!("{}: {} target:{} name:{}", res.timestamp, level, target, name);
-                }
-                O11yEventKind::Reconnect => {}
-                O11yEventKind::Clear => {}
-                O11yEventKind::Span(_, _) => {}
-            }
-        }
-    });
-
-    let wob = Observability {
-        tx: tx.clone(),
-        level: Level::INFO,
-    };
-
-    tracing_subscriber::registry().with(wob).init();
-
     let fs = PhysicalVFS::new();
 
     let interval = std::time::Duration::from_secs(5);
-    let o11y = O11yProcessorOptionsBuilder::default()
-        .sender(tx)
+    let pipeline = O11yPipeline::builder()
+        .capacity(10)
+        .sink("stdout", O11yStdoutSink)
         .flush_interval(interval)
         .status_interval(interval)
         .host_stats_interval(interval)
         .build()
         .map_err(|err| MainEarlyReturn::WoraSetup(WoraSetupError::Str(err.to_string())))?;
+    tracing_subscriber::registry().with(pipeline.tracing_layer(Level::INFO)).init();
 
     match &args.run_mode {
         RunMode::Sys => {
             let exec = UnixLikeSystem::new(app.name()).await;
-            exec_async_runner(exec, app, fs, o11y).await?
+            exec_async_runner(exec, app, fs, pipeline).await?
         }
         RunMode::User => match UnixLikeUser::new(app.name(), fs.clone()).await {
-            Ok(exec) => exec_async_runner(exec, app, fs.clone(), o11y).await?,
+            Ok(exec) => exec_async_runner(exec, app, fs.clone(), pipeline).await?,
             Err(exec_err) => {
                 error!("exec error:{}", exec_err);
                 return Err(MainEarlyReturn::Vfs(exec_err));

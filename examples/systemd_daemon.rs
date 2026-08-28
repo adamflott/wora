@@ -124,21 +124,15 @@ mod linux_example {
 
     #[tokio::main]
     pub async fn main() -> Result<(), MainEarlyReturn> {
-        let (tx, _rx) = tokio::sync::mpsc::channel::<O11yEvent<()>>(64);
-        tracing_subscriber::registry()
-            .with(Observability {
-                tx: tx.clone(),
-                level: tracing::Level::INFO,
-            })
-            .init();
-
-        let o11y = O11yProcessorOptionsBuilder::default()
-            .sender(tx)
+        let pipeline = O11yPipeline::builder()
+            .capacity(64)
+            .sink("stdout", O11yStdoutSink)
             .flush_interval(Duration::from_secs(30))
             .status_interval(Duration::from_secs(30))
             .host_stats_interval(Duration::from_secs(30))
             .build()
             .map_err(|err| MainEarlyReturn::WoraSetup(WoraSetupError::Str(err.to_string())))?;
+        tracing_subscriber::registry().with(pipeline.tracing_layer(tracing::Level::INFO)).init();
 
         let app = SystemdDaemon {
             config: SystemdConfig {
@@ -157,7 +151,7 @@ mod linux_example {
                 .display()
         );
 
-        exec_async_runner(exec, app, PhysicalVFS::new(), o11y).await
+        exec_async_runner(exec, app, PhysicalVFS::new(), pipeline).await
     }
 }
 

@@ -1,0 +1,50 @@
+[package]
+name = "wora-observability"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.95"
+description = "Prometheus and OpenTelemetry exporters for wora"
+readme = "README.md"
+repository = "https://github.com/adamflott/wora"
+license = "MIT OR Apache-2.0"
+categories = ["development-tools::debugging"]
+
+[features]
+default = []
+prometheus = ["dep:prometheus"]
+prometheus-http = ["prometheus", "dep:axum", "dep:tokio"]
+opentelemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk"]
+otlp = ["opentelemetry", "dep:opentelemetry-otlp", "dep:tonic"]
+
+[dependencies]
+async-trait = "0.1.92"
+thiserror = "2.0.20"
+wora = { path = "..", version = "0.0.16" }
+axum = { version = "0.8.4", optional = true }
+opentelemetry = { version = "0.31.0", features = ["metrics"], optional = true }
+opentelemetry_sdk = { version = "0.31.0", features = ["metrics"], optional = true }
+opentelemetry-otlp = { version = "0.31.0", features = ["metrics", "grpc-tonic"], optional = true }
+prometheus = { version = "0.14.0", optional = true }
+tokio = { version = "1.53.1", features = ["net"], optional = true }
+tonic = { version = "0.14.2", optional = true }
+
+[dev-dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+opentelemetry_sdk = { version = "0.31.0", features = ["metrics", "testing"] }
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.1", features = ["full"] }
+toml = "1.1.4"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+
+[[example]]
+name = "async_daemon_prometheus"
+path = "examples/async_daemon_prometheus.rs"
+required-features = ["prometheus-http"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
