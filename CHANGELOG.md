@@ -5,16 +5,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- next-header -->
-## [0.0.17] - 2026-08-26
+## [0.0.17] - 2026-08-28
+
+### Features
+
+- Convert the repository into a Cargo workspace and add the `wora-observability` crate with optional Prometheus, Prometheus HTTP, OpenTelemetry, and OTLP support.
+- Add `O11yPipeline` as the high-level observability API for constructing an owned event channel, named sinks, runtime settings, and managed exporter services.
+- Add `O11yControlHandle` for atomically changing flush, status, and host-stat intervals at runtime; selecting sink failure policy; enabling or disabling named sinks; invoking flush, clear, and reconnect operations; and inspecting pipeline status.
+- Add isolated and fail-fast sink failure policies, with sink and exporter-service lifecycle states exposed through pipeline status.
+- Add a Prometheus daemon example with a managed `/metrics` service, stdout tracing, and configuration-driven runtime observability updates.
 
 ### Changes
 
 - Track runner-owned background tasks in an internal lifecycle registry and use shared `CancellationToken` cancellation during teardown.
 - Await cooperative task shutdown for a bounded grace period, abort unresponsive tasks, and report infrastructure task failures through `MainEarlyReturn::InfrastructureTask`.
+- Change `exec_async_runner(...)` and `exec_async_runner_with_options(...)` to accept an owned `O11yPipeline`, allowing the runner to supervise the application, observability processor, and exporter services as one lifecycle.
+- Route observability `Flush`, `Clear`, and `Reconnect` events through dedicated sink hooks, and flush sinks automatically when processing finishes.
+- Update the built-in examples to use the owned pipeline API.
+
+### Fixes
+
+- Request graceful application shutdown when the observability processor or a managed exporter service fails, and return the failure as `MainEarlyReturn::InfrastructureTask` after teardown.
+- Preserve failed sink state when using isolation mode and include backend error details in observability errors.
+- Map readiness `Stopping` and `Draining` to distinct exported metric values.
+- Remove the synthetic Prometheus sink-error counter; sink failures are now reported by the pipeline control plane.
 
 ### Tests
 
 - Add task-lifecycle coverage for cooperative cancellation, post-shutdown emission prevention, forced abort fallback, and infrastructure failure reporting.
+- Add runtime coverage for pipeline validation, atomic settings updates, named sink controls, sink isolation, lifecycle status, and managed exporter-service failures.
+- Add behavioral tests for Prometheus metric updates and OpenTelemetry metric names and attributes.
+
+### Documentation
+
+- Document the exporter feature flags, managed Prometheus example, runtime configuration, control handle, metric names, and stable state mappings.
+- Update the exporter design plan and existing examples for the final pipeline and builder APIs.
+
+### CI / Tooling
+
+- Remove PowerPC, PowerPC64, and s390x targets from the cross-build matrix.
 
 ## [0.0.16] - 2026-08-25
 
