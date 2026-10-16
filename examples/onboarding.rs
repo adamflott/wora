@@ -76,7 +76,7 @@ impl App<OnboardingEvent, ()> for OnboardingApp {
         fs: impl WFS + 'static,
         _metrics: Sender<O11yEvent<()>>,
     ) -> MainRetryAction {
-        match wora
+        wora
             .run_event_loop(self, fs, |app, _wora, event| match event {
                 Event::App(OnboardingEvent::Tick) => {
                     println!("{}", app.greeting);
@@ -85,14 +85,10 @@ impl App<OnboardingEvent, ()> for OnboardingApp {
                 Event::Control(ControlEvent::Shutdown(_)) => EventLoopAction::Exit(MainRetryAction::Success),
                 _ => EventLoopAction::Continue,
             })
-            .await
-        {
-            Ok(action) => action,
-            Err(err) => {
-                eprintln!("reload error: {}", err);
-                MainRetryAction::UseExitCode(78)
-            }
-        }
+            .await.unwrap_or_else(|err| {
+            eprintln!("reload error: {}", err);
+            MainRetryAction::UseExitCode(78)
+        })
     }
 
     async fn end(

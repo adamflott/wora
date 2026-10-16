@@ -111,7 +111,7 @@ impl App<(), ()> for DaemonApp {
         _o11y: Sender<O11yEvent<()>>,
     ) -> MainRetryAction {
         info!("waiting for events...");
-        match wora
+        wora
             .run_event_loop(self, fs, |app, _wora, ev| {
                 info!("event: {:?}", &ev);
                 let action = match ev {
@@ -154,14 +154,10 @@ impl App<(), ()> for DaemonApp {
 
                 action
             })
-            .await
-        {
-            Ok(action) => action,
-            Err(err) => {
-                error!("event loop reload error: {}", err);
-                MainRetryAction::UseExitCode(78)
-            }
-        }
+            .await.unwrap_or_else(|err| {
+            error!("event loop reload error: {}", err);
+            MainRetryAction::UseExitCode(78)
+        })
     }
 
     async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS, _o11y: Sender<O11yEvent<()>>) {}
