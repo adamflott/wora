@@ -20,11 +20,17 @@ pub enum LinuxMemoryCollector {
     LruGenerations,
     /// Explicit bounded physical/virtual page ranges; never scans all memory.
     PhysicalPages,
+    /// Page-owner per-page and aggregate allocation stack/handle dumps.
+    PageOwner,
+    /// Kernel leak suspects; explicitly selected because reads may incur scans.
+    KernelLeaks,
 }
 
 /// Explicit selection and cadence for potentially costly memory diagnostics.
 #[derive(Clone, Debug)]
 pub struct LinuxMemoryOptions {
+    /// Per-file page-owner/kmemleak dump bound, 1..=64 MiB (default 4 MiB).
+    pub provenance_byte_limit: u64,
     /// Optional physical PFN range; required to collect kpage arrays.
     pub physical_pages: Option<super::linux_mm::PageRange>,
     /// Optional collecting-process virtual page range for pagemap.
@@ -42,6 +48,7 @@ pub struct LinuxMemoryOptions {
 impl Default for LinuxMemoryOptions {
     fn default() -> Self {
         Self {
+            provenance_byte_limit: 4 * 1024 * 1024,
             physical_pages: None,
             virtual_pages: None,
             collectors: BTreeSet::new(),
@@ -90,6 +97,10 @@ impl LinuxMemoryOptions {
 /// Diagnostic data with its own timestamp; may be older than the host snapshot.
 #[derive(Clone, Debug, Serialize)]
 pub struct LinuxMemoryDiagnostics {
+    /// Existing page allocation provenance, without changing tracking/filter state.
+    pub page_owner: Option<Box<super::linux_mm::PageOwnerStats>>,
+    /// Existing kernel leak suspects; only present with explicit KernelLeaks selection.
+    pub kernel_leaks: Option<Box<super::linux_mm::KernelLeakStats>>,
     /// Exactly the requested PFN range, with independent kpage file errors.
     pub physical_pages: Option<Box<super::linux_mm::PhysicalPageStats>>,
     /// Exactly the requested process virtual-page range; PFNs may be redacted.
@@ -123,6 +134,9 @@ pub struct LinuxMemoryEnvironment<R> {
 impl<R> LinuxMemoryEnvironment<R> {
     /// Validate options and wrap a telemetry provider without performing I/O.
     pub fn new(inner: R, options: LinuxMemoryOptions) -> Result<Self, O11yError> {
+        if !(1..=64 * 1024 * 1024).contains(&options.provenance_byte_limit) {
+            return Err(O11yError::RuntimeEnvironment("provenance byte limit must be 1..=64 MiB".into()));
+        }
         if options.collectors.contains(&LinuxMemoryCollector::PhysicalPages) {
             if options.physical_pages.is_none() && options.virtual_pages.is_none() {
                 return Err(O11yError::RuntimeEnvironment(
@@ -154,6 +168,18 @@ impl<R> LinuxMemoryEnvironment<R> {
         if cache.as_ref().is_none_or(|(time, _)| time.elapsed() >= self.options.interval) {
             let selected = |kind| self.options.collectors.contains(&kind);
             let data = LinuxMemoryDiagnostics {
+                page_owner: selected(LinuxMemoryCollector::PageOwner).then(|| {
+                    Box::new(super::linux_mm::PageOwnerStats::from_debug_root_with_limit(
+                        self.options.sys_root.join("kernel/debug"),
+                        self.options.provenance_byte_limit,
+                    ))
+                }),
+                kernel_leaks: selected(LinuxMemoryCollector::KernelLeaks).then(|| {
+                    Box::new(super::linux_mm::KernelLeakStats::from_debug_root_with_limit(
+                        self.options.sys_root.join("kernel/debug"),
+                        self.options.provenance_byte_limit,
+                    ))
+                }),
                 physical_pages: selected(LinuxMemoryCollector::PhysicalPages)
                     .then_some(self.options.physical_pages)
                     .flatten()

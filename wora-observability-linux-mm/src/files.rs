@@ -41,9 +41,15 @@ impl MemoryFiles {
     /// Each file is limited to 4 MiB. Oversized or non-UTF-8 contents produce a
     /// read failure, never a successful partial value. No file is opened to write.
     pub fn from_names(root: impl AsRef<Path>, names: &[&str]) -> Self {
+        Self::from_names_with_limit(root, names, 4 * 1024 * 1024)
+    }
+
+    /// Read named information files with an explicit per-file byte limit.
+    /// Limits must be between one byte and 64 MiB; invalid limits fail before I/O.
+    pub fn from_names_with_limit(root: impl AsRef<Path>, names: &[&str], limit: u64) -> Self {
         let mut result = Self::default();
         for name in names {
-            result.read(root.as_ref(), name, 4 * 1024 * 1024);
+            result.read(root.as_ref(), name, limit);
         }
         result
     }
@@ -67,6 +73,9 @@ impl MemoryFiles {
 
     pub(crate) fn read(&mut self, root: &Path, name: &str, limit: u64) {
         let result = (|| {
+            if !(1..=64 * 1024 * 1024).contains(&limit) {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "file limit must be 1..=64 MiB"));
+            }
             let relative = Path::new(name);
             if relative.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "expected a relative information-file path"));

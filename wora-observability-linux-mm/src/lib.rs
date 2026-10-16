@@ -15,6 +15,7 @@ mod numa;
 mod pages;
 mod pagetypeinfo;
 mod process;
+mod provenance;
 mod slabinfo;
 mod slub;
 mod swaps;
@@ -37,6 +38,7 @@ pub use pagetypeinfo::{FreeBlockCount, PageTypeBlockCounts, PageTypeFreeList, Pa
 pub use process::{ProcessMemoryStats, SmapsRollup, SmapsRollupValue};
 pub use procfs_core::{FromBufRead, FromRead, ProcError, ProcResult};
 pub use procfs_core::{Iomem, Meminfo, MemoryPressure, PhysicalMemoryMap, PressureRecord, SharedMemorySegments, Shm, VmStat};
+pub use provenance::{KernelLeakStats, PageOwnerStats};
 pub use slabinfo::{SlabCache, SlabCpuStats, SlabGlobalStats, SlabInfo};
 pub use slub::SlubStats;
 pub use swaps::{SwapEntry, SwapType, Swaps};

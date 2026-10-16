@@ -98,6 +98,17 @@ WORA's `with_physical_page_range(PageRange { start, count })` and
 without a range is rejected. No whole-machine range or process address space is
 guessed, no page contents are read, and no page flags are modified.
 
+`PageOwnerStats` and `KernelLeakStats` read existing debugfs tracking via separate
+WORA `PageOwner` and `KernelLeaks` selections. The former preserves per-page
+allocation dumps and aggregate stack/handle data; the latter retains suspected
+leaked objects and backtraces. Both commonly need root and special kernel
+configuration/enablement (`page_owner=on` normally requires a reboot). No filters,
+tracking enablement, leak-list clearing or scan commands are written. Reading
+kmemleak may itself incur scanning work on some kernels, hence its separate opt-in.
+Findings can include false positives/negatives. `provenance_byte_limit` defaults
+to 4 MiB per file, accepts up to 64 MiB, and produces explicit oversized-file
+errors instead of claiming a partial dump is complete.
+
 `CgroupMemoryStats::current()` discovers the calling process's cgroup v2 from
 `/proc/self/{cgroup,mountinfo}`. `current` contains parsed `memory.*` files,
 including usage, limits, swap/zswap, named counters, local/hierarchical events,
