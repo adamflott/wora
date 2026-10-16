@@ -11,6 +11,29 @@ fn mount_line(root: &str, directory: &Path) -> String {
 }
 
 #[test]
+fn captures_hugetlb_limits_local_events_and_effective_memory_nodes() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    for (name, value) in [
+        ("hugetlb.2MB.current", "9007199254740993\n"),
+        ("hugetlb.1GB.max", "max\n"),
+        ("hugetlb.2MB.events", "max 8\n"),
+        ("hugetlb.2MB.events.local", "max 3\n"),
+        ("hugetlb.2MB.numa_stat", "total=4096 N0=0 N9=4096\n"),
+        ("cpuset.mems", "\n"),
+        ("cpuset.mems.effective", "0-1,9\n"),
+    ] {
+        fs::write(root.path().join(name), value)?;
+    }
+    let stats = CgroupMemory::from_directory(root.path());
+    assert!(stats.unavailable.is_empty());
+    assert!(matches!(stats.values["hugetlb.2MB.current"], CgroupMemoryValue::Number(9_007_199_254_740_993)));
+    assert!(matches!(&stats.values["hugetlb.1GB.max"], CgroupMemoryValue::Text(v) if v == "max"));
+    assert!(matches!(&stats.values["hugetlb.2MB.events.local"], CgroupMemoryValue::Counters(v) if v["max"] == 3));
+    assert!(matches!(&stats.values["cpuset.mems.effective"], CgroupMemoryValue::Text(v) if v == "0-1,9"));
+    Ok(())
+}
+
+#[test]
 fn discovers_mount_roots_escaped_paths_and_visible_ancestor_limits() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = tempfile::tempdir()?;
     let proc = fixture.path().join("proc");

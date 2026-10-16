@@ -139,7 +139,7 @@ impl CgroupMemoryStats {
 impl CgroupMemory {
     /// Read a specific cgroup directory without discovery or ancestor traversal.
     ///
-    /// Reads regular `memory.*` files only. `memory.reclaim` is never opened.
+    /// Reads regular `memory.*`, `hugetlb.*` and cpuset memory-node files. `memory.reclaim` is never opened.
     /// Absent kernel-dependent files are omitted. Each failed read is independent.
     pub fn from_directory(directory: impl AsRef<Path>) -> Self {
         Self::collect(directory.as_ref(), false)
@@ -167,7 +167,9 @@ impl CgroupMemory {
             };
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            if !name.starts_with("memory.") || (limits_only && !ancestor_file(name)) {
+            if !(name.starts_with("memory.") || name.starts_with("hugetlb.") || matches!(name, "cpuset.mems" | "cpuset.mems.effective"))
+                || (limits_only && !ancestor_file(name))
+            {
                 continue;
             }
             if name == "memory.reclaim" {
@@ -203,6 +205,9 @@ impl CgroupMemory {
 }
 
 fn ancestor_file(name: &str) -> bool {
+    if matches!(name, "cpuset.mems" | "cpuset.mems.effective") || (name.starts_with("hugetlb.") && (name.ends_with(".max") || name.ends_with(".current"))) {
+        return true;
+    }
     matches!(
         name,
         "memory.current"
@@ -220,7 +225,12 @@ fn ancestor_file(name: &str) -> bool {
 
 fn parse_value(name: &str, text: &str) -> Result<CgroupMemoryValue, MemoryReadError> {
     match name {
-        "memory.stat" | "memory.events" | "memory.events.local" | "memory.swap.events" | "memory.zswap.events" => {
+        "cpuset.mems" | "cpuset.mems.effective" => Ok(CgroupMemoryValue::Text(text.trim_end_matches('\n').into())),
+        name if matches!(
+            name,
+            "memory.stat" | "memory.events" | "memory.events.local" | "memory.swap.events" | "memory.zswap.events"
+        ) || (name.starts_with("hugetlb.") && (name.ends_with(".events") || name.ends_with(".events.local"))) =>
+        {
             let mut values = BTreeMap::new();
             for line in text.lines().filter(|line| !line.trim().is_empty()) {
                 let fields: Vec<_> = line.split_ascii_whitespace().collect();

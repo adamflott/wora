@@ -69,6 +69,12 @@ captured mount paths as written; `CgroupMemory::from_directory(path)` reads one
 specific cgroup without discovery. See the kernel's
 [cgroup v2 memory documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory).
 
+Cgroup snapshots also retain all `hugetlb.*` files (usage/limits, local and
+hierarchical events, reservations and native NUMA tables) and `cpuset.mems` plus
+`cpuset.mems.effective`. Visible ancestors include HugeTLB usage/limits and node
+constraints. Requested nodes, effective nodes, host pool availability and byte
+limits remain separate; no effective allocation budget is inferred.
+
 `HugePageStats::current()` reads THP policy and statistics under
 `/sys/kernel/mm/transparent_hugepage`, global pools under
 `/sys/kernel/mm/hugepages`, and per-node pools under
