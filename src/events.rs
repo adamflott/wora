@@ -1,13 +1,46 @@
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use decimal_percentage::Percentage;
 use nix::unistd::Pid;
 use serde::{Serialize, Serializer};
 
 use crate::Leadership;
-use crate::o11y::{Cpu, Disk, LoadAvg, MemStats, NetIO, SwapStats};
+use crate::o11y::{Cpu, Disk, HostStats, LoadAvg, MemStats, NetIO, SwapStats};
+
+/// The latest host memory sample, available on Linux and macOS.
+///
+/// The runner publishes this through [`SystemResourceStat::MemorySnapshot`] and
+/// caches it for [`crate::Wora::memory_stats`] and
+/// [`crate::Wora::subscribe_memory_stats`]. Linux procfs details are present only
+/// when compiling for Linux; memory and swap totals are portable.
+#[derive(Clone, Debug, Serialize)]
+pub struct MemorySnapshot {
+    /// Time the host sample was stored by the runtime.
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Physical memory totals and usage, in bytes.
+    pub memory: MemStats,
+    /// Swap totals and usage, in bytes.
+    pub swap: SwapStats,
+    /// Detailed procfs memory snapshots; each source is independently optional.
+    #[cfg(target_os = "linux")]
+    pub linux_mm: crate::o11y::LinuxMemoryStats,
+}
+
+impl MemorySnapshot {
+    /// Build a timestamped memory snapshot from a host statistics sample.
+    pub fn from_host_stats(stats: &HostStats) -> Self {
+        Self {
+            timestamp: chrono::Utc::now(),
+            memory: stats.memory.clone(),
+            swap: stats.swap.clone(),
+            #[cfg(target_os = "linux")]
+            linux_mm: stats.linux_mm.clone(),
+        }
+    }
+}
 
 /// Stable classification of a filesystem-backed change event.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -97,6 +130,12 @@ pub enum SystemResourceStat {
     Disk(HashMap<String, Disk>),
     Load(LoadAvg),
     Memory(MemStats),
+    /// Periodic memory snapshot, including all available Linux procfs sources.
+    ///
+    /// Uses the configurable host statistics interval. If the application event
+    /// queue is full, this notification is skipped; the latest sample is still
+    /// stored and delivered to [`crate::Wora::subscribe_memory_stats`] listeners.
+    MemorySnapshot(Arc<MemorySnapshot>),
     NetworkIO(HashMap<String, NetIO>),
     Swap(SwapStats),
 }

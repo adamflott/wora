@@ -1,0 +1,188 @@
+Node 0, zone      DMA
+  per-node stats
+      nr_inactive_anon 101
+      nr_active_anon 18673
+      nr_inactive_file 424768
+      nr_active_file 280633
+      nr_unevictable 0
+      nr_slab_reclaimable 27518
+      nr_slab_unreclaimable 10250
+      nr_isolated_anon 0
+      nr_isolated_file 0
+      workingset_nodes 3291
+      workingset_refault_anon 0
+      workingset_refault_file 28608
+      workingset_activate_anon 0
+      workingset_activate_file 28593
+      workingset_restore_anon 0
+      workingset_restore_file 14459
+      workingset_nodereclaim 0
+      nr_anon_pages 18690
+      nr_mapped    13871
+      nr_file_pages 705503
+      nr_dirty     4
+      nr_writeback 0
+      nr_writeback_temp 0
+      nr_shmem     116
+      nr_shmem_hugepages 0
+      nr_shmem_pmdmapped 0
+      nr_file_hugepages 0
+      nr_file_pmdmapped 0
+      nr_anon_transparent_hugepages 18
+      nr_vmscan_write 0
+      nr_vmscan_immediate_reclaim 0
+      nr_dirtied   1100698
+      nr_written   1087995
+      nr_throttled_written 0
+      nr_kernel_misc_reclaimable 0
+      nr_foll_pin_acquired 9
+      nr_foll_pin_released 9
+      nr_kernel_stack 1912
+      nr_page_table_pages 454
+      nr_sec_page_table_pages 0
+      nr_iommu_pages 0
+      nr_swapcached 0
+      pgpromote_success 0
+      pgpromote_candidate 0
+      pgdemote_kswapd 0
+      pgdemote_direct 0
+      pgdemote_khugepaged 0
+  pages free     180419
+        boost    0
+        min      6462
+        low      8077
+        high     9692
+        promo    11307
+        spanned  589824
+        present  589824
+        managed  573408
+        cma      16384
+        protection: (0, 0, 1664, 1664, 1664)
+      nr_free_pages 180419
+      nr_zone_inactive_anon 0
+      nr_zone_active_anon 0
+      nr_zone_inactive_file 346532
+      nr_zone_active_file 28219
+      nr_zone_unevictable 0
+      nr_zone_write_pending 0
+      nr_mlock     0
+      nr_bounce    0
+      nr_zspages   0
+      nr_free_cma  12364
+      numa_hit     3475198
+      numa_miss    0
+      numa_foreign 0
+      numa_interleave 0
+      numa_local   3475198
+      numa_other   0
+  pagesets
+    cpu: 0
+              count: 512
+              high:  2019
+              batch: 63
+  vm stats threshold: 36
+    cpu: 1
+              count: 2019
+              high:  2019
+              batch: 63
+  vm stats threshold: 36
+    cpu: 2
+              count: 2019
+              high:  2019
+              batch: 63
+  vm stats threshold: 36
+    cpu: 3
+              count: 1024
+              high:  2019
+              batch: 63
+  vm stats threshold: 36
+  node_unreclaimable:  0
+  start_pfn:           458752
+Node 0, zone    DMA32
+  pages free     0
+        boost    0
+        min      0
+        low      0
+        high     0
+        promo    0
+        spanned  0
+        present  0
+        managed  0
+        cma      0
+        protection: (0, 0, 0, 0, 0)
+Node 0, zone   Normal
+  pages free     48721
+        boost    0
+        min      4801
+        low      6001
+        high     7201
+        promo    8401
+        spanned  458752
+        present  458752
+        managed  430911
+        cma      0
+        protection: (0, 0, 0, 0, 0)
+      nr_free_pages 48721
+      nr_zone_inactive_anon 101
+      nr_zone_active_anon 18698
+      nr_zone_inactive_file 78236
+      nr_zone_active_file 252414
+      nr_zone_unevictable 0
+      nr_zone_write_pending 4
+      nr_mlock     0
+      nr_bounce    0
+      nr_zspages   0
+      nr_free_cma  0
+      numa_hit     5302287
+      numa_miss    0
+      numa_foreign 0
+      numa_interleave 822
+      numa_local   5302287
+      numa_other   0
+  pagesets
+    cpu: 0
+              count: 828
+              high:  1500
+              batch: 63
+  vm stats threshold: 30
+    cpu: 1
+              count: 305
+              high:  1626
+              batch: 63
+  vm stats threshold: 30
+    cpu: 2
+              count: 533
+              high:  1626
+              batch: 63
+  vm stats threshold: 30
+    cpu: 3
+              count: 578
+              high:  1563
+              batch: 63
+  vm stats threshold: 30
+  node_unreclaimable:  0
+  start_pfn:           1048576
+Node 0, zone  Movable
+  pages free     0
+        boost    0
+        min      32
+        low      32
+        high     32
+        promo    32
+        spanned  0
+        present  0
+        managed  0
+        cma      0
+        protection: (0, 0, 0, 0, 0)
+Node 0, zone   Device
+  pages free     0
+        boost    0
+        min      0
+        low      0
+        high     0
+        promo    0
+        spanned  0
+        present  0
+        managed  0
+        cma      0
+        protection: (0, 0, 0, 0, 0)

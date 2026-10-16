@@ -1,0 +1,25 @@
+Page block order: 2
+Pages per block: 4
+
+Free pages count per migrate type at order 0 1 2
+Node 2, zone FutureZone, type Movable 9007199254740993 >100000 0
+Node 2, zone FutureZone, type FutureType > 7 2 18446744073709551615
+Node 2, zone Normal, type Movable 1 0 2
+Node 2, zone Normal, type FutureType 0 0 0
+
+Number of blocks type FutureType Movable
+Node 2, zone FutureZone 3 18446744073709551615
+Node 2, zone Normal 0 7
+
+Number of mixed blocks Movable FutureType
+Node 2, zone FutureZone 1 2
+Node 2, zone Normal 0 0
+
+Page block order: 9
+Pages per block: 512
+
+Free pages count per migrate type at order 0
+Node 99, zone Movable, type Isolate 0
+
+Number of blocks type Isolate
+Node 99, zone Movable 0

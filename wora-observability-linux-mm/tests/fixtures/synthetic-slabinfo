@@ -1,0 +1,5 @@
+slabinfo - version: 2.1
+# name <active_objs> <num_objs> <objsize> <objperslab> <pagesperslab> : tunables <limit> <batchcount> <sharedfactor> : slabdata <active_slabs> <num_slabs> <sharedavail>
+empty_cache 0 0 64 64 1 : tunables 0 0 0 : slabdata 0 0 0
+large_cache 9007199254740993 18446744073709551615 96 42 1 : tunables 120 60 8 : slabdata 10 20 3
+future:cache 3 7 100 5 2 : tunables 3 4 8 : slabdata 1 2 3

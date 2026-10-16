@@ -111,50 +111,58 @@ impl App<(), ()> for DaemonApp {
         _o11y: Sender<O11yEvent<()>>,
     ) -> MainRetryAction {
         info!("waiting for events...");
-        wora
-            .run_event_loop(self, fs, |app, _wora, ev| {
-                info!("event: {:?}", &ev);
-                let action = match ev {
-                    Event::Control(control) => match control {
-                        ControlEvent::ReloadConfiguration => {
-                            info!("control: reload configuration");
-                            EventLoopAction::Continue
-                        }
-                        ControlEvent::Shutdown(dt) => {
-                            info!("shutting down at {:?}", dt);
-                            EventLoopAction::Exit(MainRetryAction::Success)
-                        }
-                        ControlEvent::Suspend(dt) => {
-                            info!("suspending at {:?}", dt);
-                            EventLoopAction::Continue
-                        }
-                        ControlEvent::LogRotation => {
-                            info!("rotating log");
-                            EventLoopAction::Continue
-                        }
-                    },
-                    Event::SystemResource(_) => EventLoopAction::Continue,
-                    Event::ConfigChanged(change) => {
-                        info!("config changed main_config_changed={} paths={:?}", change.main_config_changed, change.paths);
+        wora.run_event_loop(self, fs, |app, _wora, ev| {
+            info!("event: {:?}", &ev);
+            let action = match ev {
+                Event::Control(control) => match control {
+                    ControlEvent::ReloadConfiguration => {
+                        info!("control: reload configuration");
                         EventLoopAction::Continue
                     }
-                    Event::SecretChanged(change) => {
-                        info!("secret changed paths={:?}", change.paths);
+                    ControlEvent::Shutdown(dt) => {
+                        info!("shutting down at {:?}", dt);
+                        EventLoopAction::Exit(MainRetryAction::Success)
+                    }
+                    ControlEvent::Suspend(dt) => {
+                        info!("suspending at {:?}", dt);
                         EventLoopAction::Continue
                     }
-                    Event::LeadershipChanged(old_state, new_state) => {
-                        info!("leadership has changed from state {:?} to {:?}", old_state, new_state);
+                    ControlEvent::LogRotation => {
+                        info!("rotating log");
                         EventLoopAction::Continue
                     }
-                    Event::App(_) => EventLoopAction::Continue,
-                    _ => EventLoopAction::Continue,
-                };
+                },
+                Event::SystemResource(SystemResourceStat::MemorySnapshot(snapshot)) => {
+                    info!(used_bytes = snapshot.memory.used, total_bytes = snapshot.memory.total, "memory sample");
+                    #[cfg(target_os = "linux")]
+                    if let Some(meminfo) = &snapshot.linux_mm.meminfo {
+                        debug!(available_bytes = ?meminfo.mem_available, "Linux memory inventory");
+                    }
+                    EventLoopAction::Continue
+                }
+                Event::SystemResource(_) => EventLoopAction::Continue,
+                Event::ConfigChanged(change) => {
+                    info!("config changed main_config_changed={} paths={:?}", change.main_config_changed, change.paths);
+                    EventLoopAction::Continue
+                }
+                Event::SecretChanged(change) => {
+                    info!("secret changed paths={:?}", change.paths);
+                    EventLoopAction::Continue
+                }
+                Event::LeadershipChanged(old_state, new_state) => {
+                    info!("leadership has changed from state {:?} to {:?}", old_state, new_state);
+                    EventLoopAction::Continue
+                }
+                Event::App(_) => EventLoopAction::Continue,
+                _ => EventLoopAction::Continue,
+            };
 
-                let _ = &app.config;
+            let _ = &app.config;
 
-                action
-            })
-            .await.unwrap_or_else(|err| {
+            action
+        })
+        .await
+        .unwrap_or_else(|err| {
             error!("event loop reload error: {}", err);
             MainRetryAction::UseExitCode(78)
         })

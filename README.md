@@ -22,6 +22,53 @@ This crate is an early-stage async framework. The main public API is usable, wit
 - exposes host, process, runtime, and tracing observability events
 - ships observability sinks and a processor for fan-out
 
+Memory samples arrive as
+`Event::SystemResource(SystemResourceStat::MemorySnapshot(snapshot))`. Read
+`wora.memory_stats()` at any time for the latest stored sample, including during
+app setup, or use `wora.subscribe_memory_stats()` for a cloneable Tokio watch
+receiver. These APIs work on Linux and macOS, with portable memory and swap
+totals in bytes. `stats_from_start()` continues to return the startup snapshot.
+
+Set the sampling interval with `O11yPipeline::builder().host_stats_interval(...)`
+(30 seconds by default). Change it while running through
+`control.apply(O11ySettingsPatch::new().host_stats_interval(...)).await`.
+The interval controls memory events, the stored sample, and host/process
+observability metrics. Each successful host refresh updates the cache before
+notifying the application. A full application event queue skips that periodic
+notification; the cache and watch listeners still receive the latest sample.
+Failed host refreshes retain the previous sample, and watch listeners may
+coalesce updates when they read slowly.
+
+On Linux, `snapshot.linux_mm` and `HostStats::linux_mm` include `Meminfo`,
+`VmStat`, `MemoryPressure`, `SharedMemorySegments`, `Iomem`, `BuddyInfo`,
+`ZoneInfo`, `Swaps`, `SlabInfo`, and `PageTypeInfo`, including their nested data.
+Each source is optional so unavailable or restricted files do not interrupt
+other memory sampling. Values retain their source units and page-type count
+bounds. Slab and page-type files commonly require root; page-type reads can be
+expensive, so choose the interval accordingly. All types are re-exported through
+`wora::o11y::linux_mm`, and the Linux dependency and fields are gated with
+`#[cfg(target_os = "linux")]`.
+
+Inside an app lifecycle hook, use the common API and guard Linux details:
+
+```rust
+let snapshot = wora.memory_stats();
+println!("{} bytes used", snapshot.memory.used);
+
+#[cfg(target_os = "linux")]
+if let Some(meminfo) = &snapshot.linux_mm.meminfo {
+    println!("available: {:?} bytes", meminfo.mem_available);
+}
+
+let mut updates = wora.subscribe_memory_stats();
+tokio::spawn(async move {
+    while updates.changed().await.is_ok() {
+        let snapshot = updates.borrow_and_update().clone();
+        println!("{} bytes used", snapshot.memory.used);
+    }
+});
+```
+
 ## Supported Environments
 
 - async-based apps

@@ -357,6 +357,184 @@ struct VirtualWatcherApp {
 
 struct MetricsApp;
 
+mod memory_events {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use super::*;
+
+    #[derive(Clone)]
+    struct MemoryEnvironment {
+        base: DeterministicRuntimeEnvironment,
+        refreshes: Arc<AtomicUsize>,
+    }
+
+    impl RuntimeEnvironment for MemoryEnvironment {
+        fn initial_host(&self) -> Result<Host, O11yError> {
+            self.base.initial_host()
+        }
+
+        fn initial_process_stats(&self) -> Option<ProcessStats> {
+            None
+        }
+
+        fn refresh_host_stats(&self) -> Result<Option<HostStats>, O11yError> {
+            let refresh = self.refreshes.fetch_add(1, Ordering::SeqCst);
+            if refresh == 2 {
+                return Err(O11yError::RuntimeEnvironment("temporary sampler failure".into()));
+            }
+            if refresh > 2 {
+                return Ok(None);
+            }
+            let mut stats = self.base.host_stats.clone();
+            stats.memory.used = (refresh as u64 + 1) * 100;
+            #[cfg(target_os = "linux")]
+            {
+                stats.linux_mm.vmstat = Some(linux_mm::VmStat(std::collections::HashMap::from([(
+                    "nr_free_pages".into(),
+                    stats.memory.used as i64,
+                )])));
+            }
+            Ok(Some(stats))
+        }
+
+        fn refresh_process_stats(&self) -> Option<ProcessStats> {
+            None
+        }
+    }
+
+    struct MemoryApp {
+        control: O11yControlHandle,
+        refreshes: Arc<AtomicUsize>,
+        verified: Arc<AtomicBool>,
+    }
+
+    impl MemoryApp {
+        async fn verify(&self, wora: &mut Wora<(), ()>) -> Result<(), Box<dyn std::error::Error>> {
+            assert_eq!(wora.memory_stats().memory.used, 6);
+            let mut updates = wora.subscribe_memory_stats();
+            assert_eq!(updates.borrow().memory.used, 6);
+            self.control
+                .apply(O11ySettingsPatch::new().host_stats_interval(Duration::from_millis(5)))
+                .await?;
+
+            // Observe new samples without consuming the application's event channel.
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    updates.changed().await?;
+                    if updates.borrow_and_update().memory.used == 200 {
+                        break;
+                    }
+                }
+                Ok::<_, tokio::sync::watch::error::RecvError>(())
+            })
+            .await??;
+            let last = wora.memory_stats();
+            assert_eq!(last.memory.used, 200);
+            assert_eq!(wora.stats_from_start().memory.used, 6);
+            #[cfg(target_os = "linux")]
+            assert_eq!(last.linux_mm.vmstat.as_ref().ok_or("VM counters missing")?.0["nr_free_pages"], 200);
+
+            // Failed and absent host refreshes retain the last stored sample.
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while self.refreshes.load(Ordering::SeqCst) < 4 {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await?;
+            assert!(Arc::ptr_eq(&last, &wora.memory_stats()));
+            assert!(!updates.has_changed()?);
+
+            for expected in [100, 200] {
+                let event = tokio::time::timeout(Duration::from_secs(2), wora.receiver.recv())
+                    .await?
+                    .ok_or("memory event missing")?;
+                let Event::SystemResource(SystemResourceStat::MemorySnapshot(sample)) = event else {
+                    return Err("expected application memory event".into());
+                };
+                assert_eq!(sample.memory.used, expected);
+                assert!(wora.memory_stats().timestamp >= sample.timestamp);
+            }
+            self.verified.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl App<(), ()> for MemoryApp {
+        type AppConfig = NoConfig;
+        type AppSecrets = NoSecrets;
+        type Setup = ();
+
+        fn name(&self) -> &'static str {
+            "memory_events"
+        }
+
+        async fn setup(
+            &mut self,
+            wora: &Wora<(), ()>,
+            _exec: impl AsyncExecutor<(), ()>,
+            _fs: impl WFS + 'static,
+            _metrics: Sender<O11yEvent<()>>,
+            _is_first_boot: bool,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            assert_eq!(wora.memory_stats().memory.used, 6);
+            Ok(())
+        }
+
+        async fn main(
+            &mut self,
+            wora: &mut Wora<(), ()>,
+            _exec: impl AsyncExecutor<(), ()>,
+            _fs: impl WFS + 'static,
+            _metrics: Sender<O11yEvent<()>>,
+        ) -> MainRetryAction {
+            match self.verify(wora).await {
+                Ok(()) => MainRetryAction::Success,
+                Err(error) => {
+                    eprintln!("memory event verification failed: {error}");
+                    MainRetryAction::UseExitCode(1)
+                }
+            }
+        }
+
+        async fn end(&mut self, _wora: &Wora<(), ()>, _exec: impl AsyncExecutor<(), ()>, _fs: impl WFS + 'static, _metrics: Sender<O11yEvent<()>>) {}
+    }
+
+    #[tokio::test]
+    async fn samples_are_cached_and_delivered_at_a_live_configurable_interval() -> Result<(), Box<dyn std::error::Error>> {
+        let root = unique_test_dir("memory-events");
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let verified = Arc::new(AtomicBool::new(false));
+        let environment = MemoryEnvironment {
+            base: DeterministicRuntimeEnvironment {
+                host_info: deterministic_host_info(),
+                host_stats: deterministic_host_stats(),
+                process: None,
+            },
+            refreshes: refreshes.clone(),
+        };
+        let pipeline = O11yPipeline::builder()
+            .sink("discard", O11yDiscardSink)
+            .host_stats_interval(Duration::from_secs(3600))
+            .build()?;
+        let app = MemoryApp {
+            control: pipeline.control_handle(),
+            refreshes,
+            verified: verified.clone(),
+        };
+        exec_async_runner_with_options(
+            TestExec { dirs: test_dirs(root.clone()) },
+            app,
+            PhysicalVFS::new(),
+            pipeline,
+            RunnerOptions::new().with_boot_dir(root.join("boot")).with_runtime_environment(environment),
+        )
+        .await?;
+        assert!(verified.load(Ordering::SeqCst));
+        Ok(())
+    }
+}
+
 struct BootTrackingApp {
     calls: Arc<Mutex<Vec<bool>>>,
 }
@@ -549,6 +727,8 @@ fn deterministic_host_stats() -> HostStats {
         swap: SwapStats { total: 20, used: 5, free: 15 },
         fs: Vec::new(),
         net_io: std::collections::HashMap::new(),
+        #[cfg(target_os = "linux")]
+        linux_mm: LinuxMemoryStats::default(),
     }
 }
 

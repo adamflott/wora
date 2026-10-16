@@ -1,0 +1,139 @@
+#![cfg(target_os = "linux")]
+
+use wora::o11y::linux_mm::{BuddyInfo, Current, FreeBlockCount, Swaps};
+use wora::o11y::{HostStats, LinuxMemoryStats, O11yChannelSink, O11yEventKind, O11ySink, o11y_new_ev_hoststats};
+
+#[tokio::test]
+async fn captured_linux_memory_metrics_reach_host_stats_sinks() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    for (name, contents) in [
+        ("buddyinfo", include_str!("../wora-observability-linux-mm/tests/fixtures/arm64-buddyinfo")),
+        ("zoneinfo", include_str!("../wora-observability-linux-mm/tests/fixtures/synthetic-zoneinfo")),
+        ("swaps", include_str!("../wora-observability-linux-mm/tests/fixtures/synthetic-swaps")),
+        ("slabinfo", include_str!("../wora-observability-linux-mm/tests/fixtures/synthetic-slabinfo")),
+        (
+            "pagetypeinfo",
+            include_str!("../wora-observability-linux-mm/tests/fixtures/synthetic-pagetypeinfo"),
+        ),
+    ] {
+        tokio::fs::write(root.path().join(name), contents).await?;
+    }
+    let meminfo = [
+        "MemTotal",
+        "MemFree",
+        "Buffers",
+        "Cached",
+        "SwapCached",
+        "Active",
+        "Inactive",
+        "SwapTotal",
+        "SwapFree",
+        "Dirty",
+        "Writeback",
+        "Mapped",
+        "Slab",
+        "Committed_AS",
+        "VmallocTotal",
+        "VmallocUsed",
+        "VmallocChunk",
+    ]
+    .map(|name| format!("{name}: 16384 kB\n"))
+    .concat();
+    tokio::fs::write(root.path().join("meminfo"), meminfo).await?;
+    tokio::fs::write(root.path().join("vmstat"), "nr_free_pages 1234\nnr_anomalous -2\n").await?;
+    tokio::fs::create_dir(root.path().join("pressure")).await?;
+    tokio::fs::write(
+        root.path().join("pressure/memory"),
+        "some avg10=1.00 avg60=2.00 avg300=3.00 total=9007199254740993\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=10\n",
+    )
+    .await?;
+    tokio::fs::create_dir(root.path().join("sysvipc")).await?;
+    tokio::fs::write(
+        root.path().join("sysvipc/shm"),
+        "key shmid perms size cpid lpid nattch uid gid cuid cgid atime dtime ctime rss swap\n1 2 600 8192 10 11 1 0 0 0 0 0 0 0 4096 0\n",
+    )
+    .await?;
+    tokio::fs::write(root.path().join("iomem"), "00001000-00001fff : System RAM\n").await?;
+
+    let stats = HostStats {
+        linux_mm: LinuxMemoryStats::from_proc_root(root.path()),
+        ..HostStats::default()
+    };
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+    let mut sink = O11yChannelSink::new(sender);
+    sink.handle_event(&o11y_new_ev_hoststats::<()>(&stats)).await?;
+    let event = receiver.recv().await.ok_or("host stats event missing")?;
+    let O11yEventKind::HostStats(snapshot) = event.kind else {
+        return Err("expected host stats event".into());
+    };
+    let mm = &snapshot.linux_mm;
+    assert_eq!(mm.meminfo.as_ref().ok_or("meminfo missing")?.mem_total, 16_777_216);
+    assert_eq!(mm.vmstat.as_ref().ok_or("vmstat missing")?.0["nr_anomalous"], -2);
+    assert_eq!(mm.pressure.as_ref().ok_or("memory pressure missing")?.some.total, 9_007_199_254_740_993);
+    assert_eq!(mm.shared_memory.as_ref().ok_or("shared memory missing")?.0[0].rss, 4096);
+    assert_eq!(mm.iomem.as_ref().ok_or("iomem missing")?.0.len(), 1);
+    assert_eq!(mm.buddyinfo.as_ref().ok_or("buddyinfo missing")?.zones[0].free_blocks[0], 2553);
+    assert_eq!(mm.zoneinfo.as_ref().ok_or("zoneinfo missing")?.zones[0].free_pages, 9_007_199_254_740_993);
+    assert_eq!(mm.swaps.as_ref().ok_or("swaps missing")?.entries[1].size_kib, 9_007_199_254_741);
+    assert_eq!(mm.slabinfo.as_ref().ok_or("slabinfo missing")?.caches[1].objects, u64::MAX);
+    assert_eq!(
+        mm.pagetypeinfo.as_ref().ok_or("pagetypeinfo missing")?.nodes[0].free_blocks[0].counts[1],
+        FreeBlockCount::AtLeast(100000)
+    );
+
+    let json = serde_json::to_value(&snapshot)?;
+    assert_eq!(json["linux_mm"]["zoneinfo"]["zones"][0]["free_pages"], 9_007_199_254_740_993_u64);
+    assert_eq!(json["linux_mm"]["slabinfo"]["caches"][1]["objects"], u64::MAX);
+    assert_eq!(json["linux_mm"]["swaps"]["entries"][1]["priority"], -2);
+    let event = wora::events::Event::<()>::SystemResource(wora::events::SystemResourceStat::MemorySnapshot(std::sync::Arc::new(
+        wora::events::MemorySnapshot::from_host_stats(&snapshot),
+    )));
+    let event_json = serde_json::to_value(event)?;
+    let memory = &event_json["SystemResource"]["MemorySnapshot"]["linux_mm"];
+    assert_eq!(memory["meminfo"]["mem_total"], 16_777_216);
+    assert_eq!(memory["pressure"]["some"]["total"], 9_007_199_254_740_993_u64);
+    assert_eq!(memory["vmstat"]["nr_free_pages"], 1234);
+    assert_eq!(memory["buddyinfo"]["zones"][0]["free_blocks"][0], 2553);
+    Ok(())
+}
+
+#[test]
+fn missing_or_malformed_sources_do_not_discard_other_metrics() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::write(root.path().join("buddyinfo"), "malformed")?;
+    std::fs::write(root.path().join("swaps"), "Filename Type Size Used Priority\n")?;
+    // A directory produces a read error, independently of the test user's privileges.
+    std::fs::create_dir(root.path().join("slabinfo"))?;
+
+    let snapshot = LinuxMemoryStats::from_proc_root(root.path());
+    assert!(snapshot.buddyinfo.is_none());
+    assert!(snapshot.zoneinfo.is_none());
+    assert!(snapshot.slabinfo.is_none());
+    assert!(snapshot.pagetypeinfo.is_none());
+    assert!(snapshot.swaps.ok_or("valid empty swap table missing")?.entries.is_empty());
+
+    // A later failed read must not retain an earlier successful snapshot.
+    std::fs::remove_file(root.path().join("swaps"))?;
+    assert!(LinuxMemoryStats::from_proc_root(root.path()).swaps.is_none());
+    Ok(())
+}
+
+#[test]
+fn host_stats_collect_and_refresh_linux_memory_sources() {
+    let mut stats = HostStats::new(&sysinfo::System::new());
+    if BuddyInfo::current().is_ok() {
+        assert!(stats.linux_mm.buddyinfo.is_some());
+    }
+    if Swaps::current().is_ok() {
+        assert!(stats.linux_mm.swaps.is_some());
+    }
+
+    stats.linux_mm = LinuxMemoryStats::default();
+    assert!(stats.update().is_ok());
+    if BuddyInfo::current().is_ok() {
+        assert!(stats.linux_mm.buddyinfo.is_some());
+    }
+    if Swaps::current().is_ok() {
+        assert!(stats.linux_mm.swaps.is_some());
+    }
+}

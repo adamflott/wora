@@ -25,6 +25,15 @@ use tracing_subscriber::Layer;
 
 use crate::{HealthState, Leadership, ReadinessState};
 
+/// Linux memory-management snapshot types and procfs parsing traits.
+#[cfg(target_os = "linux")]
+pub use wora_observability_linux_mm as linux_mm;
+
+#[cfg(target_os = "linux")]
+mod linux_memory;
+#[cfg(target_os = "linux")]
+pub use linux_memory::LinuxMemoryStats;
+
 /// Timestamped observability event emitted by WORA or an application.
 #[derive(Clone, Debug)]
 pub struct O11yEvent<T> {
@@ -373,7 +382,7 @@ pub struct O11yRuntimeSettings {
     pub flush_interval: std::time::Duration,
     /// Queue status reporting interval.
     pub status_interval: std::time::Duration,
-    /// Host and process sampling interval.
+    /// Host, process, and application memory event sampling interval.
     pub host_stats_interval: std::time::Duration,
     /// Sink failure behavior.
     pub failure_policy: O11yFailurePolicy,
@@ -406,7 +415,7 @@ impl O11ySettingsPatch {
         self
     }
 
-    /// Change the host and process sampling interval.
+    /// Change the host, process, and application memory event sampling interval.
     pub fn host_stats_interval(mut self, value: std::time::Duration) -> Self {
         self.host_stats_interval = Some(value);
         self
@@ -1208,7 +1217,10 @@ impl<T: Sync> O11yPipelineBuilder<T> {
         self
     }
 
-    /// Set the host and process sampling interval.
+    /// Set the host, process, and application memory event sampling interval.
+    ///
+    /// Defaults to 30 seconds. Also controls updates to
+    /// [`crate::Wora::memory_stats`] and [`crate::Wora::subscribe_memory_stats`].
     pub fn host_stats_interval(mut self, interval: std::time::Duration) -> Self {
         self.host_stats_interval = interval;
         self
@@ -1546,7 +1558,7 @@ impl Host {
         Ok(())
     }
 }
-/// System stats/information from `sysinfo`
+/// Host resource statistics, including Linux memory-management snapshots.
 #[derive(Clone, Default, Debug, Serialize, Getters)]
 pub struct HostStats {
     pub cpu: Vec<Cpu>,
@@ -1555,10 +1567,13 @@ pub struct HostStats {
     pub swap: SwapStats,
     pub fs: Vec<Disk>,
     pub net_io: HashMap<String, NetIO>,
+    /// Linux allocator and swap details, refreshed with each host snapshot.
+    #[cfg(target_os = "linux")]
+    pub linux_mm: LinuxMemoryStats,
 }
 
 impl HostStats {
-    /// Collect host resource statistics from `sysinfo`.
+    /// Collect host resource statistics from `sysinfo` and Linux procfs sources.
     pub fn new(sys: &System) -> Self {
         let mut cpus = vec![];
         for cpu in sys.cpus() {
@@ -1632,6 +1647,8 @@ impl HostStats {
             },
             fs,
             net_io,
+            #[cfg(target_os = "linux")]
+            linux_mm: LinuxMemoryStats::current(),
         }
     }
 

@@ -14,7 +14,7 @@ pub use crate::Secrets;
 pub use crate::Wora;
 pub use crate::dirs::Dirs;
 pub use crate::errors::*;
-pub use crate::events::{ChangeKind, ConfigChange, ControlEvent, Event, SecretChange};
+pub use crate::events::{ChangeKind, ConfigChange, ControlEvent, Event, MemorySnapshot, SecretChange, SystemResourceStat};
 pub use crate::exec::*;
 pub use crate::exec_async_runner;
 pub use crate::exec_async_runner_with_options;

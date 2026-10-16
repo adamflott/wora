@@ -166,6 +166,7 @@ pub struct Wora<AppEv, AppMetric> {
     pub(crate) o11y: O11yProcessorOptions<AppMetric>,
     /// Shared runtime status for health and readiness supervision.
     status: RuntimeStatusHandle,
+    memory_stats_tx: watch::Sender<Arc<MemorySnapshot>>,
 }
 
 /// Current leadership role for a workload.
@@ -284,6 +285,7 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
         let (tx, rx) = channel(ev_buf_size);
 
         let host = runtime_environment.initial_host()?;
+        let (memory_stats_tx, _) = watch::channel(Arc::new(MemorySnapshot::from_host_stats(&host.stats)));
         let status = RuntimeStatusHandle::new();
 
         let current_dir = std::env::current_dir()?;
@@ -299,12 +301,33 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
             leadership: Leadership::Unknown,
             o11y,
             status,
+            memory_stats_tx,
         })
     }
 
     /// Return the host statistics captured when the runtime started.
     pub fn stats_from_start(&self) -> &HostStats {
         &self.host.stats
+    }
+
+    /// Return the latest stored host memory sample without performing I/O.
+    ///
+    /// Available before app setup and refreshed at the pipeline's
+    /// [`O11yPipelineBuilder::host_stats_interval`]. Reading this value does not
+    /// depend on consuming application events. A failed host refresh retains the
+    /// previous sample. Each unavailable Linux procfs source is `None`.
+    pub fn memory_stats(&self) -> Arc<MemorySnapshot> {
+        self.memory_stats_tx.borrow().clone()
+    }
+
+    /// Subscribe to stored memory samples from app or background tasks.
+    ///
+    /// The receiver starts with the current sample. Await `changed()` for later
+    /// samples and use `borrow_and_update()` to read them. Slow listeners observe
+    /// the latest sample without blocking collection. This API also works on
+    /// macOS, where snapshots contain portable memory and swap totals.
+    pub fn subscribe_memory_stats(&self) -> watch::Receiver<Arc<MemorySnapshot>> {
+        self.memory_stats_tx.subscribe()
     }
 
     /// Return the executor directory layout.
@@ -1222,6 +1245,14 @@ fn set_o11y_service_state(
 
 type O11yServiceTaskResult = Result<(String, Result<(), String>), tokio::task::JoinError>;
 
+fn publish_memory_snapshot<AppEv>(stats: &HostStats, cache: &watch::Sender<Arc<MemorySnapshot>>, events: &Sender<Event<AppEv>>) {
+    let snapshot = Arc::new(MemorySnapshot::from_host_stats(stats));
+    cache.send_replace(snapshot.clone());
+    if let Err(error) = events.try_send(Event::SystemResource(SystemResourceStat::MemorySnapshot(snapshot))) {
+        debug!(%error, "periodic memory event skipped");
+    }
+}
+
 fn service_task_error(result: Option<O11yServiceTaskResult>) -> String {
     match result {
         Some(Ok((name, Ok(())))) => format!("observability service {name} stopped unexpectedly"),
@@ -1412,6 +1443,7 @@ async fn exec_async_runner_inner<AppEv: Send + Sync + 'static, AppMetric: Debug 
                 let runtime_environment = runtime_environment.clone();
                 let runtime_event_sender = wora.sender.clone();
                 let host_stats_tx = wora.o11y.sender().clone();
+                let memory_stats_tx = wora.memory_stats_tx.clone();
                 let cancelled = runtime_tasks.cancellation_token();
                 let mut host_stats_settings = runtime_settings.clone();
                 runtime_tasks.spawn("host and process sampling", async move {
@@ -1432,7 +1464,11 @@ async fn exec_async_runner_inner<AppEv: Send + Sync + 'static, AppMetric: Debug 
                         let runtime_metrics_restart_counter = runtime_metrics_restart_counter.clone();
                         let runtime_environment = runtime_environment.clone();
                         let runtime_event_sender = runtime_event_sender.clone();
-                        let host_stats = match runtime_environment.refresh_host_stats() {
+                        let (host_stats, process_stats) =
+                            tokio::task::spawn_blocking(move || (runtime_environment.refresh_host_stats(), runtime_environment.refresh_process_stats()))
+                                .await
+                                .map_err(|err| format!("host and process sampler: {err}"))?;
+                        let host_stats = match host_stats {
                             Ok(stats) => stats,
                             Err(err) => {
                                 error!("o11y:host stats refresh error: {}", err);
@@ -1440,10 +1476,10 @@ async fn exec_async_runner_inner<AppEv: Send + Sync + 'static, AppMetric: Debug 
                             }
                         };
                         if let Some(host_stats) = host_stats {
+                            publish_memory_snapshot(&host_stats, &memory_stats_tx, &runtime_event_sender);
                             let _ = tx.send(o11y_new_ev_hoststats(&host_stats)).await;
                         }
 
-                        let process_stats = runtime_environment.refresh_process_stats();
                         if let Some(process_stats) = process_stats {
                             let _ = tx.send(o11y_new_ev_processstats(&process_stats)).await;
                         }
@@ -1676,7 +1712,33 @@ mod runner_tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use super::{MainEarlyReturn, RuntimeTaskRegistry, lock_file_name};
+    use super::{Event, HostStats, MainEarlyReturn, MemorySnapshot, RuntimeTaskRegistry, SystemResourceStat, lock_file_name, publish_memory_snapshot};
+
+    #[tokio::test]
+    async fn memory_cache_and_listeners_update_when_the_app_queue_is_full() -> Result<(), Box<dyn std::error::Error>> {
+        let mut stats = HostStats::default();
+        let (cache, mut updates) = tokio::sync::watch::channel(Arc::new(MemorySnapshot::from_host_stats(&stats)));
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        sender.try_send(Event::App(()))?;
+
+        stats.memory.used = 42;
+        publish_memory_snapshot(&stats, &cache, &sender);
+        updates.changed().await?;
+        assert_eq!(updates.borrow_and_update().memory.used, 42);
+        assert_eq!(cache.borrow().memory.used, 42);
+        assert!(matches!(receiver.try_recv()?, Event::App(())));
+
+        stats.memory.used = 84;
+        publish_memory_snapshot(&stats, &cache, &sender);
+        let event = receiver.try_recv()?;
+        let Event::SystemResource(SystemResourceStat::MemorySnapshot(snapshot)) = &event else {
+            return Err("memory event missing".into());
+        };
+        assert!(Arc::ptr_eq(snapshot, &cache.borrow()));
+        let json = serde_json::to_value(event)?;
+        assert_eq!(json["SystemResource"]["MemorySnapshot"]["memory"]["used"], 84);
+        Ok(())
+    }
 
     #[test]
     fn concurrent_lock_file_names_are_unique() {

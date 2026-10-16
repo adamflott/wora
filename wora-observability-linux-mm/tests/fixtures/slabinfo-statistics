@@ -1,0 +1,3 @@
+slabinfo - version: 2.1 (statistics)
+# name <active_objs> <num_objs> <objsize> <objperslab> <pagesperslab> : tunables <limit> <batchcount> <sharedfactor> : slabdata <active_slabs> <num_slabs> <sharedavail> : globalstat <listallocs> <maxobjs> <grown> <reaped> <error> <maxfreeable> <nodeallocs> <remotefrees> <alienoverflow> : cpustat <allochit> <allocmiss> <freehit> <freemiss>
+legacy_cache 3 8 64 64 1 : tunables 120 60 8 : slabdata 1 2 4 : globalstat 9007199254740993 18446744073709551615 2 3 4 5 6 7 8 : cpustat 9 10 11 12

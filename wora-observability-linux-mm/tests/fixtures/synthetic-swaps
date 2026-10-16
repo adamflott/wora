@@ -1,0 +1,4 @@
+Filename                                Type            Size            Used            Priority
+/dev/zram0                              partition       1048576         128             100
+/swap\040file\134literal                 file            9007199254741   1234567         -2
+/dev/future                             future_type     1               0               0
