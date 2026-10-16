@@ -19,6 +19,16 @@ and its dependencies are enabled only on Linux. Single-file parsers use
 `procfs-core`, and their live readers implement procfs's `Current` trait.
 Reads are synchronous. Rust 1.95 or newer is required.
 
+`NumaStats::{current,from_sys_root}` captures node inventory, sparse node IDs,
+per-node `meminfo`, `numastat`, `vmstat`, CPU lists/maps, distances, and memory-tier
+node lists. WORA reports this as `linux_mm.numa`. Native tables and their units
+remain text in `MemoryFiles`; unsigned/signed scalar files retain exact integer
+values. No page size is assumed. Each file has an independent error, is limited
+to 4 MiB, and is never returned as a successful truncated value. Selected
+directories are limited to 4096 entries. Symlinks and write-only files are not
+opened. Normal-user visibility depends on sysfs mounts and host policy.
+See the [node ABI](https://github.com/torvalds/linux/blob/master/Documentation/ABI/stable/sysfs-devices-node).
+
 `CgroupMemoryStats::current()` discovers the calling process's cgroup v2 from
 `/proc/self/{cgroup,mountinfo}`. `current` contains parsed `memory.*` files,
 including usage, limits, swap/zswap, named counters, local/hierarchical events,

@@ -3,7 +3,9 @@
 
 mod buddyinfo;
 mod cgroup;
+mod files;
 mod hugepages;
+mod numa;
 mod pagetypeinfo;
 mod process;
 mod slabinfo;
@@ -13,7 +15,9 @@ mod zoneinfo;
 
 pub use buddyinfo::{BuddyInfo, BuddyZone};
 pub use cgroup::{CgroupMemory, CgroupMemoryStats, CgroupMemoryValue};
+pub use files::{MemoryFiles, MemoryValue};
 pub use hugepages::{HugePageFiles, HugePageStats, HugePageValue};
+pub use numa::NumaStats;
 pub use pagetypeinfo::{FreeBlockCount, PageTypeBlockCounts, PageTypeFreeList, PageTypeInfo, PageTypeNode};
 pub use process::{ProcessMemoryStats, SmapsRollup, SmapsRollupValue};
 pub use procfs_core::{FromBufRead, FromRead, ProcError, ProcResult};

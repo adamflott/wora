@@ -17,6 +17,8 @@ use super::linux_mm::{
 /// Values retain their source units and page-type lower bounds.
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct LinuxMemoryStats {
+    /// Host NUMA nodes, locality statistics and memory-tier membership.
+    pub numa: Option<Box<super::linux_mm::NumaStats>>,
     /// Overall host memory inventory from `/proc/meminfo`, with sizes in bytes.
     pub meminfo: Option<Box<Meminfo>>,
     /// Kernel VM gauges and counters from `/proc/vmstat`, in their native units.
@@ -72,7 +74,8 @@ impl LinuxMemoryStats {
     /// fall back to the running host's sysfs.
     pub fn from_roots(proc_root: impl AsRef<Path>, sys_root: impl AsRef<Path>) -> Self {
         Self {
-            hugepages: Some(Box::new(HugePageStats::from_sys_root(sys_root))),
+            hugepages: Some(Box::new(HugePageStats::from_sys_root(&sys_root))),
+            numa: Some(Box::new(super::linux_mm::NumaStats::from_sys_root(&sys_root))),
             ..Self::from_proc_root(proc_root)
         }
     }
@@ -100,6 +103,7 @@ impl LinuxMemoryStats {
             sysctls: MemorySysctls::from_proc_root(root),
             cgroup: Box::new(CgroupMemoryStats::from_proc_root(root)),
             hugepages: None,
+            numa: None,
             process: Box::new(ProcessMemoryStats::from_process_root(std::process::id(), root.join("self"))),
         }
     }
