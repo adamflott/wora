@@ -1693,8 +1693,8 @@ pub struct HostInfo {
 }
 
 fn os_type() -> Result<SupportedOSes, O11yError> {
-    let os_type = match System::distribution_id().as_str() {
-        "ubuntu" | "linux" | "nixos" => SupportedOSes::Linux,
+    let os_type = match std::env::consts::OS {
+        "linux" => SupportedOSes::Linux,
         "macos" => SupportedOSes::OSX,
         unsupported => return Err(O11yError::UnsupportedOS(unsupported.to_string())),
     };

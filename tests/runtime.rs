@@ -533,6 +533,104 @@ mod memory_events {
         assert!(verified.load(Ordering::SeqCst));
         Ok(())
     }
+
+    #[tokio::test]
+    async fn memory_profile_reports_startup_and_periodic_samples_then_shuts_down() -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let root = unique_test_dir("memory-profile");
+        let environment = MemoryEnvironment {
+            base: DeterministicRuntimeEnvironment {
+                host_info: deterministic_host_info(),
+                host_stats: deterministic_host_stats(),
+                process: None,
+            },
+            refreshes: Arc::new(AtomicUsize::new(0)),
+        };
+        let (controls, receiver) = tokio::sync::mpsc::channel(1);
+        let phases = Arc::new(Mutex::new(Vec::new()));
+        let exec = DrainingTrackerExec {
+            dirs: test_dirs(root.clone()),
+            phases: phases.clone(),
+            control_events: Arc::new(tokio::sync::Mutex::new(None)),
+        }
+        .with_control_event_receiver(receiver);
+        let (writer, reader) = tokio::io::duplex(64 * 1024);
+        let run = MemoryReporter::new()
+            .with_name("memory-profile")
+            .with_interval(Duration::from_millis(25))
+            .with_writer(writer)
+            .run_with(
+                exec,
+                InMemoryVFS::new(),
+                RunnerOptions::new()
+                    .with_lock_backend(InMemoryLockBackend::default())
+                    .with_boot_dir(root.join("boot"))
+                    .with_runtime_environment(environment),
+            );
+        let observe = async move {
+            let mut lines = BufReader::new(reader).lines();
+            for used in [6, 100, 200] {
+                let line = lines.next_line().await?.ok_or("profile report missing")?;
+                let report: serde_json::Value = serde_json::from_str(&line)?;
+                assert_eq!(report["memory"]["used"], used);
+                assert_eq!(report["swap"]["total"], 20);
+                assert!(report["timestamp"].is_string());
+                #[cfg(target_os = "linux")]
+                if used != 6 {
+                    assert_eq!(report["linux_mm"]["vmstat"]["nr_free_pages"], used);
+                }
+            }
+            controls.send(ControlEvent::Shutdown(None)).await?;
+            assert!(lines.next_line().await?.is_none());
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::try_join!(async { run.await.map_err(Into::into) }, observe)
+        })
+        .await??;
+        assert_eq!(phases.lock().map_err(|error| error.to_string())?.last(), Some(&"stopping"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn memory_profile_rejects_zero_intervals_before_executor_setup() -> Result<(), Box<dyn std::error::Error>> {
+        let fs = InMemoryVFS::new();
+        let root = unique_test_dir("memory-profile-zero");
+        let result = MemoryReporter::new()
+            .with_interval(Duration::ZERO)
+            .with_writer(tokio::io::sink())
+            .run_with(TestExec { dirs: test_dirs(root.clone()) }, fs.clone(), RunnerOptions::new())
+            .await;
+        assert!(matches!(result, Err(MainEarlyReturn::WoraSetup(_))));
+        assert!(!fs.dir_exists(&root).await?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn memory_profile_returns_output_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let root = unique_test_dir("memory-profile-broken-output");
+        let (writer, reader) = tokio::io::duplex(1);
+        drop(reader);
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            MemoryReporter::new().with_writer(writer).run_with(
+                TestExec { dirs: test_dirs(root.clone()) },
+                InMemoryVFS::new(),
+                RunnerOptions::new()
+                    .with_lock_backend(InMemoryLockBackend::default())
+                    .with_boot_dir(root.join("boot"))
+                    .with_runtime_environment(DeterministicRuntimeEnvironment {
+                        host_info: deterministic_host_info(),
+                        host_stats: deterministic_host_stats(),
+                        process: None,
+                    }),
+            ),
+        )
+        .await?;
+        assert!(matches!(result, Err(MainEarlyReturn::InfrastructureTask(_))));
+        Ok(())
+    }
 }
 
 struct BootTrackingApp {

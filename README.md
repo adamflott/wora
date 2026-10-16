@@ -109,6 +109,42 @@ These instructions will get you a copy of the project up and running on your loc
 
 ## Usage
 
+Run the memory-reporting profile:
+
+```sh
+cargo run --example memory_report
+```
+
+Profiles combine a workload's default configuration with the existing WORA
+runtime so small programs need very little setup. The first profile prints one
+complete memory snapshot as a JSON line at startup and after every successful
+host sample, flushing each line immediately. Stop it with Ctrl-C or SIGTERM.
+
+```rust,no_run
+use wora::profiles::MemoryReporter;
+
+#[tokio::main]
+async fn main() -> Result<(), wora::errors::MainEarlyReturn> {
+    MemoryReporter::new().run().await
+}
+```
+
+`MemoryReporter` defaults to a five-second interval, stdout, the application
+name `wora-memory-report`, and a per-user Unix executor. Customize it with
+`.with_interval(Duration::from_secs(30))`, `.with_name("my-memory-report")`, or
+`.with_writer(writer)` for a Tokio async writer. Use `.run_with(exec, fs, options)`
+to supply an existing executor and `RunnerOptions`. The profile uses `NoConfig`
+and `NoSecrets`, and does not install a global tracing subscriber.
+
+Each JSON line contains `timestamp`, `memory`, `swap`, and, on Linux, `linux_mm`.
+All ten Linux sources listed above are included with every available nested
+value, including zone per-CPU statistics and allocator counts. Unavailable
+sources appear as `null`. Source units, integer precision, and page-type lower
+bounds are preserved. Slab and page-type files commonly require root; run with
+suitable read permissions to include those sources. Output errors stop the
+profile and are returned to the caller. On macOS, the same profile prints the
+portable memory and swap totals.
+
 Run the basic example:
 
 ```sh

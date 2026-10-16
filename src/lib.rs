@@ -33,6 +33,7 @@ pub mod exec_unix;
 pub mod lock;
 pub mod o11y;
 pub mod prelude;
+pub mod profiles;
 pub mod restart_policy;
 pub mod vfs;
 
