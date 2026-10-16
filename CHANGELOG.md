@@ -5,6 +5,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- next-header -->
+## [0.0.18] - 2026-10-16
+
+### Features
+
+- Add the Linux-only `wora-observability-linux-mm` workspace crate with typed readers for buddy allocator state, zone watermarks and statistics, swap devices, slab caches, and page-type free lists, alongside existing procfs memory, VM, pressure, shared-memory, and physical-map snapshots.
+- Add timestamped `MemorySnapshot` application events, `Wora::memory_stats()` for cached reads without I/O, and `Wora::subscribe_memory_stats()` for watch subscriptions. Snapshots include portable memory and swap totals on Linux and macOS, with detailed Linux data under `linux_mm`.
+- Add `profiles::MemoryReporter` and a minimal `memory_report` example that print the startup snapshot and subsequent samples as JSON lines, flushing each record immediately. Default to stdout, a per-user Unix executor, and a five-second interval, with configurable name, interval, writer, executor, filesystem, and runner options.
+- Capture memory-related sysctls from `/proc/sys/vm` and selected kernel and filesystem settings, preserving native text values and reporting per-key read errors and exclusions. Skip `vm.stat_refresh` and write-only action controls.
+- Capture the collecting process's cgroup v2 memory usage, limits, swap/zswap, counters, events, NUMA accounting, and pressure, plus visible ancestor usage and limits. Preserve unlimited values as `"max"` and report discovery failures explicitly.
+- Capture transparent hugepage policies and per-size statistics, plus global and per-node HugeTLB pools, preserving native units and policy selections while excluding demotion actions and write-only controls.
+- Add process `smaps_rollup` snapshots with the collecting PID, RSS, PSS, and kernel-dependent fields, retaining source units and providing checked byte conversion.
+
+### Changes
+
+- Seed the memory cache before application setup and refresh it at the configurable host-statistics interval, including live interval changes. Run periodic collection on a blocking worker and retain the previous sample after failed host refreshes.
+- Keep memory cache and watch updates independent of application event queue backpressure; skip periodic application notifications when the queue is full.
+- Update crate dependencies and simplify example event-loop error handling.
+
+### Fixes
+
+- Identify the operating system independently of the Linux distribution ID so supported distributions such as Debian can initialize host statistics.
+
+### Tests
+
+- Add parser and fixture coverage for Linux memory sources, malformed input, numeric limits, sparse nodes, namespace and mount discovery, unavailable files, and excluded controls, plus opt-in live-reader tests.
+- Add runtime coverage for memory caching, subscriptions, application events, interval updates, failed refreshes, full event queues, profile output and writer failures, graceful shutdown, and complete Linux snapshot serialization.
+
+### Documentation
+
+- Document the memory cache and event APIs, reporting profile, Linux reader types, source units, captured-file inputs, access requirements, and collection costs.
+- Record normal-user sysctl access checks and distinguish privileged readable settings from excluded action controls.
+
 ## [0.0.17] - 2026-08-28
 
 ### Features
