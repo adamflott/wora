@@ -84,6 +84,20 @@ exact working-set guarantee. Debugfs typically needs root, `CONFIG_LRU_GEN` is
 required, and full historical stats depend on `CONFIG_LRU_GEN_STATS`. No new
 generation is created and no reclaim or enablement commands are written.
 
+`PhysicalPageStats` reads `kpageflags`, `kpagecount` and `kpagecgroup` for an
+explicit `PageRange`; `ProcessPageMap` reads virtual page indices for one PID.
+Native-endian 64-bit entries retain raw bits and exact integers. No page size is
+assumed. Ranges are limited to 65536 entries, offsets are checked before I/O, and
+short reads fail atomically per file. Physical access commonly needs root;
+pagemap PFNs require `CAP_SYS_ADMIN`. A zero payload is ambiguous/redacted and
+never becomes a usable PFN. Mapping counts can be averaged for large allocations;
+charged cgroup inode numbers are not the same as MGLRU cgroup IDs.
+
+WORA's `with_physical_page_range(PageRange { start, count })` and
+`with_virtual_page_range(...)` enable these diagnostics. Selecting `PhysicalPages`
+without a range is rejected. No whole-machine range or process address space is
+guessed, no page contents are read, and no page flags are modified.
+
 `CgroupMemoryStats::current()` discovers the calling process's cgroup v2 from
 `/proc/self/{cgroup,mountinfo}`. `current` contains parsed `memory.*` files,
 including usage, limits, swap/zswap, named counters, local/hierarchical events,

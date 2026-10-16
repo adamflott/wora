@@ -18,11 +18,17 @@ pub enum LinuxMemoryCollector {
     Fragmentation,
     /// MGLRU runtime policy and existing per-cgroup/per-node age histograms.
     LruGenerations,
+    /// Explicit bounded physical/virtual page ranges; never scans all memory.
+    PhysicalPages,
 }
 
 /// Explicit selection and cadence for potentially costly memory diagnostics.
 #[derive(Clone, Debug)]
 pub struct LinuxMemoryOptions {
+    /// Optional physical PFN range; required to collect kpage arrays.
+    pub physical_pages: Option<super::linux_mm::PageRange>,
+    /// Optional collecting-process virtual page range for pagemap.
+    pub virtual_pages: Option<super::linux_mm::PageRange>,
     /// Selected collectors; empty by default.
     pub collectors: BTreeSet<LinuxMemoryCollector>,
     /// Minimum time between diagnostic collections; defaults to 60 seconds.
@@ -36,6 +42,8 @@ pub struct LinuxMemoryOptions {
 impl Default for LinuxMemoryOptions {
     fn default() -> Self {
         Self {
+            physical_pages: None,
+            virtual_pages: None,
             collectors: BTreeSet::new(),
             interval: Duration::from_secs(60),
             proc_root: "/proc".into(),
@@ -45,6 +53,18 @@ impl Default for LinuxMemoryOptions {
 }
 
 impl LinuxMemoryOptions {
+    /// Enable bounded physical-page collection for an explicit PFN range.
+    pub fn with_physical_page_range(mut self, range: super::linux_mm::PageRange) -> Self {
+        self.physical_pages = Some(range);
+        self.collectors.insert(LinuxMemoryCollector::PhysicalPages);
+        self
+    }
+    /// Enable bounded pagemap collection for collecting-process virtual page indices.
+    pub fn with_virtual_page_range(mut self, range: super::linux_mm::PageRange) -> Self {
+        self.virtual_pages = Some(range);
+        self.collectors.insert(LinuxMemoryCollector::PhysicalPages);
+        self
+    }
     /// Start with all diagnostic collectors disabled.
     pub fn new() -> Self {
         Self::default()
@@ -70,6 +90,10 @@ impl LinuxMemoryOptions {
 /// Diagnostic data with its own timestamp; may be older than the host snapshot.
 #[derive(Clone, Debug, Serialize)]
 pub struct LinuxMemoryDiagnostics {
+    /// Exactly the requested PFN range, with independent kpage file errors.
+    pub physical_pages: Option<Box<super::linux_mm::PhysicalPageStats>>,
+    /// Exactly the requested process virtual-page range; PFNs may be redacted.
+    pub page_map: Option<Box<super::linux_mm::ProcessPageMap>>,
     /// MGLRU policy and page-age histograms, without active aging or reclaim.
     pub lru_generations: Option<Box<super::linux_mm::LruStats>>,
     /// Exact per-order fragmentation indices, without floating-point conversion.
@@ -99,6 +123,16 @@ pub struct LinuxMemoryEnvironment<R> {
 impl<R> LinuxMemoryEnvironment<R> {
     /// Validate options and wrap a telemetry provider without performing I/O.
     pub fn new(inner: R, options: LinuxMemoryOptions) -> Result<Self, O11yError> {
+        if options.collectors.contains(&LinuxMemoryCollector::PhysicalPages) {
+            if options.physical_pages.is_none() && options.virtual_pages.is_none() {
+                return Err(O11yError::RuntimeEnvironment(
+                    "PhysicalPages requires an explicit PFN or virtual-page range".into(),
+                ));
+            }
+            for range in [options.physical_pages, options.virtual_pages].into_iter().flatten() {
+                range.validate().map_err(|e| O11yError::RuntimeEnvironment(e.to_string()))?;
+            }
+        }
         if options.interval.is_zero() {
             return Err(O11yError::RuntimeEnvironment("Linux memory diagnostic interval must be nonzero".into()));
         }
@@ -120,6 +154,20 @@ impl<R> LinuxMemoryEnvironment<R> {
         if cache.as_ref().is_none_or(|(time, _)| time.elapsed() >= self.options.interval) {
             let selected = |kind| self.options.collectors.contains(&kind);
             let data = LinuxMemoryDiagnostics {
+                physical_pages: selected(LinuxMemoryCollector::PhysicalPages)
+                    .then_some(self.options.physical_pages)
+                    .flatten()
+                    .map(|range| Box::new(super::linux_mm::PhysicalPageStats::from_proc_root(&self.options.proc_root, range))),
+                page_map: selected(LinuxMemoryCollector::PhysicalPages)
+                    .then_some(self.options.virtual_pages)
+                    .flatten()
+                    .map(|range| {
+                        Box::new(super::linux_mm::ProcessPageMap::from_process_root(
+                            std::process::id(),
+                            self.options.proc_root.join("self"),
+                            range,
+                        ))
+                    }),
                 lru_generations: selected(LinuxMemoryCollector::LruGenerations)
                     .then(|| Box::new(super::linux_mm::LruStats::from_sys_root(&self.options.sys_root))),
                 fragmentation: selected(LinuxMemoryCollector::Fragmentation)
