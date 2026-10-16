@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Features
 
+- Extend Linux memory snapshots with NUMA nodes and tiers, zram/zswap accounting, KSM, process status and limits, and HugeTLB/cpuset cgroup context.
+- Add opt-in process mapping, SLUB, allocation attribution, fragmentation, Multi-Gen LRU, bounded physical-page/pagemap, page-owner, kernel leak, and memory hardware/EDAC/CMA diagnostics, with independent sampling and timestamps.
+- Add managed memory trace events for OOM victims, reclaim timing, compaction, and migration using an explicitly enabled private tracefs instance, plus a configurable `memory_diagnostics` example.
 - Add the Linux-only `wora-observability-linux-mm` workspace crate with typed readers for buddy allocator state, zone watermarks and statistics, swap devices, slab caches, and page-type free lists, alongside existing procfs memory, VM, pressure, shared-memory, and physical-map snapshots.
 - Add timestamped `MemorySnapshot` application events, `Wora::memory_stats()` for cached reads without I/O, and `Wora::subscribe_memory_stats()` for watch subscriptions. Snapshots include portable memory and swap totals on Linux and macOS, with detailed Linux data under `linux_mm`.
 - Add `profiles::MemoryReporter` and a minimal `memory_report` example that print the startup snapshot and subsequent samples as JSON lines, flushing each record immediately. Default to stdout, a per-user Unix executor, and a five-second interval, with configurable name, interval, writer, executor, filesystem, and runner options.

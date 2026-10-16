@@ -62,6 +62,22 @@ impl Default for LinuxMemoryOptions {
 }
 
 impl LinuxMemoryOptions {
+    /// Explicitly enable every snapshot diagnostic except range-based page scans.
+    /// Includes costly page-owner and kmemleak reads. Event tracing is separate.
+    pub fn all_snapshots() -> Self {
+        [
+            LinuxMemoryCollector::ProcessMappings,
+            LinuxMemoryCollector::Slub,
+            LinuxMemoryCollector::KernelAllocations,
+            LinuxMemoryCollector::Fragmentation,
+            LinuxMemoryCollector::LruGenerations,
+            LinuxMemoryCollector::PageOwner,
+            LinuxMemoryCollector::KernelLeaks,
+            LinuxMemoryCollector::MemoryHardware,
+        ]
+        .into_iter()
+        .fold(Self::new(), Self::enable)
+    }
     /// Enable bounded physical-page collection for an explicit PFN range.
     pub fn with_physical_page_range(mut self, range: super::linux_mm::PageRange) -> Self {
         self.physical_pages = Some(range);

@@ -213,6 +213,31 @@ the same diagnostics to another application or custom telemetry provider.
 `.with_interval(...)` on `LinuxMemoryOptions` sets the diagnostic cadence;
 the profile's interval controls routine reports. Neither grants privileges.
 
+Routine Linux reports also include NUMA nodes/tiers, zram/zswap accounting, KSM,
+process status/limits/OOM preferences, and HugeTLB/cpuset cgroup context.
+`LinuxMemoryOptions::all_snapshots()` explicitly selects the full diagnostic set:
+process mappings, SLUB, kernel allocation attribution, fragmentation, MGLRU,
+page-owner, kernel leak suspects, and memory blocks/EDAC/CMA. Physical and virtual
+page scans require explicit bounded `PageRange` values. Sources unavailable due
+to privileges or kernel configuration retain independent failures.
+
+```sh
+cargo run --example memory_diagnostics -- --diagnostic-interval 60
+# Also request a bounded physical-page range:
+cargo run --example memory_diagnostics -- --pfn-start 0 --page-count 1024
+# Explicitly enable a private tracefs instance (requires tracefs permissions):
+cargo run --example memory_diagnostics -- --trace
+```
+
+The diagnostic example opts into potentially costly reads, including kmemleak.
+`MemoryReporter::with_linux_memory_trace(LinuxMemoryTraceOptions::new())` adds
+OOM victim, reclaim timing, compaction and migration records. These flush as
+additional `{"timestamp":...,"memory_trace":...}` lines, including startup,
+kernel-loss and unfamiliar records. The service owns only its private tracefs
+instance and cleans it up on normal shutdown/cancellation. An abrupt process
+death may leave the instance identified in the startup record. Snapshot and
+event collectors do not attempt to obtain additional privileges.
+
 Each JSON line contains `timestamp`, `memory`, `swap`, and, on Linux, `linux_mm`.
 All Linux sources listed above are included with every available nested
 value, including zone per-CPU statistics, allocator counts, sysctls, cgroup memory,

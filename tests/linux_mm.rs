@@ -22,6 +22,49 @@ impl wora::o11y::RuntimeEnvironment for CapturedEnvironment {
 }
 
 #[test]
+fn all_selected_diagnostics_reach_serialized_memory_events() -> Result<(), Box<dyn std::error::Error>> {
+    use wora::o11y::linux_mm::PageRange;
+    use wora::o11y::{LinuxMemoryEnvironment, LinuxMemoryOptions, RuntimeEnvironment};
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("self"))?;
+    for name in ["kpageflags", "kpagecount", "kpagecgroup", "self/pagemap"] {
+        std::fs::write(root.path().join(name), 42u64.to_ne_bytes())?;
+    }
+    let options = LinuxMemoryOptions::all_snapshots()
+        .with_roots(root.path(), root.path())
+        .with_physical_page_range(PageRange { start: 0, count: 1 })
+        .with_virtual_page_range(PageRange { start: 0, count: 1 });
+    let provider = LinuxMemoryEnvironment::new(CapturedEnvironment, options)?;
+    let stats = provider.initial_host()?.stats;
+    let json = serde_json::to_value(wora::events::MemorySnapshot::from_host_stats(&stats))?;
+    let diagnostics = &json["linux_mm"]["diagnostics"];
+    for field in [
+        "process_mappings",
+        "slub",
+        "kernel_allocations",
+        "fragmentation",
+        "lru_generations",
+        "physical_pages",
+        "page_map",
+        "page_owner",
+        "kernel_leaks",
+        "hardware",
+    ] {
+        assert!(!diagnostics[field].is_null(), "missing {field}");
+    }
+    assert_eq!(diagnostics["physical_pages"]["flags"][0], 42);
+    assert!(diagnostics["slub"]["unavailable"]["."].is_string());
+    assert!(
+        LinuxMemoryEnvironment::new(
+            CapturedEnvironment,
+            LinuxMemoryOptions::new().with_physical_page_range(PageRange { start: 0, count: 0 })
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn diagnostic_selection_caching_and_independent_timestamps() -> Result<(), Box<dyn std::error::Error>> {
     use wora::o11y::{LinuxMemoryCollector, LinuxMemoryEnvironment, LinuxMemoryOptions, RuntimeEnvironment};
     let root = tempfile::tempdir()?;
