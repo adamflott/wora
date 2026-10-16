@@ -85,7 +85,7 @@ impl MemoryFiles {
                 self.skipped.insert(name.into(), MemorySkipReason::NotRegularFile);
                 return Ok(None);
             }
-            if metadata.permissions().mode() & 0o444 == 0 {
+            if metadata.permissions().mode() & 0o444 == 0 && metadata.permissions().mode() & 0o222 != 0 {
                 self.skipped.insert(name.into(), MemorySkipReason::WriteOnly);
                 return Ok(None);
             }

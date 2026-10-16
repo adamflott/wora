@@ -17,6 +17,8 @@ use super::linux_mm::{
 /// Values retain their source units and page-type lower bounds.
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct LinuxMemoryStats {
+    /// KSM saved/shared pages, scanner policy and process-specific accounting.
+    pub ksm: Option<Box<super::linux_mm::KsmStats>>,
     /// Zram device accounting and zswap policy/debugfs counters.
     pub compressed: Option<Box<super::linux_mm::CompressedMemoryStats>>,
     /// Host NUMA nodes, locality statistics and memory-tier membership.
@@ -76,6 +78,11 @@ impl LinuxMemoryStats {
     /// fall back to the running host's sysfs.
     pub fn from_roots(proc_root: impl AsRef<Path>, sys_root: impl AsRef<Path>) -> Self {
         Self {
+            ksm: Some(Box::new(super::linux_mm::KsmStats::from_roots(
+                &sys_root,
+                proc_root.as_ref().join("self"),
+                std::process::id(),
+            ))),
             hugepages: Some(Box::new(HugePageStats::from_sys_root(&sys_root))),
             numa: Some(Box::new(super::linux_mm::NumaStats::from_sys_root(&sys_root))),
             compressed: Some(Box::new(super::linux_mm::CompressedMemoryStats::from_sys_root(&sys_root))),
@@ -108,6 +115,7 @@ impl LinuxMemoryStats {
             hugepages: None,
             numa: None,
             compressed: None,
+            ksm: None,
             process: Box::new(ProcessMemoryStats::from_process_root(std::process::id(), root.join("self"))),
         }
     }

@@ -38,6 +38,13 @@ recompression or compaction controls are opened. Debugfs is never mounted;
 restricted zswap counters remain explicit access failures. These views overlap
 existing swap/memory totals and must not be added to them.
 
+`KsmStats::{current,from_roots}` captures all readable immediate KSM sysfs
+statistics and policy files plus process `ksm_stat`/`ksm_merging_pages`. WORA
+reports `linux_mm.ksm`. Negative profit values, future counter names and native
+units are retained; process accounting has an explicit PID. Reading `run`
+observes state without changing it. Missing `CONFIG_KSM` or inaccessible process
+files produce explicit errors without affecting other collectors.
+
 `CgroupMemoryStats::current()` discovers the calling process's cgroup v2 from
 `/proc/self/{cgroup,mountinfo}`. `current` contains parsed `memory.*` files,
 including usage, limits, swap/zswap, named counters, local/hierarchical events,
