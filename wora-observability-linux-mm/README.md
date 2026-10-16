@@ -76,6 +76,14 @@ indices use exact integer thousandths; `-1000` retains the external-fragmentatio
 This commonly needs root and a kernel exposing the debugfs interface. No
 compaction is triggered and existing VM compaction counters remain separate.
 
+`LruStats::{current,from_sys_root}` (`LruGenerations` diagnostics) retains MGLRU
+`enabled`/`min_ttl_ms`, native `lru_gen_full`, and basic age histograms scoped to
+memory-cgroup ID/path and NUMA node. Sequence numbers, millisecond ages and
+anonymous/file page counts stay separate. Histograms are not cumulative or an
+exact working-set guarantee. Debugfs typically needs root, `CONFIG_LRU_GEN` is
+required, and full historical stats depend on `CONFIG_LRU_GEN_STATS`. No new
+generation is created and no reclaim or enablement commands are written.
+
 `CgroupMemoryStats::current()` discovers the calling process's cgroup v2 from
 `/proc/self/{cgroup,mountinfo}`. `current` contains parsed `memory.*` files,
 including usage, limits, swap/zswap, named counters, local/hierarchical events,

@@ -16,6 +16,8 @@ pub enum LinuxMemoryCollector {
     KernelAllocations,
     /// Debugfs unusable-memory and external-fragmentation indices.
     Fragmentation,
+    /// MGLRU runtime policy and existing per-cgroup/per-node age histograms.
+    LruGenerations,
 }
 
 /// Explicit selection and cadence for potentially costly memory diagnostics.
@@ -68,6 +70,8 @@ impl LinuxMemoryOptions {
 /// Diagnostic data with its own timestamp; may be older than the host snapshot.
 #[derive(Clone, Debug, Serialize)]
 pub struct LinuxMemoryDiagnostics {
+    /// MGLRU policy and page-age histograms, without active aging or reclaim.
+    pub lru_generations: Option<Box<super::linux_mm::LruStats>>,
     /// Exact per-order fragmentation indices, without floating-point conversion.
     pub fragmentation: Option<Box<super::linux_mm::FragmentationStats>>,
     /// Kernel allocation sites and vmalloc areas, requiring kernel support/access.
@@ -116,6 +120,8 @@ impl<R> LinuxMemoryEnvironment<R> {
         if cache.as_ref().is_none_or(|(time, _)| time.elapsed() >= self.options.interval) {
             let selected = |kind| self.options.collectors.contains(&kind);
             let data = LinuxMemoryDiagnostics {
+                lru_generations: selected(LinuxMemoryCollector::LruGenerations)
+                    .then(|| Box::new(super::linux_mm::LruStats::from_sys_root(&self.options.sys_root))),
                 fragmentation: selected(LinuxMemoryCollector::Fragmentation)
                     .then(|| Box::new(super::linux_mm::FragmentationStats::from_debug_root(self.options.sys_root.join("kernel/debug")))),
                 kernel_allocations: selected(LinuxMemoryCollector::KernelAllocations)
