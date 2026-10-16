@@ -12,6 +12,7 @@ mod numa;
 mod pagetypeinfo;
 mod process;
 mod slabinfo;
+mod slub;
 mod swaps;
 mod sysctl;
 mod zoneinfo;
@@ -29,6 +30,7 @@ pub use process::{ProcessMemoryStats, SmapsRollup, SmapsRollupValue};
 pub use procfs_core::{FromBufRead, FromRead, ProcError, ProcResult};
 pub use procfs_core::{Iomem, Meminfo, MemoryPressure, PhysicalMemoryMap, PressureRecord, SharedMemorySegments, Shm, VmStat};
 pub use slabinfo::{SlabCache, SlabCpuStats, SlabGlobalStats, SlabInfo};
+pub use slub::SlubStats;
 pub use swaps::{SwapEntry, SwapType, Swaps};
 /// Read failures shared by memory information collectors.
 pub use sysctl::SysctlReadError as MemoryReadError;

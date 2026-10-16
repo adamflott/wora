@@ -53,6 +53,14 @@ original headers/pathnames, every field, native units and unfamiliar VM flags.
 Large files fail explicitly at the 4 MiB limit rather than returning partial
 mapping accounting. These reads never touch `clear_refs` or change OOM scores.
 
+`SlubStats::{current,from_sys_root}` reads modern SLUB cache geometry, per-node
+occupancy, debug policy and optional allocation/free counters. Canonical caches
+are stored once; aliases are a separate name map. Cache links must resolve within
+the supplied slab tree. Only known information files are read; `validate`,
+`shrink` and other actions are excluded. Access and counters depend on kernel
+configuration, including `CONFIG_SLUB_STATS`. Enable WORA's `Slub` diagnostic to
+include this potentially large tree on the separate diagnostic cadence.
+
 `CgroupMemoryStats::current()` discovers the calling process's cgroup v2 from
 `/proc/self/{cgroup,mountinfo}`. `current` contains parsed `memory.*` files,
 including usage, limits, swap/zswap, named counters, local/hierarchical events,
