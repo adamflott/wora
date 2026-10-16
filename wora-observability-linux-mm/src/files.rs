@@ -101,7 +101,15 @@ impl MemoryFiles {
             let text = read_text(&path, limit)?;
             let text = text.trim_end_matches('\n');
             let scalar = text.trim();
-            let value = if !scalar.is_empty() && scalar.bytes().all(|b| b.is_ascii_digit()) {
+            // These interfaces encode hex numbers or masks without a 0x prefix.
+            // Treating digit-only forms as decimal scalars would change meaning.
+            let native_hex = matches!(
+                relative.file_name().and_then(|v| v.to_str()),
+                Some("block_size_bytes" | "phys_index" | "cpumap")
+            );
+            let value = if native_hex {
+                MemoryValue::Text(text.into())
+            } else if !scalar.is_empty() && scalar.bytes().all(|b| b.is_ascii_digit()) {
                 MemoryValue::Unsigned(scalar.parse().map_err(io::Error::other)?)
             } else if scalar.strip_prefix('-').is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())) {
                 MemoryValue::Signed(scalar.parse().map_err(io::Error::other)?)

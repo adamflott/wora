@@ -10,6 +10,8 @@ use std::path::Path;
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct MemoryHardwareStats {
+    /// Memory block size converted from the kernel's hexadecimal byte value.
+    pub block_size_bytes: Option<u64>,
     /// Memory block size and automatic-online policy, in native formats.
     pub memory: MemoryFiles,
     /// Sparse memory-block IDs, with online state, removability and zones.
@@ -37,6 +39,17 @@ impl MemoryHardwareStats {
             memory: MemoryFiles::from_names(root.join("devices/system/memory"), &["block_size_bytes", "auto_online_blocks", "crash_hotplug"]),
             ..Self::default()
         };
+        if let Some(crate::MemoryValue::Text(value)) = result.memory.values.get("block_size_bytes") {
+            match u64::from_str_radix(value.trim(), 16) {
+                Ok(value) => result.block_size_bytes = Some(value),
+                Err(error) => {
+                    result
+                        .memory
+                        .unavailable
+                        .insert("block_size_bytes.parsed".into(), MemoryReadError::ReadFailed(error.to_string()));
+                }
+            }
+        }
         for (relative, prefix, blocks) in [("devices/system/memory", "memory", true), ("devices/system/node", "node", false)] {
             match entries(&root.join(relative)) {
                 Ok(entries) => {

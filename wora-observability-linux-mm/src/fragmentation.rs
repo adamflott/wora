@@ -77,7 +77,11 @@ impl FragmentationZone {
                         return Err(invalid());
                     }
                     let negative = whole.starts_with('-');
-                    let whole = whole.trim_start_matches('-').parse::<i32>().map_err(|_| invalid())?;
+                    let digits = whole.strip_prefix('-').unwrap_or(whole);
+                    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                        return Err(invalid());
+                    }
+                    let whole = digits.parse::<i32>().map_err(|_| invalid())?;
                     let value = whole
                         .checked_mul(1000)
                         .and_then(|n| n.checked_add(fraction.parse().ok()?))

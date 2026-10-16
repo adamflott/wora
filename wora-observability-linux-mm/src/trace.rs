@@ -101,7 +101,7 @@ impl MemoryTraceParser {
             return Err(MemoryReadError::ReadFailed("trace line exceeds 64 KiB".into()));
         }
         let line = line.trim_end_matches(['\r', '\n']);
-        if line.contains("LOST") && line.contains("EVENTS") {
+        if line.trim_start().starts_with("CPU:") && line.contains("LOST") && line.contains("EVENTS") {
             self.pending.clear();
             return Ok(Some(MemoryTraceRecord::Lost { raw: line.into() }));
         }
@@ -109,6 +109,7 @@ impl MemoryTraceParser {
             return Ok(None);
         }
         let Some(mut event) = parse_event(line) else {
+            self.pending.clear();
             return Ok(Some(MemoryTraceRecord::Unparsed { raw: line.into() }));
         };
         let family = match event.name.as_str() {

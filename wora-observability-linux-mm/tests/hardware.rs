@@ -23,6 +23,8 @@ fn hardware_scopes_and_cma_ranges_remain_separate_and_actions_untouched() -> Res
     fs::write(root.path().join("kernel/debug/cma/pool/alloc"), [0xff])?;
     fs::write(root.path().join("kernel/debug/cma/pool/free"), [0xff])?;
     let data = MemoryHardwareStats::from_sys_root(root.path());
+    assert_eq!(data.block_size_bytes, Some(0x8000000));
+    assert_eq!(data.memory.values["block_size_bytes"], MemoryValue::Text("8000000".into()));
     assert_eq!(data.blocks[&17].values["state"], MemoryValue::Text("online".into()));
     assert_eq!(data.edac["mc2/dimm15"].values["dimm_ce_count"], MemoryValue::Unsigned(4));
     assert_eq!(data.poisoned[&9].values["recovered"], MemoryValue::Unsigned(3));
