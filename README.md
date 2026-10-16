@@ -191,6 +191,28 @@ name `wora-memory-report`, and a per-user Unix executor. Customize it with
 to supply an existing executor and `RunnerOptions`. The profile uses `NoConfig`
 and `NoSecrets`, and does not install a global tracing subscriber.
 
+On Linux, expensive diagnostics are explicitly selected and sampled separately
+(60 seconds by default). Cached diagnostics carry `sampled_at`, so their age is
+visible in each report. For example:
+
+```rust,no_run
+use wora::o11y::{LinuxMemoryCollector, LinuxMemoryOptions};
+use wora::profiles::MemoryReporter;
+
+# async fn example() -> Result<(), wora::errors::MainEarlyReturn> {
+MemoryReporter::new()
+    .with_linux_memory_diagnostics(
+        LinuxMemoryOptions::new().enable(LinuxMemoryCollector::ProcessMappings),
+    )
+    .run().await
+# }
+```
+
+Use `LinuxMemoryEnvironment::new(provider, options)` with runner options to add
+the same diagnostics to another application or custom telemetry provider.
+`.with_interval(...)` on `LinuxMemoryOptions` sets the diagnostic cadence;
+the profile's interval controls routine reports. Neither grants privileges.
+
 Each JSON line contains `timestamp`, `memory`, `swap`, and, on Linux, `linux_mm`.
 All Linux sources listed above are included with every available nested
 value, including zone per-CPU statistics, allocator counts, sysctls, cgroup memory,

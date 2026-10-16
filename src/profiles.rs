@@ -50,6 +50,8 @@ use crate::{App, EventLoopAction, NoConfig, NoSecrets, ReadinessState, RunnerOpt
 /// }
 /// ```
 pub struct MemoryReporter<W = Stdout> {
+    #[cfg(target_os = "linux")]
+    diagnostics: crate::o11y::LinuxMemoryOptions,
     name: &'static str,
     interval: Duration,
     writer: W,
@@ -58,6 +60,8 @@ pub struct MemoryReporter<W = Stdout> {
 impl Default for MemoryReporter {
     fn default() -> Self {
         Self {
+            #[cfg(target_os = "linux")]
+            diagnostics: crate::o11y::LinuxMemoryOptions::default(),
             name: "wora-memory-report",
             interval: Duration::from_secs(5),
             writer: tokio::io::stdout(),
@@ -73,6 +77,15 @@ impl MemoryReporter {
 }
 
 impl<W> MemoryReporter<W> {
+    /// Enable selected Linux memory diagnostics with a separate sampling interval.
+    ///
+    /// Diagnostic data retains its own timestamp between collections. Expensive
+    /// diagnostics are disabled by default, including when running as root.
+    #[cfg(target_os = "linux")]
+    pub fn with_linux_memory_diagnostics(mut self, options: crate::o11y::LinuxMemoryOptions) -> Self {
+        self.diagnostics = options;
+        self
+    }
     /// Set the application name used for directories, locks, and boot state.
     pub fn with_name(mut self, name: &'static str) -> Self {
         self.name = name;
@@ -95,6 +108,8 @@ impl<W> MemoryReporter<W> {
     /// report, so output does not wait for the periodic pipeline flush.
     pub fn with_writer<NewW>(self, writer: NewW) -> MemoryReporter<NewW> {
         MemoryReporter {
+            #[cfg(target_os = "linux")]
+            diagnostics: self.diagnostics,
             name: self.name,
             interval: self.interval,
             writer,
@@ -125,6 +140,12 @@ impl<W: AsyncWrite + Unpin + Send + 'static> MemoryReporter<W> {
         fs: impl WFS + 'static,
         options: RunnerOptions<(), L, R>,
     ) -> Result<(), MainEarlyReturn> {
+        #[cfg(target_os = "linux")]
+        let options = {
+            let environment = crate::o11y::LinuxMemoryEnvironment::new(options.runtime_environment.clone(), self.diagnostics)
+                .map_err(|error| WoraSetupError::Str(error.to_string()))?;
+            options.with_runtime_environment(environment)
+        };
         let pipeline = O11yPipeline::builder()
             .host_stats_interval(self.interval)
             .failure_policy(O11yFailurePolicy::FailFast)

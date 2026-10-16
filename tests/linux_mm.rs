@@ -3,6 +3,74 @@
 use wora::o11y::linux_mm::{BuddyInfo, Current, FreeBlockCount, Swaps};
 use wora::o11y::{HostStats, LinuxMemoryStats, O11yChannelSink, O11yEventKind, O11ySink, o11y_new_ev_hoststats};
 
+#[derive(Clone)]
+struct CapturedEnvironment;
+
+impl wora::o11y::RuntimeEnvironment for CapturedEnvironment {
+    fn initial_host(&self) -> Result<wora::o11y::Host, wora::o11y::O11yError> {
+        Ok(wora::o11y::Host::from_parts(Default::default(), Default::default()))
+    }
+    fn initial_process_stats(&self) -> Option<wora::o11y::ProcessStats> {
+        None
+    }
+    fn refresh_host_stats(&self) -> Result<Option<HostStats>, wora::o11y::O11yError> {
+        Ok(Some(HostStats::default()))
+    }
+    fn refresh_process_stats(&self) -> Option<wora::o11y::ProcessStats> {
+        None
+    }
+}
+
+#[test]
+fn diagnostic_selection_caching_and_independent_timestamps() -> Result<(), Box<dyn std::error::Error>> {
+    use wora::o11y::{LinuxMemoryCollector, LinuxMemoryEnvironment, LinuxMemoryOptions, RuntimeEnvironment};
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("self"))?;
+    std::fs::write(root.path().join("self/smaps"), "1000-3000 rw-p 0 00:00 0\nRss: 12 kB\n")?;
+    let options = LinuxMemoryOptions::new()
+        .enable(LinuxMemoryCollector::ProcessMappings)
+        .with_roots(root.path(), root.path());
+    let provider = LinuxMemoryEnvironment::new(CapturedEnvironment, options.clone())?;
+    let initial = provider.initial_host()?.stats.linux_mm.diagnostics.ok_or("no diagnostics")?;
+    std::fs::write(root.path().join("self/smaps"), "malformed")?;
+    let cached = provider
+        .clone()
+        .refresh_host_stats()?
+        .ok_or("no stats")?
+        .linux_mm
+        .diagnostics
+        .ok_or("no diagnostics")?;
+    assert_eq!(initial.sampled_at, cached.sampled_at);
+    assert_eq!(
+        cached.process_mappings.as_ref().ok_or("no mappings")?.mappings.as_ref().ok_or("bad mappings")?[0].fields["Rss"],
+        "12 kB"
+    );
+    let fresh = LinuxMemoryEnvironment::new(CapturedEnvironment, options.with_interval(std::time::Duration::from_nanos(1)))?;
+    assert!(
+        fresh
+            .initial_host()?
+            .stats
+            .linux_mm
+            .diagnostics
+            .ok_or("no diagnostics")?
+            .process_mappings
+            .as_ref()
+            .ok_or("no mappings")?
+            .mappings
+            .is_none()
+    );
+    assert!(
+        LinuxMemoryEnvironment::new(CapturedEnvironment, LinuxMemoryOptions::new())?
+            .initial_host()?
+            .stats
+            .linux_mm
+            .diagnostics
+            .is_none()
+    );
+    assert!(LinuxMemoryEnvironment::new(CapturedEnvironment, LinuxMemoryOptions::new().with_interval(std::time::Duration::ZERO)).is_err());
+    Ok(())
+}
+
 #[tokio::test]
 async fn captured_linux_memory_metrics_reach_host_stats_sinks() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;

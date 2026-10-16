@@ -45,6 +45,14 @@ units are retained; process accounting has an explicit PID. Reading `run`
 observes state without changing it. Missing `CONFIG_KSM` or inaccessible process
 files produce explicit errors without affecting other collectors.
 
+`ProcessMemoryStats.information` includes native process status (peaks, locked,
+pinned, page-table and swap memory), limits, fault counters in `stat`, and OOM
+preferences. `ProcessMemoryDetails::{current,from_process_root}` additionally
+reads `maps`, `smaps` and `numa_maps`; parsed smaps mappings retain address ranges,
+original headers/pathnames, every field, native units and unfamiliar VM flags.
+Large files fail explicitly at the 4 MiB limit rather than returning partial
+mapping accounting. These reads never touch `clear_refs` or change OOM scores.
+
 `CgroupMemoryStats::current()` discovers the calling process's cgroup v2 from
 `/proc/self/{cgroup,mountinfo}`. `current` contains parsed `memory.*` files,
 including usage, limits, swap/zswap, named counters, local/hierarchical events,

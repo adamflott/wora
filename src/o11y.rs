@@ -30,7 +30,11 @@ use crate::{HealthState, Leadership, ReadinessState};
 pub use wora_observability_linux_mm as linux_mm;
 
 #[cfg(target_os = "linux")]
+mod linux_diagnostics;
+#[cfg(target_os = "linux")]
 mod linux_memory;
+#[cfg(target_os = "linux")]
+pub use linux_diagnostics::{LinuxMemoryCollector, LinuxMemoryDiagnostics, LinuxMemoryEnvironment, LinuxMemoryOptions};
 #[cfg(target_os = "linux")]
 pub use linux_memory::LinuxMemoryStats;
 

@@ -8,6 +8,8 @@ use crate::{FromBufRead, FromRead, MemoryReadError, ProcError, ProcResult};
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct ProcessMemoryStats {
+    /// Native status, limits, fault counters and OOM preferences; no settings changed.
+    pub information: crate::MemoryFiles,
     /// Process whose rollup was requested.
     pub pid: u32,
     /// Summed mapping statistics, including RSS, PSS, private/shared memory and swap.
@@ -30,7 +32,11 @@ impl ProcessMemoryStats {
     /// `root` corresponds to `/proc/<pid>`, not the proc mount. The caller supplies
     /// the PID so captured data can retain its original process identity.
     pub fn from_process_root(pid: u32, root: impl AsRef<Path>) -> Self {
-        let mut snapshot = Self { pid, ..Self::default() };
+        let mut snapshot = Self {
+            pid,
+            information: crate::MemoryFiles::from_names(&root, &["status", "limits", "stat", "oom_score", "oom_score_adj"]),
+            ..Self::default()
+        };
         match SmapsRollup::from_file(root.as_ref().join("smaps_rollup")) {
             Ok(rollup) => snapshot.smaps_rollup = Some(rollup),
             Err(error) => {

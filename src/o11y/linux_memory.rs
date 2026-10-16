@@ -17,6 +17,8 @@ use super::linux_mm::{
 /// Values retain their source units and page-type lower bounds.
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct LinuxMemoryStats {
+    /// Explicitly enabled diagnostics, with an independent collection timestamp.
+    pub diagnostics: Option<Box<super::LinuxMemoryDiagnostics>>,
     /// KSM saved/shared pages, scanner policy and process-specific accounting.
     pub ksm: Option<Box<super::linux_mm::KsmStats>>,
     /// Zram device accounting and zswap policy/debugfs counters.
@@ -116,6 +118,7 @@ impl LinuxMemoryStats {
             numa: None,
             compressed: None,
             ksm: None,
+            diagnostics: None,
             process: Box::new(ProcessMemoryStats::from_process_root(std::process::id(), root.join("self"))),
         }
     }
