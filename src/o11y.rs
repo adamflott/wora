@@ -158,6 +158,10 @@ pub enum O11ySpanEventKind {
 }
 /// Observability event payload.
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the public HostStats event payload; detailed Linux snapshots are already boxed."
+)]
 pub enum O11yEventKind<T> {
     /// Observability pipeline was initialized with the given log directory.
     Init(PathBuf),

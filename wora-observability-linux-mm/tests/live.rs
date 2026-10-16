@@ -1,7 +1,10 @@
 #![cfg(target_os = "linux")]
 #![allow(clippy::unwrap_used)]
 
-use wora_observability_linux_mm::{BuddyInfo, Current, MemorySysctls, PageTypeInfo, ProcError, SlabInfo, Swaps, SysctlSkipReason, ZoneInfo};
+use wora_observability_linux_mm::{
+    BuddyInfo, CgroupMemoryStats, Current, HugePageStats, MemorySysctls, PageTypeInfo, ProcError, ProcessMemoryStats, SlabInfo, Swaps, SysctlSkipReason,
+    ZoneInfo,
+};
 
 #[test]
 #[ignore = "requires a running Linux kernel with readable /proc/buddyinfo"]
@@ -60,4 +63,33 @@ fn reads_live_memory_sysctls_without_opening_action_controls() {
     for name in ["vm.compact_memory", "vm.drop_caches"] {
         assert!(!snapshot.values.contains_key(name));
     }
+}
+
+#[test]
+#[ignore = "requires a visible cgroup v2 mount and readable process membership"]
+fn reads_live_cgroup_v2_memory() {
+    let snapshot = CgroupMemoryStats::current();
+    assert!(snapshot.unavailable.is_empty(), "{:?}", snapshot.unavailable);
+    let current = snapshot.current.unwrap();
+    assert!(current.directory.is_absolute());
+    assert!(!current.values.contains_key("memory.reclaim"));
+}
+
+#[test]
+#[ignore = "requires readable Linux THP/HugeTLB sysfs interfaces"]
+fn reads_live_hugepages_without_demotion_actions() {
+    let snapshot = HugePageStats::current();
+    assert!(!snapshot.transparent.values.is_empty());
+    assert!(!snapshot.hugetlb.values.is_empty());
+    assert!(!snapshot.hugetlb.values.keys().any(|path| path.ends_with("/demote")));
+}
+
+#[test]
+#[ignore = "requires /proc/self/smaps_rollup; walks the current process page tables"]
+fn reads_live_process_rollup() {
+    let snapshot = ProcessMemoryStats::current();
+    assert_eq!(snapshot.pid, std::process::id());
+    let rollup = snapshot.smaps_rollup.unwrap();
+    assert!(rollup.values["Rss"].bytes().is_some());
+    assert!(rollup.values["Pss"].bytes().is_some());
 }

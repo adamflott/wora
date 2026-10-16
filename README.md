@@ -52,6 +52,35 @@ native text and units, including vectors and large unsigned integers.
 `skipped` identifies excluded action controls. Settings are refreshed at the
 same interval as the other memory data.
 
+The next memory views are included in the same snapshots and profile output:
+
+| Field under `linux_mm` | Scope and contents |
+| --- | --- |
+| `cgroup` | The collecting process's cgroup v2: usage, limits, named statistics, local/hierarchical events, NUMA usage, swap/zswap, and pressure. Visible ancestors include usage and limit settings, nearest parent first. |
+| `hugepages` | THP policies, khugepaged activity, per-size counters, and global/per-node HugeTLB pools from sysfs. |
+| `process` | The collecting PID and `smaps_rollup`, including RSS, proportional set size (PSS), private/shared memory, dirty memory, swap and locked memory. |
+
+Cgroup discovery uses `/proc/self/cgroup` and `/proc/self/mountinfo`, including
+mount roots and escaped paths. It preserves `max` as an unlimited value and
+keeps `memory.events` separate from `memory.events.local`. Ancestor settings
+are not a computed effective limit: ancestors outside the visible mount remain
+unknown. Cgroup v1 and inconsistent namespace layouts produce explicit
+discovery failures. No cgroup memberships or limits are changed.
+
+Hugepage numbers retain each file's units and size labels; policy strings retain
+the brackets marking the selected option. `memory.reclaim`, HugeTLB `demote`,
+and write-only controls are excluded from reads. Process rollup values retain
+their units (`kB` means KiB); `SmapsRollupValue::bytes()` provides checked
+conversion. All three views record individual read/parse failures without
+discarding other memory data. Process page-table walks can be expensive for
+large workloads; choose the reporting interval accordingly.
+
+For captured inputs, use `LinuxMemoryStats::from_roots(proc_root, sys_root)`;
+`from_proc_root` collects proc-backed sources and leaves `hugepages` as `None`.
+Cgroup mount points in captured mountinfo are used as written, so point them at
+captured cgroup directories. The standalone readers are `CgroupMemoryStats`,
+`HugePageStats`, and `ProcessMemoryStats` in `wora::o11y::linux_mm`.
+
 The ten procfs snapshot sources are optional so unavailable or restricted files
 do not interrupt other memory sampling. Values retain their source units and
 page-type count bounds. Slab and page-type files commonly require root; page-type reads can be
@@ -164,7 +193,8 @@ and `NoSecrets`, and does not install a global tracing subscriber.
 
 Each JSON line contains `timestamp`, `memory`, `swap`, and, on Linux, `linux_mm`.
 All Linux sources listed above are included with every available nested
-value, including zone per-CPU statistics, allocator counts, and sysctls. Unavailable
+value, including zone per-CPU statistics, allocator counts, sysctls, cgroup memory,
+hugepages and the process rollup. Unavailable
 procfs snapshots appear as `null`; sysctls retain per-key errors and exclusions.
 Source units, integer precision, and page-type lower
 bounds are preserved. Slab and page-type files commonly require root; run with

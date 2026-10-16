@@ -4,6 +4,8 @@ Typed, read-only Linux memory-management readers extending `procfs` 0.18.
 Supported sources are `/proc/buddyinfo`, `/proc/zoneinfo`, `/proc/swaps`,
 `/proc/slabinfo`, `/proc/pagetypeinfo`, and memory-related sysctls under
 `/proc/sys/{vm,kernel,fs}`.
+Additional readers cover cgroup v2 memory, THP/HugeTLB sysfs, and process
+`smaps_rollup`.
 This is an extension crate;
 the published procfs dependency supplies the parsing traits and error types.
 
@@ -16,6 +18,54 @@ It can be consumed by WORA host statistics or any other application. The crate
 and its dependencies are enabled only on Linux. Single-file parsers use
 `procfs-core`, and their live readers implement procfs's `Current` trait.
 Reads are synchronous. Rust 1.95 or newer is required.
+
+`CgroupMemoryStats::current()` discovers the calling process's cgroup v2 from
+`/proc/self/{cgroup,mountinfo}`. `current` contains parsed `memory.*` files,
+including usage, limits, swap/zswap, named counters, local/hierarchical events,
+NUMA categories and pressure. Numeric values retain their kernel units;
+unlimited limits serialize as the literal `"max"`. Unknown counter names are
+preserved; unfamiliar file layouts retain their text. `memory.reclaim` is never
+opened. `ancestors` contains visible parents' current usage and limit files,
+nearest first, stopping at the selected mount point. Limits are not combined
+into an effective budget, and invisible ancestors cannot be accounted for.
+Missing v2 membership, inaccessible proc files, or inconsistent namespace paths
+are explicit discovery failures. No cgroup v1 fallback is attempted. For fixture
+inputs, `from_proc_root(root)` reads `root/self/{cgroup,mountinfo}` and uses
+captured mount paths as written; `CgroupMemory::from_directory(path)` reads one
+specific cgroup without discovery. See the kernel's
+[cgroup v2 memory documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory).
+
+`HugePageStats::current()` reads THP policy and statistics under
+`/sys/kernel/mm/transparent_hugepage`, global pools under
+`/sys/kernel/mm/hugepages`, and per-node pools under
+`/sys/devices/system/node/node*/hugepages`. `transparent`, `hugetlb`, and `nodes`
+keep separate maps of relative file paths to numeric or text values. Per-size
+counter names, sparse node IDs, and policy strings such as
+`always [madvise] never` are retained. Values remain in each file's units;
+counts are not assumed to be bytes or added across page sizes. `demote` and
+write-only controls are never opened. Symlinks are skipped and traversal is
+bounded. `from_sys_root(root)` supports captured sysfs trees. See
+[THP](https://docs.kernel.org/admin-guide/mm/transhuge.html) and
+[HugeTLB](https://docs.kernel.org/admin-guide/mm/hugetlbpage.html).
+
+`ProcessMemoryStats::current()` identifies the collecting PID and parses its
+`/proc/self/smaps_rollup`. `SmapsRollup` implements the procfs parsing traits,
+retaining the virtual address span and every numeric field with its source
+unit, including new kernel fields. `kB` means KiB; `SmapsRollupValue::bytes()`
+uses checked conversion and returns `None` for overflow or another/unitless
+unit. RSS and PSS are required, while other fields are kernel-dependent.
+Malformed fields, duplicates, invalid numbers and I/O errors fail that rollup
+without returning partial accounting. `from_process_root(pid, root)` reads a
+captured process directory and retains the supplied PID. Reading rollups walks
+page tables and can be expensive for large processes. Access to other processes
+depends on procfs/ptrace policy. See
+[process memory accounting](https://docs.kernel.org/filesystems/proc.html).
+
+These readers are best effort and not atomic across files. Per-file failures
+use `MemoryReadError`, an alias of the existing `SysctlReadError`; exclusions
+use `MemorySkipReason`, an alias of `SysctlSkipReason`. A failed source does not
+discard other data, and successful zero values remain distinguishable from
+unavailable values. No settings, memberships or page states are changed.
 
 `MemorySysctls` collects memory-related settings without invoking the `sysctl`
 command or writing any files:

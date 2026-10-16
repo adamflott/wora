@@ -3,14 +3,17 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use super::linux_mm::{
-    BuddyInfo, FromRead, Iomem, Meminfo, MemoryPressure, MemorySysctls, PageTypeInfo, SharedMemorySegments, SlabInfo, Swaps, VmStat, ZoneInfo,
+    BuddyInfo, CgroupMemoryStats, FromRead, HugePageStats, Iomem, Meminfo, MemoryPressure, MemorySysctls, PageTypeInfo, ProcessMemoryStats,
+    SharedMemorySegments, SlabInfo, Swaps, VmStat, ZoneInfo,
 };
 
 /// Linux memory-management snapshots carried by [`super::HostStats`].
 ///
 /// Each source is read independently. Missing, restricted, or malformed files
 /// produce `None` for that source and a debug log, without discarding other host
-/// metrics. Sysctls retain individual read failures in their own snapshot.
+/// metrics. Sysctls, cgroup memory, hugepages, and process rollups retain
+/// individual read failures in their own snapshots. Cgroup and process fields
+/// describe the collector's workload, while the other fields describe the host.
 /// Values retain their source units and page-type lower bounds.
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct LinuxMemoryStats {
@@ -39,17 +42,39 @@ pub struct LinuxMemoryStats {
     /// Includes VM, kernel shared-memory and NUMA, and selected filesystem
     /// settings. Action controls and `vm.stat_refresh` are never opened.
     pub sysctls: MemorySysctls,
+    /// Collecting process's cgroup v2 usage, events, pressure, and visible ancestor limits.
+    pub cgroup: Box<CgroupMemoryStats>,
+    /// THP policies/per-size statistics and global/per-node HugeTLB pools.
+    ///
+    /// Present when a sysfs root was supplied. Individual access failures are
+    /// recorded within the snapshot. Proc-only captures leave this as `None`.
+    pub hugepages: Option<Box<HugePageStats>>,
+    /// Collecting process's PID and memory mapping rollup, in native source units.
+    pub process: Box<ProcessMemoryStats>,
 }
 
 impl LinuxMemoryStats {
-    /// Collect a best-effort snapshot from `/proc`.
+    /// Collect a best-effort snapshot from `/proc` and `/sys`.
     ///
     /// Reads are synchronous. Slab and page-type information commonly requires
-    /// root; page-type collection can be expensive. The runner uses the host
+    /// root; page-type collection and process rollup page-table walks can be
+    /// expensive. The runner uses the host
     /// statistics interval to control the sampling frequency and performs periodic
     /// collection on a blocking worker.
     pub fn current() -> Self {
-        Self::from_proc_root("/proc")
+        Self::from_roots("/proc", "/sys")
+    }
+
+    /// Collect procfs and sysfs memory information from explicitly supplied roots.
+    ///
+    /// Cgroup mount paths are discovered from `proc_root/self/mountinfo` and used
+    /// as written. Hugepage paths are relative to `sys_root`; captured roots never
+    /// fall back to the running host's sysfs.
+    pub fn from_roots(proc_root: impl AsRef<Path>, sys_root: impl AsRef<Path>) -> Self {
+        Self {
+            hugepages: Some(Box::new(HugePageStats::from_sys_root(sys_root))),
+            ..Self::from_proc_root(proc_root)
+        }
     }
 
     /// Collect from an alternate proc mount or directory of captured files.
@@ -57,6 +82,8 @@ impl LinuxMemoryStats {
     /// Files must use their procfs names, with sysctls under `sys/{vm,kernel,fs}`.
     /// Each read is synchronous. A failed procfs snapshot becomes `None`;
     /// individual sysctl failures are recorded in [`MemorySysctls::unavailable`].
+    /// Cgroup and process sources use `self/` files. Hugepages remain `None`;
+    /// use [`Self::from_roots`] to include an explicit sysfs root.
     pub fn from_proc_root(root: impl AsRef<Path>) -> Self {
         let root = root.as_ref();
         Self {
@@ -71,6 +98,9 @@ impl LinuxMemoryStats {
             slabinfo: read(root.join("slabinfo")),
             pagetypeinfo: read(root.join("pagetypeinfo")),
             sysctls: MemorySysctls::from_proc_root(root),
+            cgroup: Box::new(CgroupMemoryStats::from_proc_root(root)),
+            hugepages: None,
+            process: Box::new(ProcessMemoryStats::from_process_root(std::process::id(), root.join("self"))),
         }
     }
 }

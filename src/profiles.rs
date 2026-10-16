@@ -32,6 +32,8 @@ use crate::{App, EventLoopAction, NoConfig, NoSecrets, ReadinessState, RunnerOpt
 /// Each line is a serialized [`MemorySnapshot`]: a timestamp, memory and swap
 /// totals in bytes, and, on Linux, all sources in `LinuxMemoryStats`, including
 /// nested zone, node, per-CPU, cache, allocation-order, and memory sysctl data.
+/// Linux reports also include the collecting process's cgroup v2 usage and
+/// ancestor limits, THP/HugeTLB sysfs views, and process `smaps_rollup` with PID.
 /// Source units and page-type lower bounds are preserved. Unavailable sources
 /// are `null`; slab and page-type information commonly requires root. Sysctl
 /// values retain their native text, with per-key access errors and exclusions.
@@ -80,7 +82,8 @@ impl<W> MemoryReporter<W> {
     /// Set the host and process sampling interval (five seconds by default).
     ///
     /// A zero interval is rejected when running the profile. Linux page-type
-    /// collection can be expensive; increase this interval when appropriate.
+    /// collection and process rollup page-table walks can be expensive; increase
+    /// this interval when appropriate.
     pub fn with_interval(mut self, interval: Duration) -> Self {
         self.interval = interval;
         self
@@ -249,7 +252,7 @@ mod tests {
         assert!(reports[0].get("cpu").is_none());
         #[cfg(target_os = "linux")]
         {
-            assert_eq!(reports[0]["linux_mm"].as_object().ok_or("Linux sources missing")?.len(), 11);
+            assert!(reports[0]["linux_mm"].get("cgroup").is_some());
             assert!(reports[0]["linux_mm"]["meminfo"].is_null());
         }
         Ok(())
@@ -259,7 +262,10 @@ mod tests {
     #[tokio::test]
     async fn linux_reports_preserve_nested_values_and_source_units() -> Result<(), Box<dyn std::error::Error>> {
         use crate::o11y::LinuxMemoryStats;
-        use crate::o11y::linux_mm::{BuddyInfo, FromRead, MemorySysctls, PageTypeInfo, SlabInfo, Swaps, SysctlReadError, SysctlSkipReason, VmStat, ZoneInfo};
+        use crate::o11y::linux_mm::{
+            BuddyInfo, CgroupMemory, CgroupMemoryStats, CgroupMemoryValue, FromRead, HugePageFiles, HugePageStats, HugePageValue, MemorySysctls, PageTypeInfo,
+            ProcessMemoryStats, SlabInfo, SmapsRollup, Swaps, SysctlReadError, SysctlSkipReason, VmStat, ZoneInfo,
+        };
 
         let stats = HostStats {
             linux_mm: LinuxMemoryStats {
@@ -288,6 +294,28 @@ mod tests {
                     unavailable: std::collections::BTreeMap::from([("vm.mmap_rnd_bits".into(), SysctlReadError::PermissionDenied)]),
                     skipped: std::collections::BTreeMap::from([("vm.stat_refresh".into(), SysctlSkipReason::ReadSideEffect)]),
                 },
+                cgroup: Box::new(CgroupMemoryStats {
+                    current: Some(CgroupMemory {
+                        directory: "/captured/cgroup/workload".into(),
+                        values: std::collections::BTreeMap::from([("memory.max".into(), CgroupMemoryValue::Text("max".into()))]),
+                        ..CgroupMemory::default()
+                    }),
+                    ..CgroupMemoryStats::default()
+                }),
+                hugepages: Some(Box::new(HugePageStats {
+                    hugetlb: HugePageFiles {
+                        values: std::collections::BTreeMap::from([("hugepages-2048kB/free_hugepages".into(), HugePageValue::Number(7))]),
+                        ..HugePageFiles::default()
+                    },
+                    ..HugePageStats::default()
+                })),
+                process: Box::new(ProcessMemoryStats {
+                    pid: 123,
+                    smaps_rollup: Some(SmapsRollup::from_read(
+                        "1000-9000 ---p 00000000 00:00 0 [rollup]\nRss: 100 kB\nPss: 60 kB\n".as_bytes(),
+                    )?),
+                    ..ProcessMemoryStats::default()
+                }),
                 ..LinuxMemoryStats::default()
             },
             ..HostStats::default()
@@ -312,6 +340,11 @@ mod tests {
         assert_eq!(mm["sysctls"]["values"]["kernel.shmall"], "18446744073692774399");
         assert_eq!(mm["sysctls"]["unavailable"]["vm.mmap_rnd_bits"], "permission_denied");
         assert_eq!(mm["sysctls"]["skipped"]["vm.stat_refresh"], "read_side_effect");
+        assert_eq!(mm["cgroup"]["current"]["values"]["memory.max"], "max");
+        assert_eq!(mm["hugepages"]["hugetlb"]["values"]["hugepages-2048kB/free_hugepages"], 7);
+        assert_eq!(mm["process"]["pid"], 123);
+        assert_eq!(mm["process"]["smaps_rollup"]["values"]["Pss"]["value"], 60);
+        assert_eq!(mm["process"]["smaps_rollup"]["values"]["Pss"]["unit"], "kB");
         Ok(())
     }
 }

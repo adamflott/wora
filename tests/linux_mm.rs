@@ -59,9 +59,29 @@ async fn captured_linux_memory_metrics_reach_host_stats_sinks() -> Result<(), Bo
     tokio::fs::write(root.path().join("sys/vm/swappiness"), "60\n").await?;
     tokio::fs::write(root.path().join("sys/vm/stat_refresh"), [0xff]).await?;
     tokio::fs::write(root.path().join("sys/kernel/shmall"), "18446744073692774399\n").await?;
+    tokio::fs::create_dir_all(root.path().join("self")).await?;
+    let cgroup_root = root.path().join("cgroup");
+    tokio::fs::create_dir_all(cgroup_root.join("workload")).await?;
+    tokio::fs::write(root.path().join("self/cgroup"), "0::/workload\n").await?;
+    tokio::fs::write(
+        root.path().join("self/mountinfo"),
+        format!("10 1 0:20 / {} rw - cgroup2 cgroup rw\n", cgroup_root.display()),
+    )
+    .await?;
+    tokio::fs::write(cgroup_root.join("workload/memory.current"), "9007199254740993\n").await?;
+    tokio::fs::write(cgroup_root.join("workload/memory.max"), "max\n").await?;
+    tokio::fs::write(cgroup_root.join("memory.max"), "1048576\n").await?;
+    tokio::fs::write(
+        root.path().join("self/smaps_rollup"),
+        "1000-9000 ---p 00000000 00:00 0 [rollup]\nRss: 100 kB\nPss: 60 kB\n",
+    )
+    .await?;
+    let sys_root = root.path().join("sysfs");
+    tokio::fs::create_dir_all(sys_root.join("kernel/mm/hugepages/hugepages-2048kB")).await?;
+    tokio::fs::write(sys_root.join("kernel/mm/hugepages/hugepages-2048kB/free_hugepages"), "7\n").await?;
 
     let stats = HostStats {
-        linux_mm: LinuxMemoryStats::from_proc_root(root.path()),
+        linux_mm: LinuxMemoryStats::from_roots(root.path(), &sys_root),
         ..HostStats::default()
     };
     let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
@@ -104,6 +124,13 @@ async fn captured_linux_memory_metrics_reach_host_stats_sinks() -> Result<(), Bo
     assert_eq!(memory["buddyinfo"]["zones"][0]["free_blocks"][0], 2553);
     assert_eq!(memory["sysctls"]["values"]["vm.swappiness"], "60");
     assert_eq!(memory["sysctls"]["values"]["kernel.shmall"], "18446744073692774399");
+    assert_eq!(memory["cgroup"]["current"]["values"]["memory.current"], 9_007_199_254_740_993_u64);
+    assert_eq!(memory["cgroup"]["current"]["values"]["memory.max"], "max");
+    assert_eq!(memory["cgroup"]["ancestors"][0]["values"]["memory.max"], 1_048_576);
+    assert_eq!(memory["hugepages"]["hugetlb"]["values"]["hugepages-2048kB/free_hugepages"], 7);
+    assert_eq!(memory["process"]["pid"], std::process::id());
+    assert_eq!(memory["process"]["smaps_rollup"]["values"]["Pss"]["value"], 60);
+    assert_eq!(memory["process"]["smaps_rollup"]["values"]["Pss"]["unit"], "kB");
     Ok(())
 }
 

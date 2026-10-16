@@ -10,12 +10,13 @@ use serde::{Serialize, Serializer};
 use crate::Leadership;
 use crate::o11y::{Cpu, Disk, HostStats, LoadAvg, MemStats, NetIO, SwapStats};
 
-/// The latest host memory sample, available on Linux and macOS.
+/// The latest memory sample, available on Linux and macOS.
 ///
 /// The runner publishes this through [`SystemResourceStat::MemorySnapshot`] and
 /// caches it for [`crate::Wora::memory_stats`] and
 /// [`crate::Wora::subscribe_memory_stats`]. Linux procfs details are present only
-/// when compiling for Linux; memory and swap totals are portable.
+/// when compiling for Linux, including host, cgroup, and process views with
+/// explicitly identified scopes; memory and swap totals are portable.
 #[derive(Clone, Debug, Serialize)]
 pub struct MemorySnapshot {
     /// Time the host sample was stored by the runtime.
@@ -26,8 +27,8 @@ pub struct MemorySnapshot {
     pub swap: SwapStats,
     /// Detailed procfs memory snapshots, including memory-related sysctls.
     ///
-    /// Procfs sources are independently optional. Sysctls record unavailable
-    /// and deliberately skipped entries separately from successfully read values.
+    /// Procfs sources are independently optional. Sysctls, cgroup memory,
+    /// hugepages and process data record individual failures and exclusions.
     #[cfg(target_os = "linux")]
     pub linux_mm: crate::o11y::LinuxMemoryStats,
 }
