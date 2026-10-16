@@ -109,6 +109,16 @@ Findings can include false positives/negatives. `provenance_byte_limit` defaults
 to 4 MiB per file, accepts up to 64 MiB, and produces explicit oversized-file
 errors instead of claiming a partial dump is complete.
 
+`MemoryHardwareStats::{current,from_sys_root}` (`MemoryHardware` diagnostics)
+captures memory-block size/state/removability/zones, EDAC controller and DIMM/
+rank/csrow labels and errors, per-node poisoned-page recovery counters, and CMA
+area/range PFNs, counts and allocation bitmaps. Values retain native formats
+(including hexadecimal memory block sizes); controller/DIMM scopes overlap and
+must not be summed indiscriminately. Normal sysfs inventory is often readable
+without root; CMA debugfs commonly needs root. Hardware drivers and kernel
+configuration determine availability. No online/offline, poison injection,
+EDAC counter reset, or CMA allocation/release action is performed.
+
 `CgroupMemoryStats::current()` discovers the calling process's cgroup v2 from
 `/proc/self/{cgroup,mountinfo}`. `current` contains parsed `memory.*` files,
 including usage, limits, swap/zswap, named counters, local/hierarchical events,

@@ -24,6 +24,8 @@ pub enum LinuxMemoryCollector {
     PageOwner,
     /// Kernel leak suspects; explicitly selected because reads may incur scans.
     KernelLeaks,
+    /// Memory hotplug inventory, EDAC/DIMM errors, poison recovery and CMA areas.
+    MemoryHardware,
 }
 
 /// Explicit selection and cadence for potentially costly memory diagnostics.
@@ -97,6 +99,8 @@ impl LinuxMemoryOptions {
 /// Diagnostic data with its own timestamp; may be older than the host snapshot.
 #[derive(Clone, Debug, Serialize)]
 pub struct LinuxMemoryDiagnostics {
+    /// Memory blocks, hardware errors and reserved contiguous allocation areas.
+    pub hardware: Option<Box<super::linux_mm::MemoryHardwareStats>>,
     /// Existing page allocation provenance, without changing tracking/filter state.
     pub page_owner: Option<Box<super::linux_mm::PageOwnerStats>>,
     /// Existing kernel leak suspects; only present with explicit KernelLeaks selection.
@@ -168,6 +172,8 @@ impl<R> LinuxMemoryEnvironment<R> {
         if cache.as_ref().is_none_or(|(time, _)| time.elapsed() >= self.options.interval) {
             let selected = |kind| self.options.collectors.contains(&kind);
             let data = LinuxMemoryDiagnostics {
+                hardware: selected(LinuxMemoryCollector::MemoryHardware)
+                    .then(|| Box::new(super::linux_mm::MemoryHardwareStats::from_sys_root(&self.options.sys_root))),
                 page_owner: selected(LinuxMemoryCollector::PageOwner).then(|| {
                     Box::new(super::linux_mm::PageOwnerStats::from_debug_root_with_limit(
                         self.options.sys_root.join("kernel/debug"),
