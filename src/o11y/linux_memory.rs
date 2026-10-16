@@ -2,13 +2,16 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use super::linux_mm::{BuddyInfo, FromRead, Iomem, Meminfo, MemoryPressure, PageTypeInfo, SharedMemorySegments, SlabInfo, Swaps, VmStat, ZoneInfo};
+use super::linux_mm::{
+    BuddyInfo, FromRead, Iomem, Meminfo, MemoryPressure, MemorySysctls, PageTypeInfo, SharedMemorySegments, SlabInfo, Swaps, VmStat, ZoneInfo,
+};
 
 /// Linux memory-management snapshots carried by [`super::HostStats`].
 ///
 /// Each source is read independently. Missing, restricted, or malformed files
 /// produce `None` for that source and a debug log, without discarding other host
-/// metrics. Values retain their source units and page-type lower bounds.
+/// metrics. Sysctls retain individual read failures in their own snapshot.
+/// Values retain their source units and page-type lower bounds.
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct LinuxMemoryStats {
     /// Overall host memory inventory from `/proc/meminfo`, with sizes in bytes.
@@ -31,6 +34,11 @@ pub struct LinuxMemoryStats {
     pub slabinfo: Option<SlabInfo>,
     /// Free lists and pageblock counts by migration type.
     pub pagetypeinfo: Option<PageTypeInfo>,
+    /// Memory sysctl settings and per-key access failures, in native text units.
+    ///
+    /// Includes VM, kernel shared-memory and NUMA, and selected filesystem
+    /// settings. Action controls and `vm.stat_refresh` are never opened.
+    pub sysctls: MemorySysctls,
 }
 
 impl LinuxMemoryStats {
@@ -46,8 +54,9 @@ impl LinuxMemoryStats {
 
     /// Collect from an alternate proc mount or directory of captured files.
     ///
-    /// Files must use their procfs names. Each read is synchronous and a failed
-    /// source becomes `None`, independently of the other sources.
+    /// Files must use their procfs names, with sysctls under `sys/{vm,kernel,fs}`.
+    /// Each read is synchronous. A failed procfs snapshot becomes `None`;
+    /// individual sysctl failures are recorded in [`MemorySysctls::unavailable`].
     pub fn from_proc_root(root: impl AsRef<Path>) -> Self {
         let root = root.as_ref();
         Self {
@@ -61,6 +70,7 @@ impl LinuxMemoryStats {
             swaps: read(root.join("swaps")),
             slabinfo: read(root.join("slabinfo")),
             pagetypeinfo: read(root.join("pagetypeinfo")),
+            sysctls: MemorySysctls::from_proc_root(root),
         }
     }
 }

@@ -1,7 +1,7 @@
 #![cfg(target_os = "linux")]
 #![allow(clippy::unwrap_used)]
 
-use wora_observability_linux_mm::{BuddyInfo, Current, PageTypeInfo, ProcError, SlabInfo, Swaps, ZoneInfo};
+use wora_observability_linux_mm::{BuddyInfo, Current, MemorySysctls, PageTypeInfo, ProcError, SlabInfo, Swaps, SysctlSkipReason, ZoneInfo};
 
 #[test]
 #[ignore = "requires a running Linux kernel with readable /proc/buddyinfo"]
@@ -45,5 +45,19 @@ fn reads_live_pagetypeinfo_or_reports_permission_denied() {
         Ok(info) => assert!(!info.nodes.is_empty()),
         Err(ProcError::PermissionDenied(_)) => {}
         other => panic!("unexpected pagetypeinfo result: {other:?}"),
+    }
+}
+
+#[test]
+#[ignore = "requires Linux /proc/sys; reads settings as the current user and skips action controls"]
+fn reads_live_memory_sysctls_without_opening_action_controls() {
+    let snapshot = MemorySysctls::current();
+    assert!(snapshot.values.contains_key("vm.swappiness"));
+    assert!(!snapshot.values.contains_key("vm.stat_refresh"));
+    if std::path::Path::new("/proc/sys/vm/stat_refresh").exists() {
+        assert_eq!(snapshot.skipped["vm.stat_refresh"], SysctlSkipReason::ReadSideEffect);
+    }
+    for name in ["vm.compact_memory", "vm.drop_caches"] {
+        assert!(!snapshot.values.contains_key(name));
     }
 }

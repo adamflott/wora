@@ -42,12 +42,38 @@ coalesce updates when they read slowly.
 On Linux, `snapshot.linux_mm` and `HostStats::linux_mm` include `Meminfo`,
 `VmStat`, `MemoryPressure`, `SharedMemorySegments`, `Iomem`, `BuddyInfo`,
 `ZoneInfo`, `Swaps`, `SlabInfo`, and `PageTypeInfo`, including their nested data.
-Each source is optional so unavailable or restricted files do not interrupt
-other memory sampling. Values retain their source units and page-type count
-bounds. Slab and page-type files commonly require root; page-type reads can be
+`linux_mm.sysctls` additionally captures memory-related sysctl values: all
+regular VM settings, kernel shared-memory and NUMA-balancing settings, the
+perf-event locked-memory limit, and selected filesystem cache and descriptor
+inventories. Read them through `snapshot.linux_mm.sysctls.values`, keyed by
+dotted names such as `vm.swappiness` and `kernel.shmall`. Values retain their
+native text and units, including vectors and large unsigned integers.
+`unavailable` records per-key read failures such as `permission_denied`, and
+`skipped` identifies excluded action controls. Settings are refreshed at the
+same interval as the other memory data.
+
+The ten procfs snapshot sources are optional so unavailable or restricted files
+do not interrupt other memory sampling. Values retain their source units and
+page-type count bounds. Slab and page-type files commonly require root; page-type reads can be
 expensive, so choose the interval accordingly. All types are re-exported through
 `wora::o11y::linux_mm`, and the Linux dependency and fields are gated with
 `#[cfg(target_os = "linux")]`.
+
+The following sysctl read restrictions were observed on `inanna` as a normal
+user (Linux 6.18.55, 2026-10-16):
+
+| Sysctl | Access | Collection behavior |
+| --- | --- | --- |
+| `vm.mmap_rnd_bits` | Root-only read/write, mode `0600` | Value if readable; otherwise `unavailable: permission_denied` |
+| `vm.mmap_rnd_compat_bits` | Root-only read/write, mode `0600` | Value if readable; otherwise `unavailable: permission_denied` |
+| `vm.stat_refresh` | Root-only read/write, mode `0600` | Always skipped: reading changes VM statistics |
+
+`vm.compact_memory` and `vm.drop_caches` have mode `0200`: they are write-only
+action controls with no readable value, even for root. They are always skipped.
+The collector does not invoke `sysctl`, write settings, or change privileges.
+The kernel documents the read side effect of
+[`stat_refresh`](https://docs.kernel.org/admin-guide/sysctl/vm.html#stat-refresh).
+Available names and access permissions vary with the kernel and host policy.
 
 Inside an app lifecycle hook, use the common API and guard Linux details:
 
@@ -137,9 +163,10 @@ to supply an existing executor and `RunnerOptions`. The profile uses `NoConfig`
 and `NoSecrets`, and does not install a global tracing subscriber.
 
 Each JSON line contains `timestamp`, `memory`, `swap`, and, on Linux, `linux_mm`.
-All ten Linux sources listed above are included with every available nested
-value, including zone per-CPU statistics and allocator counts. Unavailable
-sources appear as `null`. Source units, integer precision, and page-type lower
+All Linux sources listed above are included with every available nested
+value, including zone per-CPU statistics, allocator counts, and sysctls. Unavailable
+procfs snapshots appear as `null`; sysctls retain per-key errors and exclusions.
+Source units, integer precision, and page-type lower
 bounds are preserved. Slab and page-type files commonly require root; run with
 suitable read permissions to include those sources. Output errors stop the
 profile and are returned to the caller. On macOS, the same profile prints the

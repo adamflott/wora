@@ -1567,7 +1567,7 @@ pub struct HostStats {
     pub swap: SwapStats,
     pub fs: Vec<Disk>,
     pub net_io: HashMap<String, NetIO>,
-    /// Linux allocator and swap details, refreshed with each host snapshot.
+    /// Linux memory-management details and sysctls, refreshed with each host snapshot.
     #[cfg(target_os = "linux")]
     pub linux_mm: LinuxMemoryStats,
 }

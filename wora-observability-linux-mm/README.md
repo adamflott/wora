@@ -2,7 +2,8 @@
 
 Typed, read-only Linux memory-management readers extending `procfs` 0.18.
 Supported sources are `/proc/buddyinfo`, `/proc/zoneinfo`, `/proc/swaps`,
-`/proc/slabinfo` and `/proc/pagetypeinfo`.
+`/proc/slabinfo`, `/proc/pagetypeinfo`, and memory-related sysctls under
+`/proc/sys/{vm,kernel,fs}`.
 This is an extension crate;
 the published procfs dependency supplies the parsing traits and error types.
 
@@ -12,9 +13,55 @@ includes these alongside the extension readers in its memory events and cache.
 
 The data model has no metric names, exporters, async runtime or WORA dependency.
 It can be consumed by WORA host statistics or any other application. The crate
-and its dependencies are enabled only on Linux. Parsing uses
-`procfs-core`, and live readers implement procfs's `Current` trait. Reads are
-synchronous. Rust 1.95 or newer is required.
+and its dependencies are enabled only on Linux. Single-file parsers use
+`procfs-core`, and their live readers implement procfs's `Current` trait.
+Reads are synchronous. Rust 1.95 or newer is required.
+
+`MemorySysctls` collects memory-related settings without invoking the `sysctl`
+command or writing any files:
+
+```rust,no_run
+use wora_observability_linux_mm::MemorySysctls;
+
+let snapshot = MemorySysctls::current();
+for (name, value) in &snapshot.values {
+    println!("{name} = {value}");
+}
+for (name, error) in &snapshot.unavailable {
+    eprintln!("{name}: {error:?}");
+}
+```
+
+The collector reads regular files directly under `/proc/sys/vm`, plus
+`kernel.shm*`, `kernel.numa_balancing*`, and `kernel.perf_event_mlock_kb`. Filesystem
+entries are `fs.file-max`, `fs.file-nr`, `fs.nr_open`, `fs.inode-nr`,
+`fs.inode-state`, and `fs.dentry-state`. New VM, shared-memory and NUMA-balancing
+names are included automatically. Other kernel/filesystem settings, nested
+directories, and symlinks are not read.
+
+Keys use dotted sysctl names. Values remain strings in native kernel units;
+only trailing newlines are removed. Thus signed values, tab-separated vectors,
+text such as `Node`, and large unsigned limits such as
+`kernel.shmall = 18446744073692774399` are preserved without numeric conversion.
+Collection is synchronous and best effort, not an atomic snapshot. A failure
+to read one file does not discard successful reads. `unavailable` distinguishes
+permission errors, missing namespaces/disappearing files, and other read
+errors. Unsupported settings not present in a directory are omitted.
+`MemorySysctls::from_proc_root(path)` reads captured files under
+`path/sys/{vm,kernel,fs}` using the same rules.
+
+`skipped` records `vm.stat_refresh` as `read_side_effect`: even reading this
+root-only file flushes per-CPU VM statistics. `vm.compact_memory` and
+`vm.drop_caches` are write-only actions with no readable value and are never
+opened. Other write-only or non-regular entries are also skipped. Exclusions
+apply even when the collector runs as root. See the kernel's
+[`stat_refresh` documentation](https://docs.kernel.org/admin-guide/sysctl/vm.html#stat-refresh).
+
+On `inanna` (Linux 6.18.55), the normal SSH user could read all selected settings
+except `vm.mmap_rnd_bits` and `vm.mmap_rnd_compat_bits`, both mode `0600`.
+`vm.stat_refresh` was also mode `0600` and deliberately not read. The two
+write-only action files were mode `0200`. Access and available names depend on
+the kernel configuration and host policy; no privilege escalation is attempted.
 
 ```rust
 use wora_observability_linux_mm::{BuddyInfo, FromRead};

@@ -30,11 +30,13 @@ use crate::{App, EventLoopAction, NoConfig, NoSecrets, ReadinessState, RunnerOpt
 /// Termination signals use the runner's normal graceful shutdown behavior.
 ///
 /// Each line is a serialized [`MemorySnapshot`]: a timestamp, memory and swap
-/// totals in bytes, and, on Linux, all ten sources in `LinuxMemoryStats`,
-/// including nested zone, node, per-CPU, cache, and allocation-order data.
+/// totals in bytes, and, on Linux, all sources in `LinuxMemoryStats`, including
+/// nested zone, node, per-CPU, cache, allocation-order, and memory sysctl data.
 /// Source units and page-type lower bounds are preserved. Unavailable sources
-/// are `null`; slab and page-type
-/// information commonly requires root. No privileges are changed by the profile.
+/// are `null`; slab and page-type information commonly requires root. Sysctl
+/// values retain their native text, with per-key access errors and exclusions.
+/// `vm.stat_refresh` and write-only action controls are never read.
+/// No privileges are changed by the profile.
 /// On macOS, reports contain the portable memory and swap totals.
 ///
 /// ```no_run
@@ -247,7 +249,7 @@ mod tests {
         assert!(reports[0].get("cpu").is_none());
         #[cfg(target_os = "linux")]
         {
-            assert_eq!(reports[0]["linux_mm"].as_object().ok_or("Linux sources missing")?.len(), 10);
+            assert_eq!(reports[0]["linux_mm"].as_object().ok_or("Linux sources missing")?.len(), 11);
             assert!(reports[0]["linux_mm"]["meminfo"].is_null());
         }
         Ok(())
@@ -257,7 +259,7 @@ mod tests {
     #[tokio::test]
     async fn linux_reports_preserve_nested_values_and_source_units() -> Result<(), Box<dyn std::error::Error>> {
         use crate::o11y::LinuxMemoryStats;
-        use crate::o11y::linux_mm::{BuddyInfo, FromRead, PageTypeInfo, SlabInfo, Swaps, VmStat, ZoneInfo};
+        use crate::o11y::linux_mm::{BuddyInfo, FromRead, MemorySysctls, PageTypeInfo, SlabInfo, Swaps, SysctlReadError, SysctlSkipReason, VmStat, ZoneInfo};
 
         let stats = HostStats {
             linux_mm: LinuxMemoryStats {
@@ -277,6 +279,15 @@ mod tests {
                     include_bytes!("../wora-observability-linux-mm/tests/fixtures/synthetic-pagetypeinfo").as_slice(),
                 )?),
                 vmstat: Some(VmStat(std::collections::HashMap::from([("nr_anomalous".into(), -2)]))),
+                sysctls: MemorySysctls {
+                    values: std::collections::BTreeMap::from([
+                        ("vm.swappiness".into(), "60".into()),
+                        ("vm.lowmem_reserve_ratio".into(), "256\t256\t32\t0\t0".into()),
+                        ("kernel.shmall".into(), "18446744073692774399".into()),
+                    ]),
+                    unavailable: std::collections::BTreeMap::from([("vm.mmap_rnd_bits".into(), SysctlReadError::PermissionDenied)]),
+                    skipped: std::collections::BTreeMap::from([("vm.stat_refresh".into(), SysctlSkipReason::ReadSideEffect)]),
+                },
                 ..LinuxMemoryStats::default()
             },
             ..HostStats::default()
@@ -296,6 +307,11 @@ mod tests {
         assert_eq!(mm["swaps"]["entries"][1]["priority"], -2);
         assert_eq!(mm["slabinfo"]["caches"][1]["objects"], u64::MAX);
         assert_eq!(mm["pagetypeinfo"]["nodes"][0]["free_blocks"][0]["counts"][1]["at_least"], 100000);
+        assert_eq!(mm["sysctls"]["values"]["vm.swappiness"], "60");
+        assert_eq!(mm["sysctls"]["values"]["vm.lowmem_reserve_ratio"], "256\t256\t32\t0\t0");
+        assert_eq!(mm["sysctls"]["values"]["kernel.shmall"], "18446744073692774399");
+        assert_eq!(mm["sysctls"]["unavailable"]["vm.mmap_rnd_bits"], "permission_denied");
+        assert_eq!(mm["sysctls"]["skipped"]["vm.stat_refresh"], "read_side_effect");
         Ok(())
     }
 }

@@ -24,7 +24,10 @@ pub struct MemorySnapshot {
     pub memory: MemStats,
     /// Swap totals and usage, in bytes.
     pub swap: SwapStats,
-    /// Detailed procfs memory snapshots; each source is independently optional.
+    /// Detailed procfs memory snapshots, including memory-related sysctls.
+    ///
+    /// Procfs sources are independently optional. Sysctls record unavailable
+    /// and deliberately skipped entries separately from successfully read values.
     #[cfg(target_os = "linux")]
     pub linux_mm: crate::o11y::LinuxMemoryStats,
 }

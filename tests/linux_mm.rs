@@ -54,6 +54,11 @@ async fn captured_linux_memory_metrics_reach_host_stats_sinks() -> Result<(), Bo
     )
     .await?;
     tokio::fs::write(root.path().join("iomem"), "00001000-00001fff : System RAM\n").await?;
+    tokio::fs::create_dir_all(root.path().join("sys/vm")).await?;
+    tokio::fs::create_dir_all(root.path().join("sys/kernel")).await?;
+    tokio::fs::write(root.path().join("sys/vm/swappiness"), "60\n").await?;
+    tokio::fs::write(root.path().join("sys/vm/stat_refresh"), [0xff]).await?;
+    tokio::fs::write(root.path().join("sys/kernel/shmall"), "18446744073692774399\n").await?;
 
     let stats = HostStats {
         linux_mm: LinuxMemoryStats::from_proc_root(root.path()),
@@ -76,6 +81,9 @@ async fn captured_linux_memory_metrics_reach_host_stats_sinks() -> Result<(), Bo
     assert_eq!(mm.zoneinfo.as_ref().ok_or("zoneinfo missing")?.zones[0].free_pages, 9_007_199_254_740_993);
     assert_eq!(mm.swaps.as_ref().ok_or("swaps missing")?.entries[1].size_kib, 9_007_199_254_741);
     assert_eq!(mm.slabinfo.as_ref().ok_or("slabinfo missing")?.caches[1].objects, u64::MAX);
+    assert_eq!(mm.sysctls.values["vm.swappiness"], "60");
+    assert_eq!(mm.sysctls.values["kernel.shmall"], "18446744073692774399");
+    assert_eq!(mm.sysctls.skipped["vm.stat_refresh"], wora::o11y::linux_mm::SysctlSkipReason::ReadSideEffect);
     assert_eq!(
         mm.pagetypeinfo.as_ref().ok_or("pagetypeinfo missing")?.nodes[0].free_blocks[0].counts[1],
         FreeBlockCount::AtLeast(100000)
@@ -94,6 +102,8 @@ async fn captured_linux_memory_metrics_reach_host_stats_sinks() -> Result<(), Bo
     assert_eq!(memory["pressure"]["some"]["total"], 9_007_199_254_740_993_u64);
     assert_eq!(memory["vmstat"]["nr_free_pages"], 1234);
     assert_eq!(memory["buddyinfo"]["zones"][0]["free_blocks"][0], 2553);
+    assert_eq!(memory["sysctls"]["values"]["vm.swappiness"], "60");
+    assert_eq!(memory["sysctls"]["values"]["kernel.shmall"], "18446744073692774399");
     Ok(())
 }
 
