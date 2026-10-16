@@ -20,20 +20,20 @@ otlp = ["opentelemetry", "dep:opentelemetry-otlp", "dep:tonic"]
 async-trait = "0.1.92"
 thiserror = "2.0.20"
 wora = { path = "..", version = "0.0.17" }
-axum = { version = "0.8.4", optional = true }
-opentelemetry = { version = "0.31.0", features = ["metrics"], optional = true }
-opentelemetry_sdk = { version = "0.31.0", features = ["metrics"], optional = true }
-opentelemetry-otlp = { version = "0.31.0", features = ["metrics", "grpc-tonic"], optional = true }
+axum = { version = "0.8.9", optional = true }
+opentelemetry = { version = "0.33.1", features = ["metrics"], optional = true }
+opentelemetry_sdk = { version = "0.33.1", features = ["metrics"], optional = true }
+opentelemetry-otlp = { version = "0.33.1", features = ["metrics", "grpc-tonic"], optional = true }
 prometheus = { version = "0.14.0", optional = true }
-tokio = { version = "1.53.1", features = ["net"], optional = true }
-tonic = { version = "0.14.2", optional = true }
+tokio = { version = "1.53.3", features = ["net"], optional = true }
+tonic = { version = "0.14.6", optional = true }
 
 [dev-dependencies]
-clap = { version = "4.6.6", features = ["derive"] }
-opentelemetry_sdk = { version = "0.31.0", features = ["metrics", "testing"] }
+clap = { version = "4.6.7", features = ["derive"] }
+opentelemetry_sdk = { version = "0.33.1", features = ["metrics", "testing"] }
 serde = { version = "1.0.229", features = ["derive"] }
 tokio = { version = "1.53.1", features = ["full"] }
-toml = "1.1.4"
+toml = "1.1.8"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 
