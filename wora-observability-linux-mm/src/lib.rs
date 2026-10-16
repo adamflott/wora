@@ -3,6 +3,7 @@
 
 mod buddyinfo;
 mod cgroup;
+mod compressed;
 mod files;
 mod hugepages;
 mod numa;
@@ -15,6 +16,7 @@ mod zoneinfo;
 
 pub use buddyinfo::{BuddyInfo, BuddyZone};
 pub use cgroup::{CgroupMemory, CgroupMemoryStats, CgroupMemoryValue};
+pub use compressed::{CompressedMemoryStats, ZramDevice, ZramMemoryStat};
 pub use files::{MemoryFiles, MemoryValue};
 pub use hugepages::{HugePageFiles, HugePageStats, HugePageValue};
 pub use numa::NumaStats;

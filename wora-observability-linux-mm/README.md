@@ -29,6 +29,15 @@ directories are limited to 4096 entries. Symlinks and write-only files are not
 opened. Normal-user visibility depends on sysfs mounts and host policy.
 See the [node ABI](https://github.com/torvalds/linux/blob/master/Documentation/ABI/stable/sysfs-devices-node).
 
+`CompressedMemoryStats::{current,from_sys_root}` reports zswap module policy and
+debugfs counters plus sparse zram devices. WORA includes `linux_mm.compressed`.
+Zram `mm_stat` has named byte/count fields, optional newer fields and preserved
+future trailing values; native `mm_stat`, `io_stat` and `bd_stat` remain available.
+Device links resolve only inside the supplied sysfs root. No reset, writeback,
+recompression or compaction controls are opened. Debugfs is never mounted;
+restricted zswap counters remain explicit access failures. These views overlap
+existing swap/memory totals and must not be added to them.
+
 `CgroupMemoryStats::current()` discovers the calling process's cgroup v2 from
 `/proc/self/{cgroup,mountinfo}`. `current` contains parsed `memory.*` files,
 including usage, limits, swap/zswap, named counters, local/hierarchical events,

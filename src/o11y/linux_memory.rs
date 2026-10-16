@@ -17,6 +17,8 @@ use super::linux_mm::{
 /// Values retain their source units and page-type lower bounds.
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct LinuxMemoryStats {
+    /// Zram device accounting and zswap policy/debugfs counters.
+    pub compressed: Option<Box<super::linux_mm::CompressedMemoryStats>>,
     /// Host NUMA nodes, locality statistics and memory-tier membership.
     pub numa: Option<Box<super::linux_mm::NumaStats>>,
     /// Overall host memory inventory from `/proc/meminfo`, with sizes in bytes.
@@ -76,6 +78,7 @@ impl LinuxMemoryStats {
         Self {
             hugepages: Some(Box::new(HugePageStats::from_sys_root(&sys_root))),
             numa: Some(Box::new(super::linux_mm::NumaStats::from_sys_root(&sys_root))),
+            compressed: Some(Box::new(super::linux_mm::CompressedMemoryStats::from_sys_root(&sys_root))),
             ..Self::from_proc_root(proc_root)
         }
     }
@@ -104,6 +107,7 @@ impl LinuxMemoryStats {
             cgroup: Box::new(CgroupMemoryStats::from_proc_root(root)),
             hugepages: None,
             numa: None,
+            compressed: None,
             process: Box::new(ProcessMemoryStats::from_process_root(std::process::id(), root.join("self"))),
         }
     }

@@ -142,3 +142,14 @@ pub(crate) fn numbered(name: &str, prefix: &str) -> Option<u32> {
         .then(|| suffix.parse().ok())
         .flatten()
 }
+
+// Sysfs class/device links are intentional. Resolve only selected directories,
+// and require their targets to remain inside the explicitly supplied sysfs tree.
+pub(crate) fn resolve_directory(root: &Path, path: &Path) -> io::Result<PathBuf> {
+    let root = root.canonicalize()?;
+    let path = path.canonicalize()?;
+    if !path.starts_with(root) || !path.is_dir() {
+        return Err(io::Error::other("sysfs directory link escapes supplied root"));
+    }
+    Ok(path)
+}
