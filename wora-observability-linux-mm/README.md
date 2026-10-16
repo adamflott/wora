@@ -69,6 +69,13 @@ and allocation counts with source location and all trailing attributes. An
 Unknown versions retain the native file with a separate parse error. Profiling
 must already be supported/enabled; this collector never enables it.
 
+`FragmentationStats::{current,from_debug_root}` (`Fragmentation` diagnostics)
+reads debugfs `extfrag/{unusable_index,extfrag_index}`. Parsed node/zone/order
+indices use exact integer thousandths; `-1000` retains the external-fragmentation
+`-1.000` sentinel (the allocation would succeed). Native tables are also retained.
+This commonly needs root and a kernel exposing the debugfs interface. No
+compaction is triggered and existing VM compaction counters remain separate.
+
 `CgroupMemoryStats::current()` discovers the calling process's cgroup v2 from
 `/proc/self/{cgroup,mountinfo}`. `current` contains parsed `memory.*` files,
 including usage, limits, swap/zswap, named counters, local/hierarchical events,

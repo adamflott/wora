@@ -14,6 +14,8 @@ pub enum LinuxMemoryCollector {
     Slub,
     /// Kernel call-site allocation accounting and native vmalloc area inventory.
     KernelAllocations,
+    /// Debugfs unusable-memory and external-fragmentation indices.
+    Fragmentation,
 }
 
 /// Explicit selection and cadence for potentially costly memory diagnostics.
@@ -66,6 +68,8 @@ impl LinuxMemoryOptions {
 /// Diagnostic data with its own timestamp; may be older than the host snapshot.
 #[derive(Clone, Debug, Serialize)]
 pub struct LinuxMemoryDiagnostics {
+    /// Exact per-order fragmentation indices, without floating-point conversion.
+    pub fragmentation: Option<Box<super::linux_mm::FragmentationStats>>,
     /// Kernel allocation sites and vmalloc areas, requiring kernel support/access.
     pub kernel_allocations: Option<Box<super::linux_mm::KernelAllocationStats>>,
     /// SLUB details, including explicit cache aliases.
@@ -112,6 +116,8 @@ impl<R> LinuxMemoryEnvironment<R> {
         if cache.as_ref().is_none_or(|(time, _)| time.elapsed() >= self.options.interval) {
             let selected = |kind| self.options.collectors.contains(&kind);
             let data = LinuxMemoryDiagnostics {
+                fragmentation: selected(LinuxMemoryCollector::Fragmentation)
+                    .then(|| Box::new(super::linux_mm::FragmentationStats::from_debug_root(self.options.sys_root.join("kernel/debug")))),
                 kernel_allocations: selected(LinuxMemoryCollector::KernelAllocations)
                     .then(|| Box::new(super::linux_mm::KernelAllocationStats::from_proc_root(&self.options.proc_root))),
                 slub: selected(LinuxMemoryCollector::Slub).then(|| Box::new(super::linux_mm::SlubStats::from_sys_root(&self.options.sys_root))),
