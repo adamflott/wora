@@ -51,6 +51,8 @@ use crate::{App, EventLoopAction, NoConfig, NoSecrets, ReadinessState, RunnerOpt
 /// ```
 pub struct MemoryReporter<W = Stdout> {
     #[cfg(target_os = "linux")]
+    trace: Option<crate::o11y::LinuxMemoryTraceOptions>,
+    #[cfg(target_os = "linux")]
     diagnostics: crate::o11y::LinuxMemoryOptions,
     name: &'static str,
     interval: Duration,
@@ -60,6 +62,8 @@ pub struct MemoryReporter<W = Stdout> {
 impl Default for MemoryReporter {
     fn default() -> Self {
         Self {
+            #[cfg(target_os = "linux")]
+            trace: None,
             #[cfg(target_os = "linux")]
             diagnostics: crate::o11y::LinuxMemoryOptions::default(),
             name: "wora-memory-report",
@@ -77,6 +81,13 @@ impl MemoryReporter {
 }
 
 impl<W> MemoryReporter<W> {
+    /// Enable runner-owned tracefs memory events as additional JSON-line records.
+    /// Creates/configures only a private tracefs instance, requiring privileges.
+    #[cfg(target_os = "linux")]
+    pub fn with_linux_memory_trace(mut self, options: crate::o11y::LinuxMemoryTraceOptions) -> Self {
+        self.trace = Some(options);
+        self
+    }
     /// Enable selected Linux memory diagnostics with a separate sampling interval.
     ///
     /// Diagnostic data retains its own timestamp between collections. Expensive
@@ -108,6 +119,8 @@ impl<W> MemoryReporter<W> {
     /// report, so output does not wait for the periodic pipeline flush.
     pub fn with_writer<NewW>(self, writer: NewW) -> MemoryReporter<NewW> {
         MemoryReporter {
+            #[cfg(target_os = "linux")]
+            trace: self.trace,
             #[cfg(target_os = "linux")]
             diagnostics: self.diagnostics,
             name: self.name,
@@ -152,6 +165,13 @@ impl<W: AsyncWrite + Unpin + Send + 'static> MemoryReporter<W> {
             .sink("memory-report", MemoryReportSink { writer: self.writer })
             .build()
             .map_err(|error| WoraSetupError::Str(error.to_string()))?;
+        #[cfg(target_os = "linux")]
+        let pipeline = match self.trace {
+            Some(options) => pipeline
+                .with_linux_memory_trace(options)
+                .map_err(|error| WoraSetupError::Str(error.to_string()))?,
+            None => pipeline,
+        };
         exec_async_runner_with_options(exec, MemoryReportingApp { name: self.name }, fs, pipeline, options).await
     }
 }
@@ -163,6 +183,14 @@ struct MemoryReportSink<W> {
 #[async_trait]
 impl<W: AsyncWrite + Unpin + Send> O11ySink<()> for MemoryReportSink<W> {
     async fn handle_event(&mut self, event: &O11yEvent<()>) -> Result<(), O11ySinkError> {
+        #[cfg(target_os = "linux")]
+        if let O11yEventKind::MemoryTrace(record) = &event.kind {
+            let mut line = serde_json::to_vec(&serde_json::json!({"timestamp": event.timestamp, "memory_trace": record}))?;
+            line.push(b'\n');
+            self.writer.write_all(&line).await?;
+            self.writer.flush().await?;
+            return Ok(());
+        }
         if let O11yEventKind::HostStats(stats) = &event.kind {
             let mut snapshot = MemorySnapshot::from_host_stats(stats);
             snapshot.timestamp = event.timestamp;
@@ -238,6 +266,26 @@ mod tests {
 
     use super::*;
     use crate::o11y::{HostStats, MemStats, SwapStats, o11y_new_ev_finish};
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn trace_records_are_flushed_as_distinct_json_lines() -> Result<(), Box<dyn std::error::Error>> {
+        let mut sink = MemoryReportSink {
+            writer: BufWriter::new(Vec::new()),
+        };
+        sink.handle_event(&O11yEvent {
+            timestamp: chrono::Utc::now(),
+            kind: O11yEventKind::MemoryTrace(Box::new(crate::o11y::linux_mm::MemoryTraceRecord::Lost {
+                raw: "CPU:0 [LOST 5 EVENTS]".into(),
+            })),
+        })
+        .await?;
+        let value: serde_json::Value = serde_json::from_slice(sink.writer.get_ref())?;
+        assert_eq!(value["memory_trace"]["kind"], "lost");
+        assert!(value.get("memory").is_none());
+        assert!(sink.writer.get_ref().ends_with(b"\n"));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn reports_only_memory_and_flushes_each_json_line() -> Result<(), Box<dyn std::error::Error>> {

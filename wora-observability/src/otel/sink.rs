@@ -82,6 +82,8 @@ impl OpenTelemetrySink {
 
 fn kind_name<T>(kind: &O11yEventKind<T>) -> &'static str {
     match kind {
+        #[cfg(target_os = "linux")]
+        O11yEventKind::MemoryTrace(_) => "memory_trace",
         O11yEventKind::Init(_) => "init",
         O11yEventKind::Finish => "finish",
         O11yEventKind::Flush => "flush",

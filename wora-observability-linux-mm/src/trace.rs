@@ -1,0 +1,192 @@
+use crate::MemoryReadError;
+use std::collections::BTreeMap;
+
+/// Memory tracepoint families supported by WORA's isolated tracefs service.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
+pub enum MemoryTracepoint {
+    /// OOM victim identity and kernel-supplied memory details.
+    OomVictim,
+    /// Direct reclaim begin/end and derived matched durations.
+    DirectReclaim,
+    /// Compaction begin/end and derived matched durations.
+    Compaction,
+    /// Page migration results and reason.
+    Migration,
+}
+
+impl MemoryTracepoint {
+    /// Relative event paths inside an explicitly owned tracefs instance.
+    pub fn events(self) -> &'static [&'static str] {
+        match self {
+            Self::OomVictim => &["oom/mark_victim"],
+            Self::DirectReclaim => &["vmscan/mm_vmscan_direct_reclaim_begin", "vmscan/mm_vmscan_direct_reclaim_end"],
+            Self::Compaction => &["compaction/mm_compaction_begin", "compaction/mm_compaction_end"],
+            Self::Migration => &["migrate/mm_migrate_pages"],
+        }
+    }
+}
+
+/// Trace record, independent of periodic memory snapshots.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde1", serde(tag = "kind", rename_all = "snake_case"))]
+pub enum MemoryTraceRecord {
+    /// Service startup capabilities, including unsupported kernel event paths.
+    Started {
+        /// Private tracefs instance used by this collector.
+        instance: String,
+        /// Enabled event paths.
+        enabled: Vec<String>,
+        /// Unsupported event paths and error details.
+        unavailable: BTreeMap<String, String>,
+    },
+    /// Parsed event with native payload retained.
+    Event {
+        /// Kernel event and optional derived timing.
+        event: MemoryTraceEvent,
+    },
+    /// Kernel-reported ring-buffer loss. Pending duration matches are cleared.
+    Lost {
+        /// Original loss notification, including CPU/count when supplied.
+        raw: String,
+    },
+    /// Unrecognized non-comment record; preserved rather than silently discarded.
+    Unparsed {
+        /// Original line.
+        raw: String,
+    },
+}
+
+/// One text trace event. All kernel fields remain in `payload` and `raw`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
+pub struct MemoryTraceEvent {
+    /// Emitting task name, which may differ from the OOM victim.
+    pub task: String,
+    /// Emitting thread ID, not necessarily the OOM victim PID.
+    pub tid: u32,
+    /// Emitting CPU.
+    pub cpu: u32,
+    /// Trace-clock time in exact nanoseconds, not wall time. WORA uses `mono`.
+    pub timestamp_ns: u64,
+    /// Kernel event name.
+    pub name: String,
+    /// Native event payload, retaining unfamiliar fields and units.
+    pub payload: String,
+    /// Original complete line.
+    pub raw: String,
+    /// OOM victim PID from `mark_victim`, distinct from the emitting TID.
+    pub victim_pid: Option<u32>,
+    /// Matched reclaim/compaction begin-to-end duration; absent on missing,
+    /// ambiguous, out-of-order, or lost beginnings. Not a complete latency census.
+    pub duration_ns: Option<u64>,
+}
+
+/// Bounded streaming parser for the standard ftrace text format.
+#[derive(Default)]
+pub struct MemoryTraceParser {
+    pending: BTreeMap<(u32, String, &'static str), Vec<u64>>,
+}
+
+impl MemoryTraceParser {
+    /// Start with no pending reclaim or compaction intervals.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Parse a line of at most 64 KiB. Blank/header lines return `None`.
+    /// At most 4096 task/family keys and 16 nested intervals per key are retained.
+    pub fn parse_line(&mut self, line: &str) -> Result<Option<MemoryTraceRecord>, MemoryReadError> {
+        if line.len() > 65536 {
+            return Err(MemoryReadError::ReadFailed("trace line exceeds 64 KiB".into()));
+        }
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.contains("LOST") && line.contains("EVENTS") {
+            self.pending.clear();
+            return Ok(Some(MemoryTraceRecord::Lost { raw: line.into() }));
+        }
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            return Ok(None);
+        }
+        let Some(mut event) = parse_event(line) else {
+            return Ok(Some(MemoryTraceRecord::Unparsed { raw: line.into() }));
+        };
+        let family = match event.name.as_str() {
+            "mm_vmscan_direct_reclaim_begin" => Some(("reclaim", true)),
+            "mm_vmscan_direct_reclaim_end" => Some(("reclaim", false)),
+            "mm_compaction_begin" => Some(("compaction", true)),
+            "mm_compaction_end" => Some(("compaction", false)),
+            _ => None,
+        };
+        if let Some((family, begin)) = family {
+            let key = (event.tid, event.task.clone(), family);
+            if begin {
+                if self.pending.len() >= 4096 {
+                    self.pending.clear();
+                }
+                let stack = self.pending.entry(key).or_default();
+                if stack.len() >= 16 {
+                    stack.clear();
+                }
+                stack.push(event.timestamp_ns);
+            } else if let Some(stack) = self.pending.get_mut(&key) {
+                event.duration_ns = stack.pop().and_then(|start| event.timestamp_ns.checked_sub(start));
+                if stack.is_empty() {
+                    self.pending.remove(&key);
+                }
+            }
+        }
+        Ok(Some(MemoryTraceRecord::Event { event }))
+    }
+}
+
+fn parse_event(line: &str) -> Option<MemoryTraceEvent> {
+    let (cpu_start, cpu_end, cpu) = line.match_indices('[').find_map(|(start, _)| {
+        let end = start + line[start..].find(']')?;
+        let cpu = line[start + 1..end].parse::<u32>().ok()?;
+        Some((start, end, cpu))
+    })?;
+    let (task, tid) = line[..cpu_start].trim().rsplit_once('-')?;
+    let tid = tid.trim().parse().ok()?;
+    let tail = &line[cpu_end + 1..];
+    let stamp = tail
+        .split_ascii_whitespace()
+        .find(|word| word.strip_suffix(':').and_then(timestamp).is_some())?;
+    let timestamp_ns = timestamp(stamp.strip_suffix(':')?)?;
+    let after = tail[tail.find(stamp)? + stamp.len()..].trim_start();
+    let (name, payload) = after.split_once(':')?;
+    if name.is_empty() || name.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let payload = payload.trim_start();
+    let victim_pid = (name == "mark_victim")
+        .then(|| {
+            payload
+                .split_ascii_whitespace()
+                .find_map(|v| v.strip_prefix("pid=").and_then(|v| v.parse().ok()))
+        })
+        .flatten();
+    Some(MemoryTraceEvent {
+        task: task.trim().into(),
+        tid,
+        cpu,
+        timestamp_ns,
+        name: name.into(),
+        payload: payload.into(),
+        raw: line.into(),
+        victim_pid,
+        duration_ns: None,
+    })
+}
+
+fn timestamp(value: &str) -> Option<u64> {
+    let (seconds, fraction) = value.split_once('.')?;
+    if seconds.is_empty() || fraction.is_empty() || fraction.len() > 9 || !seconds.bytes().chain(fraction.bytes()).all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    seconds
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(fraction.parse::<u64>().ok()?.checked_mul(10u64.pow(9 - fraction.len() as u32))?)
+}

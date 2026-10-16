@@ -119,6 +119,26 @@ without root; CMA debugfs commonly needs root. Hardware drivers and kernel
 configuration determine availability. No online/offline, poison injection,
 EDAC counter reset, or CMA allocation/release action is performed.
 
+`MemoryTraceParser` consumes bounded standard ftrace text records for OOM victims,
+direct reclaim, compaction and migration. It preserves raw payloads/unknown fields,
+emitting task/TID/CPU, exact trace-clock nanoseconds, and victim PID separately.
+Matched begin/end records add durations. Kernel loss notifications clear pending
+matches; unknown lines remain visible. Pending state and line sizes are bounded.
+The parser itself has no runtime, tracing configuration or privileged I/O.
+
+WORA's separate `LinuxMemoryTraceOptions` attaches a managed service using a new
+private tracefs instance. `.with_linux_memory_trace(options)` works on a profile
+or owned pipeline. It enables selected events only in that instance, uses `mono`,
+and streams records as `O11yEventKind::MemoryTrace`. Profiles flush additional
+`{"timestamp":...,"memory_trace":...}` JSON lines alongside snapshot lines.
+Startup records identify the instance and unsupported events. Failures use the
+runner's existing service supervision. Normal shutdown/cancellation disables and
+removes the instance; SIGKILL/crashes may leave it for manual cleanup. It requires
+tracefs permissions (commonly root), does not mount tracefs, and never consumes
+the global trace pipe or changes global event settings. Ring buffers can lose
+events under load/backpressure; matched durations are not a complete census.
+See [ftrace instances](https://docs.kernel.org/trace/ftrace.html#instances).
+
 `CgroupMemoryStats::current()` discovers the calling process's cgroup v2 from
 `/proc/self/{cgroup,mountinfo}`. `current` contains parsed `memory.*` files,
 including usage, limits, swap/zswap, named counters, local/hierarchical events,

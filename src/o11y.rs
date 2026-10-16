@@ -36,7 +36,11 @@ mod linux_memory;
 #[cfg(target_os = "linux")]
 pub use linux_diagnostics::{LinuxMemoryCollector, LinuxMemoryDiagnostics, LinuxMemoryEnvironment, LinuxMemoryOptions};
 #[cfg(target_os = "linux")]
+mod linux_trace;
+#[cfg(target_os = "linux")]
 pub use linux_memory::LinuxMemoryStats;
+#[cfg(target_os = "linux")]
+pub use linux_trace::LinuxMemoryTraceOptions;
 
 /// Timestamped observability event emitted by WORA or an application.
 #[derive(Clone, Debug)]
@@ -167,6 +171,9 @@ pub enum O11ySpanEventKind {
     reason = "Preserve the public HostStats event payload; detailed Linux snapshots are already boxed."
 )]
 pub enum O11yEventKind<T> {
+    /// Opt-in Linux memory trace record, independent of periodic snapshots.
+    #[cfg(target_os = "linux")]
+    MemoryTrace(Box<linux_mm::MemoryTraceRecord>),
     /// Observability pipeline was initialized with the given log directory.
     Init(PathBuf),
     /// Observability pipeline is finishing.
@@ -558,6 +565,8 @@ pub trait O11ySink<T>: Send {
 
 fn event_kind_name<T>(kind: &O11yEventKind<T>) -> &'static str {
     match kind {
+        #[cfg(target_os = "linux")]
+        O11yEventKind::MemoryTrace(_) => "memory_trace",
         O11yEventKind::Init(_) => "init",
         O11yEventKind::Finish => "finish",
         O11yEventKind::Flush => "flush",

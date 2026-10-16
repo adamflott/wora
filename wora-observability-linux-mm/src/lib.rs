@@ -21,6 +21,7 @@ mod slabinfo;
 mod slub;
 mod swaps;
 mod sysctl;
+mod trace;
 mod zoneinfo;
 
 pub use allocations::{AllocationSite, AllocationSites, KernelAllocationStats};
@@ -49,6 +50,7 @@ pub use sysctl::SysctlReadError as MemoryReadError;
 /// Reasons a memory information entry was deliberately not opened.
 pub use sysctl::SysctlSkipReason as MemorySkipReason;
 pub use sysctl::{MemorySysctls, SysctlReadError, SysctlSkipReason};
+pub use trace::{MemoryTraceEvent, MemoryTraceParser, MemoryTraceRecord, MemoryTracepoint};
 pub use zoneinfo::{ZoneInfo, ZoneInfoZone, ZonePageSet, ZoneWatermarks};
 
 #[cfg(target_os = "linux")]

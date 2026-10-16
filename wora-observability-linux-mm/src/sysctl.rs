@@ -57,6 +57,18 @@ impl From<io::Error> for SysctlReadError {
     }
 }
 
+impl std::fmt::Display for SysctlReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PermissionDenied => formatter.write_str("permission denied"),
+            Self::NotFound => formatter.write_str("source not found"),
+            Self::ReadFailed(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for SysctlReadError {}
+
 /// Why a present memory sysctl entry was not opened.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
