@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "linux", doc = include_str!("../README.md"))]
 #![cfg(target_os = "linux")]
 
+mod allocations;
 mod buddyinfo;
 mod cgroup;
 mod compressed;
@@ -17,6 +18,7 @@ mod swaps;
 mod sysctl;
 mod zoneinfo;
 
+pub use allocations::{AllocationSite, AllocationSites, KernelAllocationStats};
 pub use buddyinfo::{BuddyInfo, BuddyZone};
 pub use cgroup::{CgroupMemory, CgroupMemoryStats, CgroupMemoryValue};
 pub use compressed::{CompressedMemoryStats, ZramDevice, ZramMemoryStat};

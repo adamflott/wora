@@ -12,6 +12,8 @@ pub enum LinuxMemoryCollector {
     ProcessMappings,
     /// Per-cache/per-node SLUB occupancy, policy and optional debugging counters.
     Slub,
+    /// Kernel call-site allocation accounting and native vmalloc area inventory.
+    KernelAllocations,
 }
 
 /// Explicit selection and cadence for potentially costly memory diagnostics.
@@ -64,6 +66,8 @@ impl LinuxMemoryOptions {
 /// Diagnostic data with its own timestamp; may be older than the host snapshot.
 #[derive(Clone, Debug, Serialize)]
 pub struct LinuxMemoryDiagnostics {
+    /// Kernel allocation sites and vmalloc areas, requiring kernel support/access.
+    pub kernel_allocations: Option<Box<super::linux_mm::KernelAllocationStats>>,
     /// SLUB details, including explicit cache aliases.
     pub slub: Option<Box<super::linux_mm::SlubStats>>,
     /// Time this diagnostic batch was collected, independent of host sample time.
@@ -108,6 +112,8 @@ impl<R> LinuxMemoryEnvironment<R> {
         if cache.as_ref().is_none_or(|(time, _)| time.elapsed() >= self.options.interval) {
             let selected = |kind| self.options.collectors.contains(&kind);
             let data = LinuxMemoryDiagnostics {
+                kernel_allocations: selected(LinuxMemoryCollector::KernelAllocations)
+                    .then(|| Box::new(super::linux_mm::KernelAllocationStats::from_proc_root(&self.options.proc_root))),
                 slub: selected(LinuxMemoryCollector::Slub).then(|| Box::new(super::linux_mm::SlubStats::from_sys_root(&self.options.sys_root))),
                 sampled_at: chrono::Utc::now(),
                 process_mappings: selected(LinuxMemoryCollector::ProcessMappings).then(|| {

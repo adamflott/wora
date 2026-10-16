@@ -61,6 +61,14 @@ the supplied slab tree. Only known information files are read; `validate`,
 configuration, including `CONFIG_SLUB_STATS`. Enable WORA's `Slub` diagnostic to
 include this potentially large tree on the separate diagnostic cadence.
 
+`KernelAllocationStats` (`KernelAllocations` in WORA diagnostics) reads native
+`allocinfo`/`vmallocinfo`, including restricted/redacted vmalloc addresses and
+caller/NUMA metadata. Known allocinfo versions additionally expose named byte
+and allocation counts with source location and all trailing attributes. An
+`accurate:no` marker means absolute counts are not accurate; it is never dropped.
+Unknown versions retain the native file with a separate parse error. Profiling
+must already be supported/enabled; this collector never enables it.
+
 `CgroupMemoryStats::current()` discovers the calling process's cgroup v2 from
 `/proc/self/{cgroup,mountinfo}`. `current` contains parsed `memory.*` files,
 including usage, limits, swap/zswap, named counters, local/hierarchical events,
