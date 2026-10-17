@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::files::{entries, numbered, resolve_directory};
-use crate::{MemoryFiles, MemoryReadError, MemoryValue};
+use crate::{MemoryFiles, MemoryReadError};
 
 /// Host compressed-swap configuration and accounting, separate from swap usage.
 #[derive(Clone, Default, Debug)]
@@ -18,11 +18,11 @@ pub struct CompressedMemoryStats {
     pub unavailable: BTreeMap<String, MemoryReadError>,
 }
 
-/// One zram device, retaining configuration and native I/O/statistics tables.
+/// One zram device's parsed configuration and I/O/statistics tables.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct ZramDevice {
-    /// Native files, including the original `mm_stat`, `io_stat` and `bd_stat`.
+    /// Structured files, including `io_stat` and `bd_stat`.
     pub files: MemoryFiles,
     /// Named `mm_stat` fields; absent if missing or malformed.
     pub memory: Option<ZramMemoryStat>,
@@ -119,9 +119,8 @@ impl CompressedMemoryStats {
                     match resolve_directory(root, &path) {
                         Ok(path) => {
                             let mut files = MemoryFiles::from_names(
-                                path,
+                                &path,
                                 &[
-                                    "mm_stat",
                                     "io_stat",
                                     "bd_stat",
                                     "stat",
@@ -135,22 +134,7 @@ impl CompressedMemoryStats {
                                     "writeback_limit_enable",
                                 ],
                             );
-                            let memory = match files.values.get("mm_stat") {
-                                Some(MemoryValue::Text(text)) => match ZramMemoryStat::parse(text) {
-                                    Ok(value) => Some(value),
-                                    Err(error) => {
-                                        files.unavailable.insert("mm_stat.parsed".into(), error);
-                                        None
-                                    }
-                                },
-                                Some(_) => {
-                                    files
-                                        .unavailable
-                                        .insert("mm_stat.parsed".into(), MemoryReadError::ReadFailed("invalid mm_stat table".into()));
-                                    None
-                                }
-                                None => None,
-                            };
+                            let memory = files.read_with(&path, "mm_stat", 4 * 1024 * 1024, ZramMemoryStat::parse);
                             result.zram.insert(id, ZramDevice { files, memory });
                         }
                         Err(error) => {

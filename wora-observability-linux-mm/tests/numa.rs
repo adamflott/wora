@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 use std::{fs, os::unix::fs::symlink};
-use wora_observability_linux_mm::{MemoryFiles, MemoryReadError, MemorySkipReason, MemoryValue, NumaStats};
+use wora_observability_linux_mm::{MemoryFiles, MemoryReadError, MemorySkipReason, NumaStats, ParsedMemoryValue};
 
 #[test]
 fn sparse_nodes_tiers_and_native_units_survive_capture() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,13 +20,22 @@ fn sparse_nodes_tiers_and_native_units_survive_capture() -> Result<(), Box<dyn s
     let snapshot = NumaStats::from_sys_root(root.path());
     assert_eq!(snapshot.nodes.len(), 1);
     assert_eq!(
-        snapshot.nodes[&9].values["meminfo"],
-        MemoryValue::Text("Node 9 MemFree: 9007199254740993 kB".into())
+        snapshot.nodes[&9].parsed["meminfo"]
+            .get("MemFree")
+            .and_then(|value| value.get("value"))
+            .and_then(ParsedMemoryValue::as_u64),
+        Some(9_007_199_254_740_993)
     );
-    assert_eq!(snapshot.tiers[&22].values["nodelist"], MemoryValue::Unsigned(9));
+    assert_eq!(
+        snapshot.tiers[&22].parsed["nodelist"],
+        ParsedMemoryValue::List(vec![ParsedMemoryValue::Map(std::collections::BTreeMap::from([
+            ("start".into(), ParsedMemoryValue::Unsigned(9)),
+            ("end".into(), ParsedMemoryValue::Unsigned(9))
+        ]))])
+    );
     assert_eq!(snapshot.nodes[&9].unavailable["vmstat"], MemoryReadError::NotFound);
     #[cfg(feature = "serde1")]
-    assert_eq!(serde_json::to_value(snapshot)?["nodes"]["9"]["values"]["distance"], "20 10");
+    assert_eq!(serde_json::to_value(snapshot)?["nodes"]["9"]["parsed"]["distance"], serde_json::json!([20, 10]));
     Ok(())
 }
 
@@ -39,8 +48,8 @@ fn bounded_files_preserve_precision_and_isolate_bad_inputs() -> Result<(), Box<d
     fs::write(root.path().join("oversized"), vec![b'x'; 4 * 1024 * 1024 + 1])?;
     symlink(root.path().join("large"), root.path().join("link"))?;
     let snapshot = MemoryFiles::from_names(root.path(), &["large", "signed", "overflow", "oversized", "link", "../escape"]);
-    assert_eq!(snapshot.values["large"], MemoryValue::Unsigned(u64::MAX));
-    assert_eq!(snapshot.values["signed"], MemoryValue::Signed(-3));
+    assert_eq!(snapshot.parsed["large"], ParsedMemoryValue::Unsigned(u64::MAX));
+    assert_eq!(snapshot.parsed["signed"], ParsedMemoryValue::Signed(-3));
     assert_eq!(snapshot.skipped["link"], MemorySkipReason::NotRegularFile);
     for name in ["overflow", "oversized", "../escape"] {
         assert!(snapshot.unavailable.contains_key(name));

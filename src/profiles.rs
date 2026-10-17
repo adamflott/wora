@@ -36,7 +36,7 @@ use crate::{App, EventLoopAction, NoConfig, NoSecrets, ReadinessState, RunnerOpt
 /// ancestor limits, THP/HugeTLB sysfs views, and process `smaps_rollup` with PID.
 /// Source units and page-type lower bounds are preserved. Unavailable sources
 /// are `null`; slab and page-type information commonly requires root. Sysctl
-/// values retain their native text, with per-key access errors and exclusions.
+/// values use structured scalars and tables, with per-key errors and exclusions.
 /// `vm.stat_refresh` and write-only action controls are never read.
 /// No privileges are changed by the profile.
 /// On macOS, reports contain the portable memory and swap totals.
@@ -332,8 +332,8 @@ mod tests {
     async fn linux_reports_preserve_nested_values_and_source_units() -> Result<(), Box<dyn std::error::Error>> {
         use crate::o11y::LinuxMemoryStats;
         use crate::o11y::linux_mm::{
-            BuddyInfo, CgroupMemory, CgroupMemoryStats, CgroupMemoryValue, FromRead, HugePageFiles, HugePageStats, HugePageValue, MemorySysctls, PageTypeInfo,
-            ProcessMemoryStats, SlabInfo, SmapsRollup, Swaps, SysctlReadError, SysctlSkipReason, VmStat, ZoneInfo,
+            BuddyInfo, CgroupMemory, CgroupMemoryStats, CgroupMemoryValue, FromRead, HugePageFiles, HugePageStats, MemorySysctls, PageTypeInfo,
+            ParsedMemoryValue, ProcessMemoryStats, SlabInfo, SmapsRollup, Swaps, SysctlReadError, SysctlSkipReason, VmStat, ZoneInfo,
         };
 
         let stats = HostStats {
@@ -355,10 +355,13 @@ mod tests {
                 )?),
                 vmstat: Some(VmStat(std::collections::HashMap::from([("nr_anomalous".into(), -2)]))),
                 sysctls: MemorySysctls {
-                    values: std::collections::BTreeMap::from([
-                        ("vm.swappiness".into(), "60".into()),
-                        ("vm.lowmem_reserve_ratio".into(), "256\t256\t32\t0\t0".into()),
-                        ("kernel.shmall".into(), "18446744073692774399".into()),
+                    parsed: std::collections::BTreeMap::from([
+                        ("vm.swappiness".into(), ParsedMemoryValue::Unsigned(60)),
+                        (
+                            "vm.lowmem_reserve_ratio".into(),
+                            ParsedMemoryValue::List([256, 256, 32, 0, 0].map(ParsedMemoryValue::Unsigned).into()),
+                        ),
+                        ("kernel.shmall".into(), ParsedMemoryValue::Unsigned(18_446_744_073_692_774_399)),
                     ]),
                     unavailable: std::collections::BTreeMap::from([("vm.mmap_rnd_bits".into(), SysctlReadError::PermissionDenied)]),
                     skipped: std::collections::BTreeMap::from([("vm.stat_refresh".into(), SysctlSkipReason::ReadSideEffect)]),
@@ -366,14 +369,14 @@ mod tests {
                 cgroup: Box::new(CgroupMemoryStats {
                     current: Some(CgroupMemory {
                         directory: "/captured/cgroup/workload".into(),
-                        values: std::collections::BTreeMap::from([("memory.max".into(), CgroupMemoryValue::Text("max".into()))]),
+                        parsed: std::collections::BTreeMap::from([("memory.max".into(), CgroupMemoryValue::Text("max".into()))]),
                         ..CgroupMemory::default()
                     }),
                     ..CgroupMemoryStats::default()
                 }),
                 hugepages: Some(Box::new(HugePageStats {
                     hugetlb: HugePageFiles {
-                        values: std::collections::BTreeMap::from([("hugepages-2048kB/free_hugepages".into(), HugePageValue::Number(7))]),
+                        parsed: std::collections::BTreeMap::from([("hugepages-2048kB/free_hugepages".into(), ParsedMemoryValue::Unsigned(7))]),
                         ..HugePageFiles::default()
                     },
                     ..HugePageStats::default()
@@ -404,13 +407,16 @@ mod tests {
         assert_eq!(mm["swaps"]["entries"][1]["priority"], -2);
         assert_eq!(mm["slabinfo"]["caches"][1]["objects"], u64::MAX);
         assert_eq!(mm["pagetypeinfo"]["nodes"][0]["free_blocks"][0]["counts"][1]["at_least"], 100000);
-        assert_eq!(mm["sysctls"]["values"]["vm.swappiness"], "60");
-        assert_eq!(mm["sysctls"]["values"]["vm.lowmem_reserve_ratio"], "256\t256\t32\t0\t0");
-        assert_eq!(mm["sysctls"]["values"]["kernel.shmall"], "18446744073692774399");
+        assert_eq!(mm["sysctls"]["parsed"]["vm.swappiness"], 60);
+        assert_eq!(mm["sysctls"]["parsed"]["vm.lowmem_reserve_ratio"], serde_json::json!([256, 256, 32, 0, 0]));
+        assert_eq!(mm["sysctls"]["parsed"]["kernel.shmall"], 18_446_744_073_692_774_399_u64);
+        assert!(mm["sysctls"].get("values").is_none());
         assert_eq!(mm["sysctls"]["unavailable"]["vm.mmap_rnd_bits"], "permission_denied");
         assert_eq!(mm["sysctls"]["skipped"]["vm.stat_refresh"], "read_side_effect");
-        assert_eq!(mm["cgroup"]["current"]["values"]["memory.max"], "max");
-        assert_eq!(mm["hugepages"]["hugetlb"]["values"]["hugepages-2048kB/free_hugepages"], 7);
+        assert_eq!(mm["cgroup"]["current"]["parsed"]["memory.max"], "max");
+        assert!(mm["cgroup"]["current"].get("values").is_none());
+        assert_eq!(mm["hugepages"]["hugetlb"]["parsed"]["hugepages-2048kB/free_hugepages"], 7);
+        assert!(mm["hugepages"]["hugetlb"].get("values").is_none());
         assert_eq!(mm["process"]["pid"], 123);
         assert_eq!(mm["process"]["smaps_rollup"]["values"]["Pss"]["value"], 60);
         assert_eq!(mm["process"]["smaps_rollup"]["values"]["Pss"]["unit"], "kB");

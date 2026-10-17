@@ -26,10 +26,12 @@ fn captures_hugetlb_limits_local_events_and_effective_memory_nodes() -> Result<(
     }
     let stats = CgroupMemory::from_directory(root.path());
     assert!(stats.unavailable.is_empty());
-    assert!(matches!(stats.values["hugetlb.2MB.current"], CgroupMemoryValue::Number(9_007_199_254_740_993)));
-    assert!(matches!(&stats.values["hugetlb.1GB.max"], CgroupMemoryValue::Text(v) if v == "max"));
-    assert!(matches!(&stats.values["hugetlb.2MB.events.local"], CgroupMemoryValue::Counters(v) if v["max"] == 3));
-    assert!(matches!(&stats.values["cpuset.mems.effective"], CgroupMemoryValue::Text(v) if v == "0-1,9"));
+    assert!(matches!(stats.parsed["hugetlb.2MB.current"], CgroupMemoryValue::Number(9_007_199_254_740_993)));
+    assert!(matches!(&stats.parsed["hugetlb.1GB.max"], CgroupMemoryValue::Text(v) if v == "max"));
+    assert!(matches!(&stats.parsed["hugetlb.2MB.events.local"], CgroupMemoryValue::Counters(v) if v["max"] == 3));
+    assert!(
+        matches!(&stats.parsed["cpuset.mems.effective"], CgroupMemoryValue::Structured(wora_observability_linux_mm::ParsedMemoryValue::List(v)) if v.len() == 2)
+    );
     Ok(())
 }
 
@@ -55,11 +57,11 @@ fn discovers_mount_roots_escaped_paths_and_visible_ancestor_limits() -> Result<(
     assert_eq!(snapshot.mount_root.as_deref(), Some(Path::new("/tenant")));
     let group = snapshot.current.ok_or("missing cgroup")?;
     assert_eq!(group.directory, current);
-    assert!(matches!(group.values["memory.current"], CgroupMemoryValue::Number(9_007_199_254_740_993)));
-    assert!(matches!(&group.values["memory.max"], CgroupMemoryValue::Text(value) if value == "max"));
+    assert!(matches!(group.parsed["memory.current"], CgroupMemoryValue::Number(9_007_199_254_740_993)));
+    assert!(matches!(&group.parsed["memory.max"], CgroupMemoryValue::Text(value) if value == "max"));
     assert_eq!(snapshot.ancestors.len(), 2);
-    assert!(matches!(snapshot.ancestors[0].values["memory.max"], CgroupMemoryValue::Number(1_048_576)));
-    assert!(matches!(snapshot.ancestors[1].values["memory.high"], CgroupMemoryValue::Number(2_097_152)));
+    assert!(matches!(snapshot.ancestors[0].parsed["memory.max"], CgroupMemoryValue::Number(1_048_576)));
+    assert!(matches!(snapshot.ancestors[1].parsed["memory.high"], CgroupMemoryValue::Number(2_097_152)));
     Ok(())
 }
 
@@ -84,18 +86,18 @@ fn retains_counters_sparse_numa_pressure_and_unknown_files() -> Result<(), Box<d
     fs::write(root.path().join("cgroup.kill"), [0xff])?;
     let snapshot = CgroupMemory::from_directory(root.path());
     assert!(snapshot.unavailable.is_empty(), "{:?}", snapshot.unavailable);
-    assert!(matches!(&snapshot.values["memory.stat"], CgroupMemoryValue::Counters(values) if values["future_counter"] == u64::MAX));
-    assert!(matches!(&snapshot.values["memory.numa_stat"], CgroupMemoryValue::Numa(values) if values["file"][&99] == 9_007_199_254_740_993));
-    assert!(matches!(&snapshot.values["memory.pressure"], CgroupMemoryValue::Pressure(value) if value.some.total == 9_007_199_254_740_993));
+    assert!(matches!(&snapshot.parsed["memory.stat"], CgroupMemoryValue::Counters(values) if values["future_counter"] == u64::MAX));
+    assert!(matches!(&snapshot.parsed["memory.numa_stat"], CgroupMemoryValue::Numa(values) if values["file"][&99] == 9_007_199_254_740_993));
+    assert!(matches!(&snapshot.parsed["memory.pressure"], CgroupMemoryValue::Pressure(value) if value.some.total == 9_007_199_254_740_993));
     assert_eq!(snapshot.skipped["memory.reclaim"], MemorySkipReason::WriteOnly);
-    assert!(!snapshot.values.contains_key("cgroup.kill"));
+    assert!(!snapshot.parsed.contains_key("cgroup.kill"));
     #[cfg(feature = "serde1")]
     {
         let json = serde_json::to_value(&snapshot)?;
-        assert_eq!(json["values"]["memory.events"]["high"], 10);
-        assert_eq!(json["values"]["memory.events.local"]["high"], 3);
-        assert_eq!(json["values"]["memory.stat"]["future_counter"], u64::MAX);
-        assert_eq!(json["values"]["memory.swap.max"], "max");
+        assert_eq!(json["parsed"]["memory.events"]["high"], 10);
+        assert_eq!(json["parsed"]["memory.events.local"]["high"], 3);
+        assert_eq!(json["parsed"]["memory.stat"]["future_counter"], u64::MAX);
+        assert_eq!(json["parsed"]["memory.swap.max"], "max");
     }
     Ok(())
 }
@@ -157,9 +159,9 @@ fn malformed_files_are_isolated_and_do_not_return_partial_counters() -> Result<(
         fs::write(root.path().join("memory.stat"), malformed)?;
         fs::write(root.path().join("memory.current"), "123\n")?;
         let snapshot = CgroupMemory::from_directory(root.path());
-        assert!(!snapshot.values.contains_key("memory.stat"));
+        assert!(!snapshot.parsed.contains_key("memory.stat"));
         assert!(matches!(snapshot.unavailable["memory.stat"], MemoryReadError::ReadFailed(_)));
-        assert!(matches!(snapshot.values["memory.current"], CgroupMemoryValue::Number(123)));
+        assert!(matches!(snapshot.parsed["memory.current"], CgroupMemoryValue::Number(123)));
     }
     fs::write(root.path().join("memory.numa_stat"), "anon N2=1 N2=2\n")?;
     assert!(CgroupMemory::from_directory(root.path()).unavailable.contains_key("memory.numa_stat"));

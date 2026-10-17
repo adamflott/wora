@@ -6,30 +6,19 @@ use std::path::{Path, PathBuf};
 
 use crate::{MemoryReadError, MemorySkipReason};
 
-/// One native kernel value. Tables, units, lists and policy strings remain text.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde1", serde(untagged))]
-pub enum MemoryValue {
-    /// Unsigned scalar, without unit conversion.
-    Unsigned(u64),
-    /// Negative scalar, without unit conversion.
-    Signed(i64),
-    /// Native file contents, excluding trailing newlines.
-    Text(String),
-}
-
 /// Bounded, independent reads of explicitly selected memory information files.
 ///
 /// Keys are relative source paths. Numeric scalars retain integer precision;
-/// tables and unfamiliar layouts retain native text. Missing and denied files
+/// tables use named fields. Missing, malformed and denied files
 /// remain distinguishable from zero. Reads are not atomic across files.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct MemoryFiles {
-    /// Successfully read values, in each source's native units.
-    pub values: BTreeMap<String, MemoryValue>,
-    /// Read failures; `.` denotes directory enumeration failure.
+    /// Structured numbers, named tables, flags, units and ranges.
+    /// Raw file contents are not retained. Unsupported or malformed layouts use
+    /// the source path in `unavailable`, just like read failures.
+    pub parsed: BTreeMap<String, crate::ParsedMemoryValue>,
+    /// Read or parse failures; `.` denotes directory enumeration failure.
     pub unavailable: BTreeMap<String, MemoryReadError>,
     /// Entries deliberately not opened, including symlinks and write-only files.
     pub skipped: BTreeMap<String, MemorySkipReason>,
@@ -72,13 +61,23 @@ impl MemoryFiles {
     }
 
     pub(crate) fn read(&mut self, root: &Path, name: &str, limit: u64) {
-        let result = (|| {
+        if let Some(value) = self.read_with(root, name, limit, |text| {
+            crate::parse_memory_file(root.join(name), text)?.ok_or_else(|| MemoryReadError::ReadFailed("unsupported memory-information layout".into()))
+        }) {
+            self.parsed.insert(name.into(), value);
+        }
+    }
+
+    // Specialized collectors consume the bounded text once and store only their
+    // typed result. All reads share path validation, exclusions and error keys.
+    pub(crate) fn read_with<T>(&mut self, root: &Path, name: &str, limit: u64, parse: impl FnOnce(&str) -> Result<T, MemoryReadError>) -> Option<T> {
+        let result: Result<Option<T>, MemoryReadError> = (|| {
             if !(1..=64 * 1024 * 1024).contains(&limit) {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "file limit must be 1..=64 MiB"));
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "file limit must be 1..=64 MiB").into());
             }
             let relative = Path::new(name);
             if relative.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "expected a relative information-file path"));
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "expected a relative information-file path").into());
             }
             let mut path = root.to_path_buf();
             for component in relative.components() {
@@ -99,32 +98,13 @@ impl MemoryFiles {
                 return Ok(None);
             }
             let text = read_text(&path, limit)?;
-            let text = text.trim_end_matches('\n');
-            let scalar = text.trim();
-            // These interfaces encode hex numbers or masks without a 0x prefix.
-            // Treating digit-only forms as decimal scalars would change meaning.
-            let native_hex = matches!(
-                relative.file_name().and_then(|v| v.to_str()),
-                Some("block_size_bytes" | "phys_index" | "cpumap")
-            );
-            let value = if native_hex {
-                MemoryValue::Text(text.into())
-            } else if !scalar.is_empty() && scalar.bytes().all(|b| b.is_ascii_digit()) {
-                MemoryValue::Unsigned(scalar.parse().map_err(io::Error::other)?)
-            } else if scalar.strip_prefix('-').is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())) {
-                MemoryValue::Signed(scalar.parse().map_err(io::Error::other)?)
-            } else {
-                MemoryValue::Text(text.into())
-            };
-            Ok(Some(value))
+            parse(&text).map(Some)
         })();
         match result {
-            Ok(Some(value)) => {
-                self.values.insert(name.into(), value);
-            }
-            Ok(None) => {}
+            Ok(value) => value,
             Err(error) => {
-                self.unavailable.insert(name.into(), error.into());
+                self.unavailable.insert(name.into(), error);
+                None
             }
         }
     }

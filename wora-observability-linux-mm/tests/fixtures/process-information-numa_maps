@@ -1,0 +1,40 @@
+bcc62b340000 default file=/target/debug/examples/memory_diagnostics mapped=1664 active=0 N0=1664 kernelpagesize_kB=4
+bcc62bbe6000 default file=/target/debug/examples/memory_diagnostics anon=42 dirty=42 active=0 N0=42 kernelpagesize_kB=4
+bcc62bc10000 default file=/target/debug/examples/memory_diagnostics anon=2 dirty=2 active=0 N0=2 kernelpagesize_kB=4
+bcc6533c9000 default heap anon=486 dirty=486 active=7 N0=486 kernelpagesize_kB=4
+febc5c000000 default anon=2 dirty=2 active=0 N0=2 kernelpagesize_kB=4
+febc5c021000 default
+febc64000000 default anon=1 dirty=1 active=0 N0=1 kernelpagesize_kB=4
+febc64021000 default
+febc6b1b0000 default
+febc6b1c0000 default anon=9 dirty=9 active=0 N0=9 kernelpagesize_kB=4
+febc6b3c0000 default
+febc6b3d0000 default anon=4 dirty=4 active=0 N0=4 kernelpagesize_kB=4
+febc6b5d0000 default file=/usr/lib/aarch64-linux-gnu/libc.so.6 mapped=315 mapmax=2 active=0 N0=315 kernelpagesize_kB=4
+febc6b76c000 default file=/usr/lib/aarch64-linux-gnu/libc.so.6
+febc6b77d000 default file=/usr/lib/aarch64-linux-gnu/libc.so.6 anon=3 dirty=3 active=0 N0=3 kernelpagesize_kB=4
+febc6b780000 default file=/usr/lib/aarch64-linux-gnu/libc.so.6 anon=2 dirty=2 active=0 N0=2 kernelpagesize_kB=4
+febc6b782000 default anon=4 dirty=4 active=0 N0=4 kernelpagesize_kB=4
+febc6b790000 default file=/usr/lib/aarch64-linux-gnu/libm.so.6 mapped=45 active=0 N0=45 kernelpagesize_kB=4
+febc6b81e000 default file=/usr/lib/aarch64-linux-gnu/libm.so.6
+febc6b82f000 default file=/usr/lib/aarch64-linux-gnu/libm.so.6 anon=1 dirty=1 active=0 N0=1 kernelpagesize_kB=4
+febc6b830000 default file=/usr/lib/aarch64-linux-gnu/libm.so.6 anon=1 dirty=1 active=0 N0=1 kernelpagesize_kB=4
+febc6b83b000 default
+febc6b83c000 default
+febc6b840000 default file=/usr/lib/aarch64-linux-gnu/libgcc_s.so.1 mapped=16 active=0 N0=16 kernelpagesize_kB=4
+febc6b85f000 default file=/usr/lib/aarch64-linux-gnu/libgcc_s.so.1
+febc6b86f000 default file=/usr/lib/aarch64-linux-gnu/libgcc_s.so.1 anon=1 dirty=1 active=0 N0=1 kernelpagesize_kB=4
+febc6b870000 default file=/usr/lib/aarch64-linux-gnu/libgcc_s.so.1 anon=1 dirty=1 active=0 N0=1 kernelpagesize_kB=4
+febc6b874000 default file=/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 mapped=40 mapmax=2 active=0 N0=40 kernelpagesize_kB=4
+febc6b89f000 default
+febc6b8a0000 default
+febc6b8a4000 default anon=2 dirty=2 active=0 N0=2 kernelpagesize_kB=4
+febc6b8a8000 default
+febc6b8a9000 default
+febc6b8ad000 default anon=2 dirty=2 active=0 N0=2 kernelpagesize_kB=4
+febc6b8af000 default
+febc6b8b1000 default
+febc6b8b2000 default file=/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 anon=2 dirty=2 active=0 N0=2 kernelpagesize_kB=4
+febc6b8b4000 default file=/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 anon=1 dirty=1 active=0 N0=1 kernelpagesize_kB=4
+febc6b8b5000 default anon=1 dirty=1 active=0 N0=1 kernelpagesize_kB=4
+fffffe6bf000 default stack anon=72 dirty=72 active=0 N0=72 kernelpagesize_kB=4

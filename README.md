@@ -45,10 +45,10 @@ On Linux, `snapshot.linux_mm` and `HostStats::linux_mm` include `Meminfo`,
 `linux_mm.sysctls` additionally captures memory-related sysctl values: all
 regular VM settings, kernel shared-memory and NUMA-balancing settings, the
 perf-event locked-memory limit, and selected filesystem cache and descriptor
-inventories. Read them through `snapshot.linux_mm.sysctls.values`, keyed by
-dotted names such as `vm.swappiness` and `kernel.shmall`. Values retain their
-native text and units, including vectors and large unsigned integers.
-`unavailable` records per-key read failures such as `permission_denied`, and
+inventories. Read them through `snapshot.linux_mm.sysctls.parsed`, keyed by
+dotted names such as `vm.swappiness` and `kernel.shmall`. Values use exact
+integers, arrays and named records, retaining native units.
+`unavailable` records per-key read/parse failures such as `permission_denied`, and
 `skipped` identifies excluded action controls. Settings are refreshed at the
 same interval as the other memory data.
 
@@ -67,8 +67,8 @@ are not a computed effective limit: ancestors outside the visible mount remain
 unknown. Cgroup v1 and inconsistent namespace layouts produce explicit
 discovery failures. No cgroup memberships or limits are changed.
 
-Hugepage numbers retain each file's units and size labels; policy strings retain
-the brackets marking the selected option. `memory.reclaim`, HugeTLB `demote`,
+Hugepage numbers retain each file's units and size labels; policies expose
+`selected` and `choices`. `memory.reclaim`, HugeTLB `demote`,
 and write-only controls are excluded from reads. Process rollup values retain
 their units (`kB` means KiB); `SmapsRollupValue::bytes()` provides checked
 conversion. All three views record individual read/parse failures without
@@ -239,6 +239,13 @@ death may leave the instance identified in the startup record. Snapshot and
 event collectors do not attempt to obtain additional privileges.
 
 Each JSON line contains `timestamp`, `memory`, `swap`, and, on Linux, `linux_mm`.
+Linux file snapshots and sysctls expose `parsed` maps with structured
+counters, booleans, numeric arrays, named filesystem vectors, units, node/CPU
+ranges, and policy choices. For example,
+`linux_mm.ksm.process.parsed.ksm_stat.ksm_merge_any` is a boolean, and
+`linux_mm.sysctls.parsed["fs.dentry-state"].nr_dentry` is an integer. Raw source
+text is not stored. Malformed or unsupported layouts report their source name
+in `unavailable`.
 All Linux sources listed above are included with every available nested
 value, including zone per-CPU statistics, allocator counts, sysctls, cgroup memory,
 hugepages and the process rollup. Unavailable

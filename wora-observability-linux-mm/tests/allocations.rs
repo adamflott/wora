@@ -1,5 +1,5 @@
 #![cfg(target_os = "linux")]
-use wora_observability_linux_mm::{AllocationSites, KernelAllocationStats, MemoryValue};
+use wora_observability_linux_mm::{AllocationSites, KernelAllocationStats, ParsedMemoryValue};
 
 #[test]
 fn versioned_sites_keep_accuracy_markers_precision_and_native_vmalloc_data() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,7 +16,7 @@ fn versioned_sites_keep_accuracy_markers_precision_and_native_vmalloc_data() -> 
     let site = &result.allocation_sites.ok_or("no sites")?.sites[0];
     assert_eq!(site.bytes, u64::MAX);
     assert!(site.attributes.iter().any(|v| v == "accurate:no"));
-    assert!(matches!(result.files.values["vmallocinfo"], MemoryValue::Text(_)));
+    assert!(matches!(result.files.parsed["vmallocinfo"], ParsedMemoryValue::List(_)));
     for text in [
         "",
         "allocinfo - version: 9.0\n",

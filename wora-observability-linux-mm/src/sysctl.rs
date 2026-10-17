@@ -11,9 +11,9 @@ use std::path::Path;
 /// settings, plus selected filesystem cache and descriptor inventories.
 /// New VM, shared-memory, and NUMA-balancing names are retained automatically.
 ///
-/// Values remain strings in their source units, preserving signed values,
-/// integers larger than `i64::MAX`, vectors, and textual settings. Only trailing
-/// newlines are removed. Keys use dotted sysctl names, such as `vm.swappiness`.
+/// Values are structured scalars, vectors or named filesystem accounting fields,
+/// preserving native units and exact integers larger than `i64::MAX`.
+/// Keys use dotted sysctl names, such as `vm.swappiness`.
 /// Reads are synchronous and independent; a failed file does not discard other
 /// values. A snapshot is not an atomic view of all settings.
 ///
@@ -23,9 +23,10 @@ use std::path::Path;
 #[derive(Clone, Default, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct MemorySysctls {
-    /// Successfully read values, keyed by dotted sysctl name.
-    pub values: BTreeMap<String, String>,
-    /// Failed reads, including permission-denied files and missing namespaces.
+    /// Parsed scalars, numeric arrays and named filesystem counter vectors.
+    /// Keys use dotted sysctl names. Raw file contents are not retained.
+    pub parsed: BTreeMap<String, crate::ParsedMemoryValue>,
+    /// Failed reads or parses, including denied files and missing namespaces.
     ///
     /// Directory enumeration failures use the namespace (`vm`, `kernel`, or
     /// `fs`) as the key. Unsupported settings absent from a directory are omitted.
@@ -148,9 +149,14 @@ impl MemorySysctls {
                 _ => {}
             }
             match self.read_value(&entry, &key) {
-                Ok(Some(value)) => {
-                    self.values.insert(key, value);
-                }
+                Ok(Some(value)) => match crate::parse_sysctl_value(&key, &value) {
+                    Ok(parsed) => {
+                        self.parsed.insert(key, parsed);
+                    }
+                    Err(error) => {
+                        self.unavailable.insert(key, error);
+                    }
+                },
                 Ok(None) => {}
                 Err(error) => {
                     self.unavailable.insert(key, error.into());

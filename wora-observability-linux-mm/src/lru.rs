@@ -1,4 +1,4 @@
-use crate::{MemoryFiles, MemoryReadError, MemoryValue};
+use crate::{MemoryFiles, MemoryReadError};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -8,7 +8,7 @@ use std::path::Path;
 pub struct LruStats {
     /// Stable sysfs `enabled` and `min_ttl_ms` state.
     pub policy: MemoryFiles,
-    /// Native debugfs `lru_gen` and `lru_gen_full`; kernel-dependent formats.
+    /// Per-file errors for debugfs `lru_gen` and `lru_gen_full`.
     pub debug: MemoryFiles,
     /// Parsed basic histograms; no generation aging or reclaim is requested.
     pub histograms: Option<Vec<LruHistogram>>,
@@ -51,21 +51,8 @@ impl LruStats {
     pub fn from_sys_root(root: impl AsRef<Path>) -> Self {
         let root = root.as_ref();
         let policy = MemoryFiles::from_names(root.join("kernel/mm/lru_gen"), &["enabled", "min_ttl_ms"]);
-        let mut debug = MemoryFiles::from_names(root.join("kernel/debug"), &["lru_gen", "lru_gen_full"]);
-        let histograms = match debug.values.get("lru_gen") {
-            Some(MemoryValue::Text(text)) => match LruHistogram::parse(text) {
-                Ok(histograms) => Some(histograms),
-                Err(error) => {
-                    debug.unavailable.insert("lru_gen.parsed".into(), error);
-                    None
-                }
-            },
-            Some(_) => {
-                debug.unavailable.insert("lru_gen.parsed".into(), invalid());
-                None
-            }
-            None => None,
-        };
+        let mut debug = MemoryFiles::from_names(root.join("kernel/debug"), &["lru_gen_full"]);
+        let histograms = debug.read_with(&root.join("kernel/debug"), "lru_gen", 4 * 1024 * 1024, LruHistogram::parse);
         Self { policy, debug, histograms }
     }
 }

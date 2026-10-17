@@ -39,7 +39,8 @@ pub struct CgroupMemory {
     /// Sizes retain bytes, counters retain counts, and pressure retains kernel
     /// percentages/microseconds. `memory.events` and `memory.events.local` stay
     /// separate: the former normally includes descendants, the latter does not.
-    pub values: BTreeMap<String, CgroupMemoryValue>,
+    /// Raw file contents are not retained.
+    pub parsed: BTreeMap<String, CgroupMemoryValue>,
     /// Per-file read/parse failures; directory failures use `.`.
     pub unavailable: BTreeMap<String, MemoryReadError>,
     /// Action controls and non-regular or write-only entries not opened.
@@ -59,8 +60,10 @@ pub enum CgroupMemoryValue {
     Numa(BTreeMap<String, BTreeMap<u32, u64>>),
     /// Cgroup-specific memory pressure stall information.
     Pressure(MemoryPressure),
-    /// Literal `max`, or an unfamiliar file's native text without trailing newlines.
+    /// Literal `max` or a textual setting with no numeric meaning.
     Text(String),
+    /// Structured CPU/node ranges, HugeTLB NUMA counters or future layouts.
+    Structured(crate::ParsedMemoryValue),
 }
 
 impl CgroupMemoryStats {
@@ -192,7 +195,7 @@ impl CgroupMemory {
             })();
             match result {
                 Ok(Some(value)) => {
-                    snapshot.values.insert(name.into(), value);
+                    snapshot.parsed.insert(name.into(), value);
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -225,7 +228,7 @@ fn ancestor_file(name: &str) -> bool {
 
 fn parse_value(name: &str, text: &str) -> Result<CgroupMemoryValue, MemoryReadError> {
     match name {
-        "cpuset.mems" | "cpuset.mems.effective" => Ok(CgroupMemoryValue::Text(text.trim_end_matches('\n').into())),
+        "cpuset.mems" | "cpuset.mems.effective" => crate::structured::ranges(text).map(CgroupMemoryValue::Structured),
         name if matches!(
             name,
             "memory.stat" | "memory.events" | "memory.events.local" | "memory.swap.events" | "memory.zswap.events"
@@ -267,8 +270,14 @@ fn parse_value(name: &str, text: &str) -> Result<CgroupMemoryValue, MemoryReadEr
             let value = text.trim();
             if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
                 Ok(CgroupMemoryValue::Number(unsigned(value)?))
-            } else if value == "max" || !known_scalar(name) {
-                Ok(CgroupMemoryValue::Text(text.trim_end_matches('\n').into()))
+            } else if value == "max" {
+                Ok(CgroupMemoryValue::Text(value.into()))
+            } else if !known_scalar(name) {
+                match crate::parse_memory_file(name, text)? {
+                    Some(crate::ParsedMemoryValue::Text(value)) => Ok(CgroupMemoryValue::Text(value)),
+                    Some(value) => Ok(CgroupMemoryValue::Structured(value)),
+                    None => Err(invalid("unsupported cgroup memory-information layout")),
+                }
             } else {
                 Err(invalid("malformed scalar memory value"))
             }

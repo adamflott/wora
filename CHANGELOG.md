@@ -5,6 +5,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- next-header -->
+## [Unreleased]
+
+### Features
+
+- Add structured `parsed` maps for process KSM counters and flags, sysctl numbers and vectors, NUMA tables, process memory information, zram statistics, SLUB node counts, cgroup node constraints, and hugepage policy selections.
+- Name filesystem sysctl vector fields, preserve exact signed/unsigned integers and source units, and expose CPU/node ranges, bitmap words, and policy choices as structured values.
+
+### Changes
+
+- Store only structured data in memory-file, sysctl, cgroup, and hugepage `parsed` maps; remove their former `values` maps and raw-value types. Parse specialized diagnostics during their bounded read without retaining source text.
+- Structure smaps headers and accounting into mapping metadata, quantities, and flag lists. Report malformed or unsupported layouts under their source names in `unavailable`, without retaining raw contents or partial records. Raw-only serialized snapshots require migration.
+
+### Tests
+
+- Add coverage for mixed KSM counter/boolean records, filesystem sysctl layouts, integer limits, malformed data, native bases and units, captured process files, structured-only serialization, and propagation through memory events.
+
 ## [0.0.18] - 2026-10-16
 
 ### Features

@@ -1,4 +1,4 @@
-use crate::{MemoryFiles, MemoryReadError, MemoryValue};
+use crate::{MemoryFiles, MemoryReadError};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -6,7 +6,7 @@ use std::path::Path;
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct FragmentationStats {
-    /// Original `unusable_index` and `extfrag_index` files with per-file failures.
+    /// Per-file failures for `unusable_index` and `extfrag_index`.
     pub files: MemoryFiles,
     /// Fraction of free memory unusable for an allocation order, in thousandths.
     pub unusable: Option<Vec<FragmentationZone>>,
@@ -34,23 +34,10 @@ impl FragmentationStats {
     }
     /// Read a supplied debugfs mount or captured directory.
     pub fn from_debug_root(root: impl AsRef<Path>) -> Self {
-        let mut files = MemoryFiles::from_names(root.as_ref().join("extfrag"), &["unusable_index", "extfrag_index"]);
-        let mut parse = |name: &str| match files.values.get(name) {
-            Some(MemoryValue::Text(text)) => match FragmentationZone::parse_table(text) {
-                Ok(value) => Some(value),
-                Err(error) => {
-                    files.unavailable.insert(format!("{name}.parsed"), error);
-                    None
-                }
-            },
-            Some(_) => {
-                files.unavailable.insert(format!("{name}.parsed"), invalid());
-                None
-            }
-            None => None,
-        };
-        let unusable = parse("unusable_index");
-        let external = parse("extfrag_index");
+        let root = root.as_ref().join("extfrag");
+        let mut files = MemoryFiles::default();
+        let unusable = files.read_with(&root, "unusable_index", 4 * 1024 * 1024, FragmentationZone::parse_table);
+        let external = files.read_with(&root, "extfrag_index", 4 * 1024 * 1024, FragmentationZone::parse_table);
         Self { files, unusable, external }
     }
 }

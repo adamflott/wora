@@ -6,7 +6,7 @@ use std::path::Path;
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct PageOwnerStats {
-    /// Native per-page and aggregate stack/handle accounting; independently bounded.
+    /// Structured numeric settings and errors for unsupported stack/page dumps.
     pub files: MemoryFiles,
 }
 
@@ -43,7 +43,7 @@ impl PageOwnerStats {
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct KernelLeakStats {
-    /// Native suspect objects and stack traces, with independent read errors.
+    /// Read errors or an unsupported-layout error for unparsed suspect dumps.
     pub files: MemoryFiles,
 }
 

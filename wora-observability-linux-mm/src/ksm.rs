@@ -12,7 +12,7 @@ pub struct KsmStats {
     pub global: MemoryFiles,
     /// PID associated with the process KSM files.
     pub pid: u32,
-    /// Process-specific KSM counters, retained in their native text format.
+    /// Process-specific KSM counters and yes/no flags in `parsed["ksm_stat"]`.
     pub process: MemoryFiles,
 }
 

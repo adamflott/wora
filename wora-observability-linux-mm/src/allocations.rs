@@ -1,11 +1,11 @@
-use crate::{MemoryFiles, MemoryReadError, MemoryValue};
+use crate::{MemoryFiles, MemoryReadError};
 use std::path::Path;
 
 /// Opt-in kernel allocation attribution, retaining native vmalloc area details.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct KernelAllocationStats {
-    /// Original `allocinfo` and `vmallocinfo` files; limited to 4 MiB each.
+    /// Structured vmalloc areas and per-file errors; limited to 4 MiB each.
     pub files: MemoryFiles,
     /// Parsed allocation sites; absent if unsupported, inaccessible or malformed.
     pub allocation_sites: Option<AllocationSites>,
@@ -43,21 +43,9 @@ impl KernelAllocationStats {
     /// Read explicit procfs/captured files; symbols may be restricted or redacted.
     /// Allocation profiling requires `CONFIG_MEM_ALLOC_PROFILING` and enablement.
     pub fn from_proc_root(root: impl AsRef<Path>) -> Self {
-        let mut files = MemoryFiles::from_names(root, &["allocinfo", "vmallocinfo"]);
-        let allocation_sites = match files.values.get("allocinfo") {
-            Some(MemoryValue::Text(text)) => match AllocationSites::parse(text) {
-                Ok(value) => Some(value),
-                Err(error) => {
-                    files.unavailable.insert("allocinfo.parsed".into(), error);
-                    None
-                }
-            },
-            Some(_) => {
-                files.unavailable.insert("allocinfo.parsed".into(), invalid("expected allocinfo table"));
-                None
-            }
-            None => None,
-        };
+        let root = root.as_ref();
+        let mut files = MemoryFiles::from_names(root, &["vmallocinfo"]);
+        let allocation_sites = files.read_with(root, "allocinfo", 4 * 1024 * 1024, AllocationSites::parse);
         Self { files, allocation_sites }
     }
 }
@@ -72,7 +60,7 @@ impl AllocationSites {
             .map(str::trim)
             .ok_or_else(|| invalid("missing allocinfo version"))?;
         if !matches!(version, "1.0" | "2.0") {
-            return Err(invalid("unsupported allocinfo version; native file retained"));
+            return Err(invalid("unsupported allocinfo version"));
         }
         let mut sites = Vec::new();
         for line in lines.filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#')) {

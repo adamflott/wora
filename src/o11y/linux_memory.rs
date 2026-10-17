@@ -45,7 +45,7 @@ pub struct LinuxMemoryStats {
     pub slabinfo: Option<SlabInfo>,
     /// Free lists and pageblock counts by migration type.
     pub pagetypeinfo: Option<PageTypeInfo>,
-    /// Memory sysctl settings and per-key access failures, in native text units.
+    /// Structured memory sysctl settings in native units, with per-key failures.
     ///
     /// Includes VM, kernel shared-memory and NUMA, and selected filesystem
     /// settings. Action controls and `vm.stat_refresh` are never opened.

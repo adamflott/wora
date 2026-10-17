@@ -42,3 +42,9 @@ kernel does not. Neither capture contains capped values or mixed blocks.
 `synthetic-pagetypeinfo` covers sparse nodes, varying order widths, large
 integers, unknown names, reordered columns, capped counts and optional mixed
 tables. The root reporter uses a copy of this synthetic input.
+
+The `process-information-{status,stat,limits,numa_maps}` files are separate native
+file values extracted from the normal-user memory diagnostics smoke capture on
+the local Linux Docker VM on 2026-10-16. Source whitespace, units, and counters
+are retained. They test parser behavior rather than expected values for a live
+process; process memory can change between individual file reads.

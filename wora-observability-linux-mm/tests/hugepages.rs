@@ -3,7 +3,7 @@
 use std::fs;
 use std::os::unix::fs::symlink;
 
-use wora_observability_linux_mm::{HugePageFiles, HugePageStats, HugePageValue, MemoryReadError, MemorySkipReason};
+use wora_observability_linux_mm::{HugePageFiles, HugePageStats, MemoryReadError, MemorySkipReason, ParsedMemoryValue};
 
 #[test]
 fn collects_policy_per_size_stats_and_sparse_node_pools() -> Result<(), Box<dyn std::error::Error>> {
@@ -24,17 +24,20 @@ fn collects_policy_per_size_stats_and_sparse_node_pools() -> Result<(), Box<dyn 
         fs::write(path, value)?;
     }
     let snapshot = HugePageStats::from_sys_root(root.path());
-    assert_eq!(snapshot.transparent.values["enabled"], HugePageValue::Text("always [madvise] never".into()));
-    assert_eq!(snapshot.transparent.values["hpage_pmd_size"], HugePageValue::Number(2_097_152));
     assert_eq!(
-        snapshot.transparent.values["hugepages-64kB/stats/future_counter"],
-        HugePageValue::Number(u64::MAX)
+        snapshot.transparent.parsed["enabled"].get("selected"),
+        Some(&ParsedMemoryValue::Text("madvise".into()))
     );
-    assert_eq!(snapshot.hugetlb.values["hugepages-1048576kB/free_hugepages"], HugePageValue::Number(2));
-    assert_eq!(snapshot.nodes[&99].values["hugepages-2048kB/free_hugepages"], HugePageValue::Number(7));
+    assert_eq!(snapshot.transparent.parsed["hpage_pmd_size"], ParsedMemoryValue::Unsigned(2_097_152));
+    assert_eq!(
+        snapshot.transparent.parsed["hugepages-64kB/stats/future_counter"],
+        ParsedMemoryValue::Unsigned(u64::MAX)
+    );
+    assert_eq!(snapshot.hugetlb.parsed["hugepages-1048576kB/free_hugepages"], ParsedMemoryValue::Unsigned(2));
+    assert_eq!(snapshot.nodes[&99].parsed["hugepages-2048kB/free_hugepages"], ParsedMemoryValue::Unsigned(7));
     #[cfg(feature = "serde1")]
     assert_eq!(
-        serde_json::to_value(&snapshot)?["transparent"]["values"]["hugepages-64kB/stats/anon_fault_alloc"],
+        serde_json::to_value(&snapshot)?["transparent"]["parsed"]["hugepages-64kB/stats/anon_fault_alloc"],
         9_007_199_254_740_993_u64
     );
     Ok(())
@@ -51,7 +54,7 @@ fn isolates_failures_and_never_opens_demotion_actions_or_symlinks() -> Result<()
     fs::write(pool.join("surplus_hugepages"), "18446744073709551616\n")?;
     symlink(pool.join("free_hugepages"), pool.join("linked_value"))?;
     let snapshot = HugePageFiles::from_directory(root.path());
-    assert_eq!(snapshot.values["hugepages-2048kB/free_hugepages"], HugePageValue::Number(10));
+    assert_eq!(snapshot.parsed["hugepages-2048kB/free_hugepages"], ParsedMemoryValue::Unsigned(10));
     assert_eq!(snapshot.skipped["hugepages-2048kB/demote"], MemorySkipReason::WriteOnly);
     assert_eq!(snapshot.skipped["hugepages-2048kB/linked_value"], MemorySkipReason::NotRegularFile);
     assert!(matches!(snapshot.unavailable["hugepages-2048kB/nr_hugepages"], MemoryReadError::ReadFailed(_)));

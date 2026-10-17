@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 use std::{fs, os::unix::fs::symlink};
-use wora_observability_linux_mm::{MemoryValue, SlubStats};
+use wora_observability_linux_mm::{ParsedMemoryValue, SlubStats};
 
 #[test]
 fn cache_aliases_do_not_duplicate_accounting_and_actions_are_excluded() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,8 +17,15 @@ fn cache_aliases_do_not_duplicate_accounting_and_actions_are_excluded() -> Resul
     assert_eq!(result.caches.len(), 1);
     assert_eq!(result.aliases["kmalloc-64"], ":0000040");
     let files = &result.caches[":0000040"];
-    assert_eq!(files.values["alloc_fastpath"], MemoryValue::Unsigned(u64::MAX));
-    assert_eq!(files.values["objects"], MemoryValue::Text("100 N0=25 N9=75".into()));
+    assert_eq!(files.parsed["alloc_fastpath"], ParsedMemoryValue::Unsigned(u64::MAX));
+    assert_eq!(files.parsed["objects"].get("total").and_then(ParsedMemoryValue::as_u64), Some(100));
+    assert_eq!(
+        files.parsed["objects"]
+            .get("nodes")
+            .and_then(|nodes| nodes.get("9"))
+            .and_then(ParsedMemoryValue::as_u64),
+        Some(75)
+    );
     assert!(!files.unavailable.contains_key("validate"));
     assert!(!files.unavailable.contains_key("shrink"));
     assert!(result.unavailable.contains_key("escape"));

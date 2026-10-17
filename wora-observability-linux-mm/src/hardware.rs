@@ -39,17 +39,7 @@ impl MemoryHardwareStats {
             memory: MemoryFiles::from_names(root.join("devices/system/memory"), &["block_size_bytes", "auto_online_blocks", "crash_hotplug"]),
             ..Self::default()
         };
-        if let Some(crate::MemoryValue::Text(value)) = result.memory.values.get("block_size_bytes") {
-            match u64::from_str_radix(value.trim(), 16) {
-                Ok(value) => result.block_size_bytes = Some(value),
-                Err(error) => {
-                    result
-                        .memory
-                        .unavailable
-                        .insert("block_size_bytes.parsed".into(), MemoryReadError::ReadFailed(error.to_string()));
-                }
-            }
-        }
+        result.block_size_bytes = result.memory.parsed.get("block_size_bytes").and_then(crate::ParsedMemoryValue::as_u64);
         for (relative, prefix, blocks) in [("devices/system/memory", "memory", true), ("devices/system/node", "node", false)] {
             match entries(&root.join(relative)) {
                 Ok(entries) => {

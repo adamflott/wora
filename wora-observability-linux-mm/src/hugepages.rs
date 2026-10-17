@@ -26,24 +26,13 @@ pub struct HugePageFiles {
     /// Values keyed by relative path, retaining size labels and field names.
     ///
     /// Numeric values retain source units: page counts, byte sizes, milliseconds,
-    /// and other tunables are not added together or normalized. Policy text
-    /// retains all choices and brackets marking the selected choice.
-    pub values: BTreeMap<String, HugePageValue>,
+    /// and other tunables are not added together or normalized. Policies expose
+    /// their selected value and choices. Raw file contents are not retained.
+    pub parsed: BTreeMap<String, crate::ParsedMemoryValue>,
     /// Per-file failures; directory failures use the directory path or `.`.
     pub unavailable: BTreeMap<String, MemoryReadError>,
     /// Entries not opened, including `demote`, write-only files, and symlinks.
     pub skipped: BTreeMap<String, MemorySkipReason>,
-}
-
-/// A native sysfs numeric value or policy string.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde1", serde(untagged))]
-pub enum HugePageValue {
-    /// Unsigned integer, in the units documented by the kernel for this file.
-    Number(u64),
-    /// Native text, with only trailing newlines removed.
-    Text(String),
 }
 
 impl HugePageStats {
@@ -166,19 +155,11 @@ impl HugePageFiles {
                 continue;
             }
             let result = fs::read_to_string(entry.path()).map_err(MemoryReadError::from).and_then(|text| {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() && trimmed.bytes().all(|byte| byte.is_ascii_digit()) {
-                    trimmed
-                        .parse::<u64>()
-                        .map(HugePageValue::Number)
-                        .map_err(|error| MemoryReadError::ReadFailed(error.to_string()))
-                } else {
-                    Ok(HugePageValue::Text(text.trim_end_matches('\n').into()))
-                }
+                crate::parse_memory_file(root.join(&path), &text)?.ok_or_else(|| MemoryReadError::ReadFailed("unsupported hugepage-information layout".into()))
             });
             match result {
                 Ok(value) => {
-                    self.values.insert(field, value);
+                    self.parsed.insert(field, value);
                 }
                 Err(error) => {
                     self.unavailable.insert(field, error);

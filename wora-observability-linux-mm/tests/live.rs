@@ -55,13 +55,13 @@ fn reads_live_pagetypeinfo_or_reports_permission_denied() {
 #[ignore = "requires Linux /proc/sys; reads settings as the current user and skips action controls"]
 fn reads_live_memory_sysctls_without_opening_action_controls() {
     let snapshot = MemorySysctls::current();
-    assert!(snapshot.values.contains_key("vm.swappiness"));
-    assert!(!snapshot.values.contains_key("vm.stat_refresh"));
+    assert!(snapshot.parsed.contains_key("vm.swappiness"));
+    assert!(!snapshot.parsed.contains_key("vm.stat_refresh"));
     if std::path::Path::new("/proc/sys/vm/stat_refresh").exists() {
         assert_eq!(snapshot.skipped["vm.stat_refresh"], SysctlSkipReason::ReadSideEffect);
     }
     for name in ["vm.compact_memory", "vm.drop_caches"] {
-        assert!(!snapshot.values.contains_key(name));
+        assert!(!snapshot.parsed.contains_key(name));
     }
 }
 
@@ -72,16 +72,16 @@ fn reads_live_cgroup_v2_memory() {
     assert!(snapshot.unavailable.is_empty(), "{:?}", snapshot.unavailable);
     let current = snapshot.current.unwrap();
     assert!(current.directory.is_absolute());
-    assert!(!current.values.contains_key("memory.reclaim"));
+    assert!(!current.parsed.contains_key("memory.reclaim"));
 }
 
 #[test]
 #[ignore = "requires readable Linux THP/HugeTLB sysfs interfaces"]
 fn reads_live_hugepages_without_demotion_actions() {
     let snapshot = HugePageStats::current();
-    assert!(!snapshot.transparent.values.is_empty());
-    assert!(!snapshot.hugetlb.values.is_empty());
-    assert!(!snapshot.hugetlb.values.keys().any(|path| path.ends_with("/demote")));
+    assert!(!snapshot.transparent.parsed.is_empty());
+    assert!(!snapshot.hugetlb.parsed.is_empty());
+    assert!(!snapshot.hugetlb.parsed.keys().any(|path| path.ends_with("/demote")));
 }
 
 #[test]

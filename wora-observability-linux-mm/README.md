@@ -19,11 +19,57 @@ and its dependencies are enabled only on Linux. Single-file parsers use
 `procfs-core`, and their live readers implement procfs's `Current` trait.
 Reads are synchronous. Rust 1.95 or newer is required.
 
+File snapshots expose a `parsed` map without retaining raw source contents.
+This includes process KSM counters/yes-no flags, numeric sysctl scalars
+and arrays, named filesystem vectors, NUMA counter/memory tables, CPU/node ranges
+and bitmaps, process status/limits/stat/maps/NUMA mappings, vmalloc areas, zram
+vectors, SLUB node counts, and selected policy/size values. This replaces the
+former `values` maps and raw-value types; raw-only serialized snapshots require
+migration. Textual enums, paths, labels and units remain strings.
+
+For example, the process KSM view contains:
+
+```json
+{"parsed": {
+  "ksm_stat": {
+    "ksm_rmap_items": 0,
+    "ksm_zero_pages": 0,
+    "ksm_merging_pages": 0,
+    "ksm_process_profit": 0,
+    "ksm_merge_any": false,
+    "ksm_mergeable": false
+  }
+}}
+```
+
+Sysctl `parsed["fs.dentry-state"]` names `nr_dentry`, `nr_unused`, `age_limit`
+(seconds), `want_pages`, and `nr_negative`, retaining reserved slots and future
+trailing fields as arrays. `fs.file-nr` names `nr_files`, `nr_free_files`, and
+`max_files`; inode vectors name `nr_inodes` and `nr_unused`. Inode-state's remaining
+five slots are reserved in the [kernel UAPI](https://github.com/torvalds/linux/blob/master/include/uapi/linux/fs.h).
+`vm.lowmem_reserve_ratio` remains an array even with a single value. Unknown
+numeric vectors retain their order; zero/one sysctl integers are not guessed to
+be booleans or policy bitmasks.
+
+`ParsedMemoryValue` uses exact unsigned/signed integers, booleans, maps, lists and
+text. Quantities retain `{ "value": 12, "unit": "kB" }`; no page-size or unit
+conversion is assumed. CPU/node lists are compact inclusive `{start,end}` ranges,
+so large ranges are not expanded. Bitmap `words` retain most-significant-first
+32-bit word order. Policies expose `selected` and ordered `choices`. Hexadecimal
+sysfs values and process umasks are parsed in their documented bases.
+
+Malformed known records, duplicate names, overflow and incomplete vectors record
+the source name in `unavailable` and omit that record. No successful partial
+record or raw fallback is returned. Unfamiliar multiline diagnostic dumps and
+stack traces are reported as unsupported; specialized allocation, fragmentation
+and basic MGLRU models are parsed during the bounded read. `parse_memory_file` and
+`parse_sysctl_value` offer the same pure parsers for captured text without I/O.
+
 `NumaStats::{current,from_sys_root}` captures node inventory, sparse node IDs,
 per-node `meminfo`, `numastat`, `vmstat`, CPU lists/maps, distances, and memory-tier
-node lists. WORA reports this as `linux_mm.numa`. Native tables and their units
-remain text in `MemoryFiles`; unsigned/signed scalar files retain exact integer
-values. No page size is assumed. Each file has an independent error, is limited
+node lists. WORA reports this as `linux_mm.numa`. Tables expose named counters
+and quantities in `MemoryFiles.parsed`; unsigned/signed scalar files retain exact
+integer values. No page size is assumed. Each file has an independent error, is limited
 to 4 MiB, and is never returned as a successful truncated value. Selected
 directories are limited to 4096 entries. Symlinks and write-only files are not
 opened. Normal-user visibility depends on sysfs mounts and host policy.
@@ -32,7 +78,8 @@ See the [node ABI](https://github.com/torvalds/linux/blob/master/Documentation/A
 `CompressedMemoryStats::{current,from_sys_root}` reports zswap module policy and
 debugfs counters plus sparse zram devices. WORA includes `linux_mm.compressed`.
 Zram `mm_stat` has named byte/count fields, optional newer fields and preserved
-future trailing values; native `mm_stat`, `io_stat` and `bd_stat` remain available.
+future trailing values in `ZramDevice.memory`; `io_stat` and `bd_stat` have named
+fields in `ZramDevice.files.parsed`.
 Device links resolve only inside the supplied sysfs root. No reset, writeback,
 recompression or compaction controls are opened. Debugfs is never mounted;
 restricted zswap counters remain explicit access failures. These views overlap
@@ -49,7 +96,7 @@ files produce explicit errors without affecting other collectors.
 pinned, page-table and swap memory), limits, fault counters in `stat`, and OOM
 preferences. `ProcessMemoryDetails::{current,from_process_root}` additionally
 reads `maps`, `smaps` and `numa_maps`; parsed smaps mappings retain address ranges,
-original headers/pathnames, every field, native units and unfamiliar VM flags.
+permissions, offsets, devices, inodes, pathnames, quantities and VM flag lists.
 Large files fail explicitly at the 4 MiB limit rather than returning partial
 mapping accounting. These reads never touch `clear_refs` or change OOM scores.
 
@@ -66,22 +113,22 @@ include this potentially large tree on the separate diagnostic cadence.
 caller/NUMA metadata. Known allocinfo versions additionally expose named byte
 and allocation counts with source location and all trailing attributes. An
 `accurate:no` marker means absolute counts are not accurate; it is never dropped.
-Unknown versions retain the native file with a separate parse error. Profiling
+Unknown versions produce a parse error without retaining native text. Profiling
 must already be supported/enabled; this collector never enables it.
 
 `FragmentationStats::{current,from_debug_root}` (`Fragmentation` diagnostics)
 reads debugfs `extfrag/{unusable_index,extfrag_index}`. Parsed node/zone/order
 indices use exact integer thousandths; `-1000` retains the external-fragmentation
-`-1.000` sentinel (the allocation would succeed). Native tables are also retained.
+`-1.000` sentinel (the allocation would succeed). Source text is discarded.
 This commonly needs root and a kernel exposing the debugfs interface. No
 compaction is triggered and existing VM compaction counters remain separate.
 
 `LruStats::{current,from_sys_root}` (`LruGenerations` diagnostics) retains MGLRU
-`enabled`/`min_ttl_ms`, native `lru_gen_full`, and basic age histograms scoped to
+`enabled`/`min_ttl_ms` and basic age histograms scoped to
 memory-cgroup ID/path and NUMA node. Sequence numbers, millisecond ages and
 anonymous/file page counts stay separate. Histograms are not cumulative or an
 exact working-set guarantee. Debugfs typically needs root, `CONFIG_LRU_GEN` is
-required, and full historical stats depend on `CONFIG_LRU_GEN_STATS`. No new
+required. The unsupported `lru_gen_full` layout is reported in `unavailable`. No new
 generation is created and no reclaim or enablement commands are written.
 
 `PhysicalPageStats` reads `kpageflags`, `kpagecount` and `kpagecgroup` for an
@@ -99,9 +146,9 @@ without a range is rejected. No whole-machine range or process address space is
 guessed, no page contents are read, and no page flags are modified.
 
 `PageOwnerStats` and `KernelLeakStats` read existing debugfs tracking via separate
-WORA `PageOwner` and `KernelLeaks` selections. The former preserves per-page
-allocation dumps and aggregate stack/handle data; the latter retains suspected
-leaked objects and backtraces. Both commonly need root and special kernel
+WORA `PageOwner` and `KernelLeaks` selections. Numeric page-owner settings remain
+available; per-page/stack dumps and kmemleak findings currently have no structured
+parser and are reported as unsupported, without retaining their text. Both commonly need root and special kernel
 configuration/enablement (`page_owner=on` normally requires a reboot). No filters,
 tracking enablement, leak-list clearing or scan commands are written. Reading
 kmemleak may itself incur scanning work on some kernels, hence its separate opt-in.
@@ -112,8 +159,8 @@ errors instead of claiming a partial dump is complete.
 `MemoryHardwareStats::{current,from_sys_root}` (`MemoryHardware` diagnostics)
 captures memory-block size/state/removability/zones, EDAC controller and DIMM/
 rank/csrow labels and errors, per-node poisoned-page recovery counters, and CMA
-area/range PFNs, counts and allocation bitmaps. Values retain native formats
-(including hexadecimal memory block sizes); controller/DIMM scopes overlap and
+area/range PFNs, counts and allocation bitmaps. Numeric bases and bitmap words
+are parsed without changing their meaning; controller/DIMM scopes overlap and
 must not be summed indiscriminately. Normal sysfs inventory is often readable
 without root; CMA debugfs commonly needs root. Hardware drivers and kernel
 configuration determine availability. No online/offline, poison injection,
@@ -144,7 +191,7 @@ See [ftrace instances](https://docs.kernel.org/trace/ftrace.html#instances).
 including usage, limits, swap/zswap, named counters, local/hierarchical events,
 NUMA categories and pressure. Numeric values retain their kernel units;
 unlimited limits serialize as the literal `"max"`. Unknown counter names are
-preserved; unfamiliar file layouts retain their text. `memory.reclaim` is never
+preserved; unsupported file layouts produce per-file errors. `memory.reclaim` is never
 opened. `ancestors` contains visible parents' current usage and limit files,
 nearest first, stopping at the selected mount point. Limits are not combined
 into an effective budget, and invisible ancestors cannot be accounted for.
@@ -165,9 +212,9 @@ limits remain separate; no effective allocation budget is inferred.
 `/sys/kernel/mm/transparent_hugepage`, global pools under
 `/sys/kernel/mm/hugepages`, and per-node pools under
 `/sys/devices/system/node/node*/hugepages`. `transparent`, `hugetlb`, and `nodes`
-keep separate maps of relative file paths to numeric or text values. Per-size
-counter names, sparse node IDs, and policy strings such as
-`always [madvise] never` are retained. Values remain in each file's units;
+keep separate `parsed` maps of relative file paths to structured values. Per-size
+counter names, sparse node IDs, and selected policy choices are retained.
+Values remain in each file's units;
 counts are not assumed to be bytes or added across page sizes. `demote` and
 write-only controls are never opened. Symlinks are skipped and traversal is
 bounded. `from_sys_root(root)` supports captured sysfs trees. See
@@ -200,8 +247,8 @@ command or writing any files:
 use wora_observability_linux_mm::MemorySysctls;
 
 let snapshot = MemorySysctls::current();
-for (name, value) in &snapshot.values {
-    println!("{name} = {value}");
+for (name, value) in &snapshot.parsed {
+    println!("{name} = {value:?}");
 }
 for (name, error) in &snapshot.unavailable {
     eprintln!("{name}: {error:?}");
@@ -215,10 +262,10 @@ entries are `fs.file-max`, `fs.file-nr`, `fs.nr_open`, `fs.inode-nr`,
 names are included automatically. Other kernel/filesystem settings, nested
 directories, and symlinks are not read.
 
-Keys use dotted sysctl names. Values remain strings in native kernel units;
-only trailing newlines are removed. Thus signed values, tab-separated vectors,
-text such as `Node`, and large unsigned limits such as
-`kernel.shmall = 18446744073692774399` are preserved without numeric conversion.
+Keys use dotted sysctl names. Values use exact signed/unsigned integers, ordered
+numeric arrays, named filesystem counters, or textual settings such as `Node`.
+Native units and large unsigned limits such as
+`kernel.shmall = 18446744073692774399` are preserved without floating-point conversion.
 Collection is synchronous and best effort, not an atomic snapshot. A failure
 to read one file does not discard successful reads. `unavailable` distinguishes
 permission errors, missing namespaces/disappearing files, and other read

@@ -85,8 +85,10 @@ fn diagnostic_selection_caching_and_independent_timestamps() -> Result<(), Box<d
         .ok_or("no diagnostics")?;
     assert_eq!(initial.sampled_at, cached.sampled_at);
     assert_eq!(
-        cached.process_mappings.as_ref().ok_or("no mappings")?.mappings.as_ref().ok_or("bad mappings")?[0].fields["Rss"],
-        "12 kB"
+        cached.process_mappings.as_ref().ok_or("no mappings")?.mappings.as_ref().ok_or("bad mappings")?[0].fields["Rss"]
+            .get("value")
+            .and_then(wora::o11y::linux_mm::ParsedMemoryValue::as_u64),
+        Some(12)
     );
     let fresh = LinuxMemoryEnvironment::new(CapturedEnvironment, options.with_interval(std::time::Duration::from_nanos(1)))?;
     assert!(
@@ -170,7 +172,10 @@ async fn captured_linux_memory_metrics_reach_host_stats_sinks() -> Result<(), Bo
     tokio::fs::write(root.path().join("sys/vm/swappiness"), "60\n").await?;
     tokio::fs::write(root.path().join("sys/vm/stat_refresh"), [0xff]).await?;
     tokio::fs::write(root.path().join("sys/kernel/shmall"), "18446744073692774399\n").await?;
+    tokio::fs::create_dir_all(root.path().join("sys/fs")).await?;
+    tokio::fs::write(root.path().join("sys/fs/dentry-state"), "317916\t300300\t45\t0\t34063\t0\n").await?;
     tokio::fs::create_dir_all(root.path().join("self")).await?;
+    tokio::fs::write(root.path().join("self/ksm_stat"), "ksm_rmap_items 0\nksm_merge_any: no\n").await?;
     let cgroup_root = root.path().join("cgroup");
     tokio::fs::create_dir_all(cgroup_root.join("workload")).await?;
     tokio::fs::write(root.path().join("self/cgroup"), "0::/workload\n").await?;
@@ -212,8 +217,8 @@ async fn captured_linux_memory_metrics_reach_host_stats_sinks() -> Result<(), Bo
     assert_eq!(mm.zoneinfo.as_ref().ok_or("zoneinfo missing")?.zones[0].free_pages, 9_007_199_254_740_993);
     assert_eq!(mm.swaps.as_ref().ok_or("swaps missing")?.entries[1].size_kib, 9_007_199_254_741);
     assert_eq!(mm.slabinfo.as_ref().ok_or("slabinfo missing")?.caches[1].objects, u64::MAX);
-    assert_eq!(mm.sysctls.values["vm.swappiness"], "60");
-    assert_eq!(mm.sysctls.values["kernel.shmall"], "18446744073692774399");
+    assert_eq!(mm.sysctls.parsed["vm.swappiness"].as_u64(), Some(60));
+    assert_eq!(mm.sysctls.parsed["kernel.shmall"].as_u64(), Some(18_446_744_073_692_774_399));
     assert_eq!(mm.sysctls.skipped["vm.stat_refresh"], wora::o11y::linux_mm::SysctlSkipReason::ReadSideEffect);
     assert_eq!(
         mm.pagetypeinfo.as_ref().ok_or("pagetypeinfo missing")?.nodes[0].free_blocks[0].counts[1],
@@ -233,12 +238,16 @@ async fn captured_linux_memory_metrics_reach_host_stats_sinks() -> Result<(), Bo
     assert_eq!(memory["pressure"]["some"]["total"], 9_007_199_254_740_993_u64);
     assert_eq!(memory["vmstat"]["nr_free_pages"], 1234);
     assert_eq!(memory["buddyinfo"]["zones"][0]["free_blocks"][0], 2553);
-    assert_eq!(memory["sysctls"]["values"]["vm.swappiness"], "60");
-    assert_eq!(memory["sysctls"]["values"]["kernel.shmall"], "18446744073692774399");
-    assert_eq!(memory["cgroup"]["current"]["values"]["memory.current"], 9_007_199_254_740_993_u64);
-    assert_eq!(memory["cgroup"]["current"]["values"]["memory.max"], "max");
-    assert_eq!(memory["cgroup"]["ancestors"][0]["values"]["memory.max"], 1_048_576);
-    assert_eq!(memory["hugepages"]["hugetlb"]["values"]["hugepages-2048kB/free_hugepages"], 7);
+    assert_eq!(memory["sysctls"]["parsed"]["vm.swappiness"], 60);
+    assert!(memory["sysctls"].get("values").is_none());
+    assert_eq!(memory["sysctls"]["parsed"]["kernel.shmall"], 18446744073692774399_u64);
+    assert_eq!(memory["sysctls"]["parsed"]["fs.dentry-state"]["nr_negative"], 34063);
+    assert_eq!(memory["ksm"]["process"]["parsed"]["ksm_stat"]["ksm_rmap_items"], 0);
+    assert_eq!(memory["ksm"]["process"]["parsed"]["ksm_stat"]["ksm_merge_any"], false);
+    assert_eq!(memory["cgroup"]["current"]["parsed"]["memory.current"], 9_007_199_254_740_993_u64);
+    assert_eq!(memory["cgroup"]["current"]["parsed"]["memory.max"], "max");
+    assert_eq!(memory["cgroup"]["ancestors"][0]["parsed"]["memory.max"], 1_048_576);
+    assert_eq!(memory["hugepages"]["hugetlb"]["parsed"]["hugepages-2048kB/free_hugepages"], 7);
     assert_eq!(memory["process"]["pid"], std::process::id());
     assert_eq!(memory["process"]["smaps_rollup"]["values"]["Pss"]["value"], 60);
     assert_eq!(memory["process"]["smaps_rollup"]["values"]["Pss"]["unit"], "kB");
