@@ -10,8 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Features
 
 - Extend Linux memory snapshots with NUMA nodes and tiers, zram/zswap accounting, KSM, process status and limits, and HugeTLB/cpuset cgroup context.
-- Add opt-in process mapping, SLUB, allocation attribution, fragmentation, Multi-Gen LRU, bounded physical-page/pagemap, page-owner, kernel leak, and memory hardware/EDAC/CMA diagnostics, with independent sampling and timestamps.
-- Add managed memory trace events for OOM victims, reclaim timing, compaction, and migration using an explicitly enabled private tracefs instance, plus a configurable `memory_diagnostics` example.
+- Add opt-in process mapping, SLUB, allocation attribution, fragmentation, Multi-Gen LRU, bounded physical-page/pagemap, page-owner, kernel leak, and memory hardware/EDAC/CMA diagnostics.
+- Add `LinuxMemoryOptions` and `LinuxMemoryEnvironment` for selecting diagnostics around an existing telemetry provider, plus `MemoryReporter::with_linux_memory_diagnostics(...)` and `LinuxMemoryOptions::all_snapshots()` for profile configuration. Physical-page and pagemap scans require explicit bounded ranges.
+- Add managed `O11yEventKind::MemoryTrace` events for OOM victims, reclaim timing, compaction, and migration using an explicitly enabled private tracefs instance. Preserve emitting task and victim identities separately, report unsupported events and buffer loss, and flush trace records as additional JSON lines from the reporting profile.
+- Add a configurable `memory_diagnostics` example with report and diagnostic intervals, optional physical and virtual page ranges, dump size limits, and opt-in tracing through a supplied tracefs mount.
 - Add the Linux-only `wora-observability-linux-mm` workspace crate with typed readers for buddy allocator state, zone watermarks and statistics, swap devices, slab caches, and page-type free lists, alongside existing procfs memory, VM, pressure, shared-memory, and physical-map snapshots.
 - Add timestamped `MemorySnapshot` application events, `Wora::memory_stats()` for cached reads without I/O, and `Wora::subscribe_memory_stats()` for watch subscriptions. Snapshots include portable memory and swap totals on Linux and macOS, with detailed Linux data under `linux_mm`.
 - Add `profiles::MemoryReporter` and a minimal `memory_report` example that print the startup snapshot and subsequent samples as JSON lines, flushing each record immediately. Default to stdout, a per-user Unix executor, and a five-second interval, with configurable name, interval, writer, executor, filesystem, and runner options.
@@ -24,21 +26,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Seed the memory cache before application setup and refresh it at the configurable host-statistics interval, including live interval changes. Run periodic collection on a blocking worker and retain the previous sample after failed host refreshes.
 - Keep memory cache and watch updates independent of application event queue backpressure; skip periodic application notifications when the queue is full.
+- Sample selected diagnostics separately from routine host reports, defaulting to a 60-second interval, and retain their own `sampled_at` timestamp while cached data is reused. Expensive diagnostics remain disabled by default, including when running as root.
+- Bound diagnostic file reads, directory enumeration, page ranges, and trace parser state. Report oversized files and short binary reads as failures instead of returning successful partial accounting; retain native units, unknown fields, and allocation accuracy markers.
+- Supervise the memory trace service through the existing observability lifecycle and disable/remove its private instance on normal shutdown or cancellation, with setup and read failures reported as infrastructure failures.
 - Update crate dependencies and simplify example event-loop error handling.
 
 ### Fixes
 
 - Identify the operating system independently of the Linux distribution ID so supported distributions such as Debian can initialize host statistics.
+- Preserve unprefixed hexadecimal memory-block sizes, physical indices, and CPU masks instead of treating digit-only forms as decimal scalars, and expose a checked byte value for memory-block size.
+- Reject malformed fragmentation indices and clear pending trace duration matches after lost or unrecognized records. Keep zero or redacted pagemap PFNs distinct from usable physical-frame identities.
 
 ### Tests
 
 - Add parser and fixture coverage for Linux memory sources, malformed input, numeric limits, sparse nodes, namespace and mount discovery, unavailable files, and excluded controls, plus opt-in live-reader tests.
 - Add runtime coverage for memory caching, subscriptions, application events, interval updates, failed refreshes, full event queues, profile output and writer failures, graceful shutdown, and complete Linux snapshot serialization.
+- Extend fixture coverage to diagnostic collectors, SLUB alias resolution, versioned allocation records, native hexadecimal formats, bounded binary page reads, and exclusion of hardware and allocator action controls.
+- Verify diagnostic selection and independent caching/timestamps, serialization of all selected groups, trace victim identity and matched durations, loss notifications, nonblocking stream cancellation, setup cleanup, and immediate trace JSON output.
 
 ### Documentation
 
 - Document the memory cache and event APIs, reporting profile, Linux reader types, source units, captured-file inputs, access requirements, and collection costs.
 - Record normal-user sysctl access checks and distinguish privileged readable settings from excluded action controls.
+- Document diagnostic selection and example options, explicit page ranges, dump bounds, overlapping accounting scopes, kernel configuration requirements, and independent sampling intervals.
+- Describe private tracefs ownership, event loss, and cleanup limits after abrupt process termination, plus the collection cost of process mappings, page-owner data, and kernel leak findings.
 
 ## [0.0.17] - 2026-08-28
 
