@@ -445,12 +445,15 @@ mod memory_events {
             assert!(!updates.has_changed()?);
 
             for expected in [100, 200] {
-                let event = tokio::time::timeout(Duration::from_secs(2), wora.receiver.recv())
-                    .await?
-                    .ok_or("memory event missing")?;
-                let Event::SystemResource(SystemResourceStat::MemorySnapshot(sample)) = event else {
-                    return Err("expected application memory event".into());
-                };
+                let sample = tokio::time::timeout(Duration::from_secs(2), async {
+                    while let Some(event) = wora.receiver.recv().await {
+                        if let Event::SystemResource(SystemResourceStat::MemorySnapshot(sample)) = event {
+                            return Ok(sample);
+                        }
+                    }
+                    Err("memory event missing")
+                })
+                .await??;
                 assert_eq!(sample.memory.used, expected);
                 assert!(wora.memory_stats().timestamp >= sample.timestamp);
             }
@@ -478,6 +481,8 @@ mod memory_events {
             _is_first_boot: bool,
         ) -> Result<(), Box<dyn std::error::Error>> {
             assert_eq!(wora.memory_stats().memory.used, 6);
+            // The application queue also carries events unrelated to memory.
+            wora.sender.send(Event::App(())).await?;
             Ok(())
         }
 
