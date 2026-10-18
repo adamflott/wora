@@ -128,6 +128,9 @@ impl ProcessPageMap {
 /// Decoded from one native-endian 64-bit `/proc/<pid>/pagemap` entry, normally
 /// by [`ProcessPageMap`]. Flags and payload fields all come from `raw`;
 /// [`Self::decode`] itself performs no I/O or privilege checks.
+/// The decoder targets the modern (4.2+) flag layout. Optional userfaultfd and
+/// guard bits depend on kernel support; preserving `raw` does not establish
+/// semantic support for every newer kernel extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct PageMapEntry {
@@ -141,9 +144,12 @@ pub struct PageMapEntry {
     pub soft_dirty: bool,
     /// Kernel exclusive-mapping flag; large allocations have special semantics.
     pub exclusive: bool,
-    /// Userfaultfd write-protection flag.
+    /// Pagemap bit 57, introduced for userfaultfd write protection in Linux 5.13.
+    /// The reviewed 7.3-rc7 ABI also uses this bit for read/write protection in
+    /// RWP VMAs; this decoder lacks the VMA context needed to distinguish them.
+    /// See the [upstream ABI](https://github.com/torvalds/linux/blob/v7.3-rc7/Documentation/admin-guide/mm/pagemap.rst).
     pub uffd_write_protected: bool,
-    /// Guard-region flag on kernels supporting it.
+    /// Guard-region flag (bit 58), available since Linux 6.15.
     pub guard: bool,
     /// File page or shared anonymous page.
     pub file_or_shared_anonymous: bool,

@@ -1,140 +1,87 @@
 # wora
 
-Write Once Run Anywhere (WORA): A Rust framework for building applications (daemons, etc.) that run in different environments (Linux, Kubernetes, etc.). Just like Java's claim, it really doesn't run everywhere. no_std or embedded environments are not supported.
+Write Once Run Anywhere: a Rust async framework for daemon applications running
+under Unix processes, service managers and containers. Linux and macOS are the
+primary targets; embedded and `no_std` environments are unsupported.
 
-## Resource predictability
+WORA aims for deterministic memory and CPU usage. Collection budgets, shared
+snapshots and capped reports provide partial bounds; a whole-runtime guarantee
+is still [planned](wora-observability-linux-mm/TODO.md).
 
-WORA aims to be deterministic in memory and CPU usage, with configurable budgets,
-predictable background work, and explicit behavior under overload. Bounded Linux
-memory collection, shared snapshots, and capped report buffers are steps toward
-that goal. Whole-runtime memory and CPU bounds remain work in progress; see the
-[resource-budget roadmap](docs/memory.md#bounded-memory-roadmap).
+## Features
 
-## Status
+- Application lifecycle, restart policy, readiness, health and graceful shutdown.
+- Typed initial config/secrets and filesystem-driven reloads.
+- Configurable Unix signal mapping and executor-provided runtime events.
+- Host/process metrics, memory snapshots and tracing events routed to sinks.
+- Physical or in-memory filesystems and lock backends.
 
-This crate is an early-stage async framework. The main public API is usable, with Unix-like platforms as the primary target and environment-specific executors for `systemd`, `launchd`, and container-style deployments.
+The crate is early-stage. Built-in integrations include `SystemdExecutor`,
+`LaunchdExecutor` and `ContainerExecutor`; availability depends on the target.
 
-- restart policies, shutdown supervision, and signal mapping can be applied with `RunnerOptions` through `exec_async_runner_with_options`
-- initial typed config and secret loading is built into the runner
-- event-driven apps can use `Wora::run_event_loop` to auto-apply typed reloads
-- `RunnerOptions::with_signal_mapper(...)` lets apps map Unix-like signals to control or app-defined events
-- observability can be routed through sinks via `O11yProcessor`
+## Quick start
 
-## Feature Tour
-
-- abstracts over common boilerplate with an API
-- execute the same code in different executors (with or without recompiling)
-- translates platform-specific control inputs into runtime control or app-defined events
-- watches existing metadata and secrets directories and emits typed reload events
-- supervises readiness, health, and graceful shutdown
-- exposes host, process, runtime, and tracing observability events
-- ships observability sinks and a processor for fan-out
-
-Memory samples are available through `wora.memory_stats()`,
-`wora.subscribe_memory_stats()`, and application resource events. Linux adds
-procfs/sysfs memory details and opt-in diagnostics; macOS exposes portable memory
-and swap totals in bytes. See the [memory guide](docs/memory.md) for usage,
-value sources, limits, design notes and measurements.
-
-## Supported Environments
-
-- async-based apps
-- Unix-like environments
-  - Linux-specific host details through `procfs`
-  - macOS host details through `sysinfo`
-- service-manager and orchestration integrations
-  - `SystemdExecutor`
-  - `LaunchdExecutor`
-  - `ContainerExecutor`
-
-## Architecture
-
-WORA has six main pieces:
-
-- `App`: the workload lifecycle trait. Applications implement `setup`, `main`, `reload_config`, `reload_secrets`, and `end`.
-- `AsyncExecutor`: the environment adapter. Executors provide directories, setup, readiness, and teardown behavior.
-- `Wora`: the runtime context passed to apps. It carries directories, host data, event channels, runtime status, and observability options. Health and readiness are reported through `Wora::report_health(...)`, `Wora::report_readiness(...)`, or the cloned `RuntimeStatusHandle`.
-- `WFS`: the virtual filesystem abstraction. `PhysicalVFS` is the host filesystem implementation.
-- `LockBackend`: the single-instance coordination abstraction. `ProcLockBackend` uses host lock files and `InMemoryLockBackend` is useful for tests and fully virtual runner flows.
-- `O11yProcessor`: the observability pipeline for fan-out into sinks.
-
-`exec_async_runner` wires those pieces together by initializing observability, acquiring the runtime lock, building the `Wora` context, running executor setup, loading initial config and secrets, running app setup, watching the metadata and secrets directories, invoking `App::main`, supervising shutdown/readiness/health, and then running teardown. Runner-owned background work shares a cancellation token: teardown requests cooperative cancellation, waits for a bounded grace period, and aborts tasks that do not stop.
-
-The runner always installs recursive watchers on both `metadata_root_dir` and `secrets_root_dir` after executor and app setup. Executors must create both watch roots even when an app uses `NoConfig` or `NoSecrets`; initial loading skips roots that are absent, but watcher installation still requires them. The default filesystem lock backend creates the parent of its lock path before acquiring the lock, allowing executor setup to create the remaining roots afterward.
-
-Typed config and secret reloads are driven by filesystem watcher events (`Event::ConfigChanged` and `Event::SecretChanged`). `ControlEvent::ReloadConfiguration`, `ControlEvent::Suspend`, and `ControlEvent::LogRotation` are app-level control notifications: the runner delivers them to the app but does not automatically reload files, suspend work, or rotate sinks for the app. Use `RunnerOptions::with_signal_mapper(...)` when the default Unix-like signal mapping should produce app-defined events instead.
-
-When a lock backend reports contention, the runner returns `MainEarlyReturn::AlreadyRunning(...)` instead of collapsing that case into a generic exit code.
-
-## Getting Started
-
-### Prerequisites
-
-* Rust 1.95 or newer. The crate declares `rust-version = "1.95"` and the checked-in `rust-toolchain.toml` pins `1.95.0` for repository builds.
-
-## Usage
-
-Run a memory reporter that prints JSON snapshots at startup and every five
-seconds (Ctrl-C or SIGTERM stops it):
-
-```sh
-cargo run --example memory_report
-```
-
-For profile configuration, expensive Linux diagnostics and tracing, see the
-[memory guide](docs/memory.md#memory-reporter).
-
-Run the basic example:
+Requires Rust 1.95+. Repository builds pin 1.95.0 in `rust-toolchain.toml`.
 
 ```sh
 cargo run --example basic
-```
-
-Run the daemon-style event loop example:
-
-```sh
 cargo run --example async_daemon -- --run-mode user
+cargo run --example memory_report
 ```
 
-Run the Linux `systemd` daemon example:
+`memory_report` writes JSON at startup and every five seconds. Stop it with
+Ctrl-C or SIGTERM. See the [memory guide](docs/memory.md) for sampling, Linux
+subsystems, kernel compatibility, limits and measurements.
+
+Other examples: `onboarding`, Linux `systemd_daemon` and
+[its unit file](examples/systemd_daemon.service).
+
+## Runtime model
+
+| API | Role |
+| --- | --- |
+| `App` | Workload setup, main, reload and teardown hooks. |
+| `AsyncExecutor` | Environment directories, setup, readiness and teardown. |
+| `Wora` | Runtime context, events, health/readiness and memory cache. |
+| `WFS` | Filesystem and recursive watch abstraction. |
+| `LockBackend` | Single-instance coordination; filesystem and in-memory implementations. |
+| `O11yProcessor` | Observability sink fan-out. |
+
+`exec_async_runner_with_options` adds `RunnerOptions` for restart/supervision,
+signal mapping and injected providers. The runner acquires its lock, initializes
+the executor/config/secrets/app, starts watchers, runs the workload and tears down.
+Runner-owned background tasks receive cancellation and a bounded shutdown grace
+period; remaining async tasks are aborted.
+
+Executors must create both metadata and secrets watch roots, including for
+`NoConfig`/`NoSecrets` apps. Initial loading tolerates missing roots, but recursive
+watch installation requires them. Lock contention returns
+`MainEarlyReturn::AlreadyRunning`.
+
+`Wora::run_event_loop` can apply typed reloads from `ConfigChanged`/`SecretChanged`.
+Reload, suspend and log-rotation control requests are delivered to the app for
+handling. Use `RunnerOptions::with_signal_mapper` to customize signal events.
+
+## Development
 
 ```sh
-cargo run --example systemd_daemon
+cargo fmt --all --check
+cargo test --workspace --all-features
+cargo clippy --workspace --all-targets --all-features
+cargo doc --workspace --all-features --no-deps
 ```
 
-Sample unit file:
+[Runtime TODO](TODO.md) · [Memory TODO](wora-observability-linux-mm/TODO.md) ·
+[Linux memory readers](wora-observability-linux-mm/README.md) ·
+[Metric exporters](wora-observability/README.md)
 
-```text
-examples/systemd_daemon.service
-```
+## Project
 
-Run the onboarding example:
+Author: [Adam Flott](https://github.com/adamflott).
+[Contributors](https://github.com/adamflott/wora/contributors).
+Versions before 1.0 are arbitrary; later versions use SemVer.
 
-```sh
-cargo run --example onboarding
-```
+OpenAI Codex is used for documentation, tests and issue discovery. Changes are
+reviewed by the maintainer.
 
-Run checks:
-
-```sh
-cargo fmt --check
-cargo test
-```
-
-## AI Disclosure
-
-OpenAI Codex is used to write documentation/tests and find issues. Everything is reviewed by me and I vouch for these AI-generated changes.
-
-## Versioning
-
-We use [SemVer](http://semver.org/) for versioning when x.y.z when x is > 0, otherwise versioning is arbitrary. For the versions available, see the [tags on this repository](https://github.com/adamflott/wora/tags). 
-
-## Authors
-
-* **Adam Flott** - *Initial work* - [adamflott](https://github.com/adamflott)
-
-See also the list of [contributors](https://github.com/adamflott/wora/contributors) who participated in this project.
-
-## License
-
-This project is dual-licensed under either the [MIT License](LICENSE-MIT) or the [Apache License 2.0](LICENSE-APACHE), at your option.
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE).

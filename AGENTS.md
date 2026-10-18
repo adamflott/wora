@@ -29,10 +29,10 @@ Key modules and workspace crates:
 ## Documentation
 
 - Keep `README.md` focused on the project aim, architecture and quick starts.
-- Keep memory usage instructions, source inventories, resource-budget R&D,
-  profiling results and memory roadmap items in `docs/memory.md`. Link to it from
-  README/TODO instead of duplicating detailed notes. Separate current behavior
-  from dated experiments and preserve their host/build context and limitations.
+- Keep current memory APIs, sources, limits and concise measurement summaries in
+  `docs/memory.md`. Put all remaining memory work, including runtime budgets and
+  profiling, in `wora-observability-linux-mm/TODO.md` as short implementation tasks.
+  Remove completed/stale tasks; link instead of duplicating roadmaps or prose.
 - Document every public memory type's source in Rustdoc: the upstream API and OS
   file/API, scope (host/cgroup/process/node/cache), units, conversions and derived
   formulas. Nested tables should identify their containing source. Caller-supplied
@@ -92,7 +92,7 @@ ignored by default; ordinary fixture tests should not require root.
 - Linux memory input/payload limits do not account for exact heap overhead, other
   inventories, general sinks, queue payloads, scheduled tasks or reloads. Extended
   release-process soak measurements and the broader resource contract remain open
-  in `docs/memory.md`.
+  in `wora-observability-linux-mm/TODO.md`.
 
 ## CI Notes
 
