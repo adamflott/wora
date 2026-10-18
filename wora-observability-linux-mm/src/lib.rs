@@ -42,7 +42,7 @@ pub use ksm::KsmStats;
 pub use lru::{LruGeneration, LruHistogram, LruStats};
 pub use mappings::{MemoryMapping, ProcessMemoryDetails};
 pub use numa::NumaStats;
-pub use pages::{PageMapEntry, PageRange, PhysicalPageStats, ProcessPageMap, read_page_entries};
+pub use pages::{PageMapEntry, PageRange, PhysicalPageStats, ProcessPageMap, UserfaultfdProtection, read_page_entries};
 pub use pagetypeinfo::{FreeBlockCount, PageTypeBlockCounts, PageTypeFreeList, PageTypeInfo, PageTypeNode};
 pub use process::{ProcessMemoryStats, SmapsRollup, SmapsRollupValue};
 /// `/proc/iomem` physical address ranges and labels, including nested regions.

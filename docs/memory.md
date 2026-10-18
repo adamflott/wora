@@ -201,7 +201,10 @@ CI follows runner images, not a fixed booted-kernel matrix. Containers use the h
 | Pagemap flags | Modern 4.2+ layout; userfaultfd bit 57 since 5.13, guard bit 58 since 6.15. [ABI][pagemap] |
 
 The reviewed 7.3-rc7 ABI reuses bit 57 for WP or RWP depending on the VMA.
-`PageMapEntry::uffd_write_protected` lacks that context; `raw` retains the bit.
+`PageMapEntry::userfaultfd_protection(mapping.fields.get("VmFlags"))` interprets
+matching smaps context; missing/conflicting modes stay unknown. The existing
+`uffd_write_protected` field retains raw-bit semantics. Callers must match the
+process, virtual page and capture time; independent reads can race.
 Other supported layouts still depend on configuration; recent kernels do not
 make page-owner, kmemleak, EDAC or CMA universally available.
 

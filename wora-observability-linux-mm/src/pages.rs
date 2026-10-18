@@ -144,9 +144,10 @@ pub struct PageMapEntry {
     pub soft_dirty: bool,
     /// Kernel exclusive-mapping flag; large allocations have special semantics.
     pub exclusive: bool,
-    /// Pagemap bit 57, introduced for userfaultfd write protection in Linux 5.13.
-    /// The reviewed 7.3-rc7 ABI also uses this bit for read/write protection in
-    /// RWP VMAs; this decoder lacks the VMA context needed to distinguish them.
+    /// Compatibility name for raw pagemap bit 57 (userfaultfd tracking).
+    /// Introduced for WP in 5.13; the 7.3-rc7 ABI also uses it for RWP.
+    /// `true` alone does not establish write-only protection. Use
+    /// [`Self::userfaultfd_protection`] with the matching VMA's `VmFlags`.
     /// See the [upstream ABI](https://github.com/torvalds/linux/blob/v7.3-rc7/Documentation/admin-guide/mm/pagemap.rst).
     pub uffd_write_protected: bool,
     /// Guard-region flag (bit 58), available since Linux 6.15.
@@ -163,6 +164,42 @@ pub struct PageMapEntry {
 }
 
 impl PageMapEntry {
+    /// Interpret bit 57 using the matching VMA's smaps `VmFlags` value.
+    ///
+    /// Supply `mapping.fields.get("VmFlags")` from [`crate::MemoryMapping`].
+    /// `uw` means `VM_UFFD_WP`; `ur` means `VM_UFFD_RWP` in the 7.3-rc7 ABI.
+    /// A set bit with missing, malformed, absent or conflicting mode flags is
+    /// unknown. A clear bit means unprotected regardless of registration mode.
+    ///
+    /// This method performs no reads and does not verify process/address/time
+    /// identity. The caller must associate the entry with its VMA; independently
+    /// collected smaps/pagemap data can race with mapping or registration changes.
+    pub fn userfaultfd_protection(&self, vm_flags: Option<&crate::ParsedMemoryValue>) -> UserfaultfdProtection {
+        if self.raw & (1 << 57) == 0 {
+            return UserfaultfdProtection::Unprotected;
+        }
+        let Some(crate::ParsedMemoryValue::List(flags)) = vm_flags else {
+            return UserfaultfdProtection::Unknown;
+        };
+        let mut wp = false;
+        let mut rwp = false;
+        for flag in flags {
+            let crate::ParsedMemoryValue::Text(flag) = flag else {
+                return UserfaultfdProtection::Unknown;
+            };
+            match flag.as_str() {
+                "uw" => wp = true,
+                "ur" => rwp = true,
+                _ => {}
+            }
+        }
+        match (wp, rwp) {
+            (true, false) => UserfaultfdProtection::WriteProtected,
+            (false, true) => UserfaultfdProtection::ReadWriteProtected,
+            _ => UserfaultfdProtection::Unknown,
+        }
+    }
+
     /// Decode the documented modern Linux bits. CAP_SYS_ADMIN controls PFN access.
     pub fn decode(raw: u64) -> Self {
         let bit = |n: u32| raw & (1u64 << n) != 0u64;
@@ -181,6 +218,26 @@ impl PageMapEntry {
             swap_offset: bit(62).then_some(payload >> 5),
         }
     }
+}
+
+/// Userfaultfd protection derived from pagemap bit 57 and matching smaps VMA flags.
+///
+/// Produced by [`PageMapEntry::userfaultfd_protection`] from caller-supplied
+/// `/proc/<pid>/pagemap` and `smaps` data. This is per-virtual-page state, not a
+/// memory quantity or a new live sample. The RWP interpretation follows 7.3-rc7.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde1", serde(rename_all = "snake_case"))]
+#[non_exhaustive]
+pub enum UserfaultfdProtection {
+    /// Bit 57 is clear; the page is not marked WP/RWP by pagemap.
+    Unprotected,
+    /// Bit 57 is set in a `VM_UFFD_WP` (`uw`) VMA.
+    WriteProtected,
+    /// Bit 57 is set in a `VM_UFFD_RWP` (`ur`) VMA.
+    ReadWriteProtected,
+    /// Bit 57 is set, but the VMA mode is missing, invalid or inconsistent.
+    Unknown,
 }
 
 /// Read exactly a bounded range of native-endian 64-bit kernel page entries.

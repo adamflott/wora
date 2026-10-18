@@ -32,8 +32,9 @@ reporter observations on 6.18.55. The 4.19 zoneinfo and 6.1 legacy-SLAB formats
 have review/synthetic coverage, not whole-crate live validation.
 
 Features such as PSI, MGLRU and allocinfo require kernel/configuration support.
-The reviewed 7.3-rc7 pagemap ABI needs VMA context to distinguish WP/RWP at bit 57;
-`PageMapEntry::uffd_write_protected` does not provide that context.
+For the 7.3-rc7 pagemap ABI, `PageMapEntry::userfaultfd_protection` uses matching
+smaps `VmFlags` to distinguish WP/RWP; missing context stays unknown. The existing
+`uffd_write_protected` field remains a compatibility name for raw bit 57.
 See [kernel compatibility](https://github.com/adamflott/wora/blob/master/docs/memory.md#supported-linux-kernels)
 for feature versions and evidence. Other kernels use best-effort supported layouts.
 

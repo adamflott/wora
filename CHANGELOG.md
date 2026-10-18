@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Features
 
+- Add VMA-aware pagemap bit-57 interpretation through `PageMapEntry::userfaultfd_protection`, distinguishing WP/RWP and unknown context while preserving existing fields and serialization.
 - Collect bounded NUMA access-class topology attributes under each node's source paths, retaining latency in ns and rated bandwidth in MiB/s with independent errors.
 - Add `NumaStats::weighted_interleave` for global node weights and optional auto mode, preserving unknown mode on older kernels and never writing policy.
 - Collect DMEM device-region byte usage, root capacity and limits through existing cgroup v2 discovery, preserving `max` and separately detecting optional development-kernel `dmem.peak`.

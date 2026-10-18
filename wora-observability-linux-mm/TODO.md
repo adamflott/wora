@@ -5,8 +5,6 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 
 ## Collector coverage
 
-- [ ] **Pagemap RWP:** update `src/pages.rs`'s bit-57 model using VMA WP/RWP context;
-  preserve unknown state and public API compatibility. Test the 7.3-rc7 ABI. [ABI][pagemap]
 - [ ] **Page owner:** parse bounded allocation/page/stack records in `src/provenance.rs`.
 - [ ] **Kmemleak:** parse bounded suspect records in `src/provenance.rs`; retain
   uncertainty and never issue scan/clear commands.
@@ -78,7 +76,6 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 Version research checked 2026-10-18. 7.3-rc7 is a development kernel.
 
 [dmem]: https://github.com/torvalds/linux/blob/v7.3-rc7/Documentation/admin-guide/cgroup-v2.rst
-[pagemap]: https://github.com/torvalds/linux/blob/v7.3-rc7/Documentation/admin-guide/mm/pagemap.rst
 [shrinkers]: https://docs.kernel.org/admin-guide/mm/shrinker_debugfs.html
 [queries]: https://github.com/torvalds/linux/blob/v6.11/include/uapi/linux/fs.h
 [thp]: https://github.com/torvalds/linux/blob/v7.2/Documentation/admin-guide/mm/transhuge.rst
