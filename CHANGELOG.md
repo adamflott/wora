@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Documentation
 
+- Evaluate read-only `PAGEMAP_SCAN` with explicit ranges and fixed result/call limits. The probe passes on 6.8/aarch64 as root and UID 65534 with write-protection flags disabled; document its match-limit semantics and current binary-reader decision.
 - Evaluate `PROCMAP_QUERY` with a bounded read-only C probe and document the unsupported 6.8-kernel result, buffer/consistency constraints, and decision to retain maps/smaps with the current safe Rust dependencies.
 
 ## [0.0.18] - 2026-10-16

@@ -187,7 +187,7 @@ has been validated; kernel configuration, mounts, permissions and backports matt
 | --- | --- |
 | Debian `6.12.95+deb13-cloud-arm64` / `6.12.95+deb13-amd64` | Live fixtures for buddyinfo, zoneinfo, swaps, slabinfo and pagetypeinfo; 4 KiB base pages. |
 | Linux 6.18.55, `inanna` | Historical normal-user collection and release-process measurements below. |
-| Linux `6.8.0-100-generic`, aarch64 container VM | Current workspace/parser checks; `PROCMAP_QUERY` probe reports unsupported. Containers share this kernel, regardless of installed headers. |
+| Linux `6.8.0-100-generic`, aarch64 container VM | Current workspace/parser checks; read-only `PAGEMAP_SCAN` probe passes as root and UID 65534; `PROCMAP_QUERY` reports unsupported. Containers share this kernel, regardless of installed headers. |
 | 4.19 zoneinfo / 6.1 legacy SLAB | Format review/synthetic coverage, not whole-crate live validation. |
 | Other releases, including 7.x | Best-effort supported layouts; source review does not establish live-kernel support. |
 
@@ -231,6 +231,7 @@ make page-owner, kmemleak, EDAC or CMA universally available.
 | Interface | Assessment / decision | Probe evidence |
 | --- | --- | --- |
 | `PROCMAP_QUERY` (6.11) | Useful for filtered VMA metadata with fixed buffers; each result is consistent, successive queries can race. It supplies no RSS/PSS accounting. Retain bounded maps/smaps readers: locked procfs/rustix/nix versions have no safe wrapper, and this crate forbids unsafe Rust. [UAPI](https://github.com/torvalds/linux/blob/v6.11/include/uapi/linux/fs.h) | [Read-only probe](../wora-observability-linux-mm/tools/procmap-query.c): at most 64 calls/filter, 256-byte names, no build-ID requests. Compiles cleanly; current 6.8 VM returns unsupported (exit 77). Successful 6.11+ execution remains unvalidated. |
+| `PAGEMAP_SCAN` (6.7) | Useful for filtered page-category regions, with `flags = 0`, explicit address bounds, fixed vectors and `walk_end` continuation. `max_pages` limits matches, not all pages visited. It supplies no PFNs/kpage accounting. Retain current binary readers; production integration needs a safe wrapper and shared request/result admission. [UAPI](https://github.com/torvalds/linux/blob/v6.11/include/uapi/linux/fs.h) | [Read-only probe](../wora-observability-linux-mm/tools/pagemap-scan.c): eight owned pages, one result slot, two matches/call, four calls. Passes on 6.8/aarch64 as root and UID 65534: eight pages reported, complete walk, contents unchanged. No userfaultfd/WP flags. |
 
 ## Collection and retention limits
 

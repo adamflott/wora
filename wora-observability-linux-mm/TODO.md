@@ -3,11 +3,6 @@
 Remaining work only. Runtime tasks name files outside this crate.
 Current behavior and measurements: [memory guide](../docs/memory.md).
 
-## Collector coverage
-
-- [ ] **Page queries:** evaluate read-only `PAGEMAP_SCAN` (6.7) with explicit ranges
-  and result limits; exclude write-protection flags. [UAPI][queries]
-
 ## Collector and allocation limits
 
 - [ ] Define a WORA-owned heap contract: scratch/retained allocations, task state,
@@ -68,5 +63,4 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 Version research checked 2026-10-18. 7.3-rc7 is a development kernel.
 
 [dmem]: https://github.com/torvalds/linux/blob/v7.3-rc7/Documentation/admin-guide/cgroup-v2.rst
-[queries]: https://github.com/torvalds/linux/blob/v6.11/include/uapi/linux/fs.h
 [thp]: https://github.com/torvalds/linux/blob/v7.2/Documentation/admin-guide/mm/transhuge.rst

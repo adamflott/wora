@@ -127,3 +127,14 @@ cc -std=c11 -Wall -Wextra -Werror tools/procmap-query.c -o /tmp/procmap-query
 
 The probe caps calls/names and requests no build IDs. It is not a production
 backend; maps/smaps remain the supported mapping/accounting readers.
+
+Read-only page-query evaluation (6.7+ headers; eight owned pages, fixed result
+vector, bounded continuation, `flags = 0`):
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror tools/pagemap-scan.c -o /tmp/pagemap-scan
+/tmp/pagemap-scan
+```
+
+The probe requests no write protection. Production page collection continues
+to use explicit `PageRange` binary reads.
