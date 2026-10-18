@@ -111,7 +111,7 @@ impl MemoryTraceParser {
     /// At most 4096 task/family keys and 16 nested intervals per key are retained.
     pub fn parse_line(&mut self, line: &str) -> Result<Option<MemoryTraceRecord>, MemoryReadError> {
         if line.len() > 65536 {
-            return Err(MemoryReadError::ReadFailed("trace line exceeds 64 KiB".into()));
+            return Err(MemoryReadError::read_failed("trace line exceeds 64 KiB"));
         }
         let line = line.trim_end_matches(['\r', '\n']);
         if line.trim_start().starts_with("CPU:") && line.contains("LOST") && line.contains("EVENTS") {

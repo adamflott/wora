@@ -513,7 +513,7 @@ mod tests {
                         ("vm.swappiness".into(), ParsedMemoryValue::Unsigned(60)),
                         (
                             "vm.lowmem_reserve_ratio".into(),
-                            ParsedMemoryValue::List([256, 256, 32, 0, 0].map(ParsedMemoryValue::Unsigned).into()),
+                            ParsedMemoryValue::try_list([256, 256, 32, 0, 0].map(ParsedMemoryValue::Unsigned))?,
                         ),
                         ("kernel.shmall".into(), ParsedMemoryValue::Unsigned(18_446_744_073_692_774_399)),
                     ]),

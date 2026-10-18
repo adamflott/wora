@@ -88,5 +88,5 @@ fn signed(value: &str) -> Result<i64, MemoryReadError> {
 }
 
 fn invalid() -> MemoryReadError {
-    MemoryReadError::ReadFailed("malformed DAMON_STAT parameter".into())
+    MemoryReadError::read_failed("malformed DAMON_STAT parameter")
 }

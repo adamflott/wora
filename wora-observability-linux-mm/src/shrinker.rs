@@ -76,7 +76,7 @@ impl ShrinkerStats {
 }
 
 pub(crate) fn counts(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
-    let mut rows = Vec::new();
+    let mut rows = crate::MemoryList::default();
     let mut seen = BTreeSet::new();
     let mut columns = None;
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
@@ -88,21 +88,21 @@ pub(crate) fn counts(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
         if !seen.insert(cgroup) {
             return Err(invalid());
         }
-        let mut counts = Vec::new();
+        let mut counts = crate::MemoryList::default();
         for field in fields {
             if counts.len() == 4096 {
                 return Err(invalid());
             }
-            counts.push(ParsedMemoryValue::Unsigned(number(field)?));
+            counts.try_push(ParsedMemoryValue::Unsigned(number(field)?))?;
         }
         if counts.is_empty() || columns.is_some_and(|columns| columns != counts.len()) {
             return Err(invalid());
         }
         columns = Some(counts.len());
-        rows.push(crate::structured::map([
+        rows.try_push(crate::structured::map([
             ("cgroup_id", ParsedMemoryValue::Unsigned(cgroup)),
             ("node_counts", ParsedMemoryValue::List(counts)),
-        ]));
+        ])?)?;
     }
     Ok(ParsedMemoryValue::List(rows))
 }

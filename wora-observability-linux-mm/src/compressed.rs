@@ -71,13 +71,13 @@ impl ZramMemoryStat {
             .split_ascii_whitespace()
             .map(|v| {
                 if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
-                    return Err(MemoryReadError::ReadFailed("invalid mm_stat number".into()));
+                    return Err(MemoryReadError::read_failed("invalid mm_stat number"));
                 }
-                v.parse::<u64>().map_err(|e| MemoryReadError::ReadFailed(e.to_string()))
+                v.parse::<u64>().map_err(|e| MemoryReadError::read_failed(e.to_string()))
             })
             .collect::<Result<Vec<_>, _>>()?;
         if values.len() < 7 {
-            return Err(MemoryReadError::ReadFailed("mm_stat requires at least seven fields".into()));
+            return Err(MemoryReadError::read_failed("mm_stat requires at least seven fields"));
         }
         Ok(Self {
             fields: NAMES.iter().zip(&values).map(|(name, value)| ((*name).into(), *value)).collect(),

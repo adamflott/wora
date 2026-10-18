@@ -49,7 +49,7 @@ impl ProcessMemoryStats {
                 let error = match error {
                     ProcError::PermissionDenied(_) => MemoryReadError::PermissionDenied,
                     ProcError::NotFound(_) => MemoryReadError::NotFound,
-                    other => MemoryReadError::ReadFailed(other.to_string()),
+                    other => MemoryReadError::read_failed(other.to_string()),
                 };
                 snapshot.unavailable.insert("smaps_rollup".into(), error);
             }

@@ -33,7 +33,7 @@ fn full_histograms_preserve_cgroup_node_generation_tier_and_availability() -> Re
     };
     assert_eq!(records.len(), 3);
     assert_eq!(records[0].get("cgroup_id").and_then(ParsedMemoryValue::as_u64), Some(4));
-    assert_eq!(records[0].get("cgroup_path"), Some(&ParsedMemoryValue::Text("/user.slice/a  b".into())));
+    assert_eq!(records[0].get("cgroup_path"), Some(&ParsedMemoryValue::try_text("/user.slice/a  b")?));
     assert_eq!(records[0].get("node").and_then(ParsedMemoryValue::as_u64), Some(9));
     assert_eq!(records[0].get("sequence").and_then(ParsedMemoryValue::as_u64), Some(2));
     let pages = records[0].get("anonymous_pages").ok_or("no pages")?;
@@ -77,7 +77,7 @@ fn full_histograms_reject_incomplete_unknown_or_duplicate_scopes_and_obey_limits
     ] {
         assert!(parse_memory_file("lru_gen_full", &bad).is_err(), "accepted {bad}");
     }
-    assert_eq!(parse_memory_file("lru_gen_full", "")?, Some(ParsedMemoryValue::List(Vec::new())));
+    assert_eq!(parse_memory_file("lru_gen_full", "")?, Some(ParsedMemoryValue::try_list(Vec::new())?));
     let root = tempfile::tempdir()?;
     std::fs::create_dir_all(root.path().join("kernel/debug"))?;
     std::fs::write(root.path().join("kernel/debug/lru_gen_full"), valid)?;

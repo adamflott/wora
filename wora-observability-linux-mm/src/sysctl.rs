@@ -45,20 +45,36 @@ pub struct MemorySysctls {
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde1", serde(rename_all = "snake_case"))]
 pub enum SysctlReadError {
+    /// Structured storage or scratch admission failed; no successful zero is implied.
+    Allocation(crate::HeapError),
     /// The current user cannot read the file or enumerate the directory.
     PermissionDenied,
     /// The namespace is missing, or a file disappeared after enumeration.
     NotFound,
     /// Another I/O failure, including invalid UTF-8, with its diagnostic.
-    ReadFailed(String),
+    ReadFailed(crate::MemoryText),
 }
 
 impl From<io::Error> for SysctlReadError {
     fn from(error: io::Error) -> Self {
+        if let Some(error) = error.get_ref().and_then(|error| error.downcast_ref::<crate::HeapError>()) {
+            return Self::Allocation(*error);
+        }
         match error.kind() {
             io::ErrorKind::PermissionDenied => Self::PermissionDenied,
             io::ErrorKind::NotFound => Self::NotFound,
-            _ => Self::ReadFailed(error.to_string()),
+            _ => Self::read_failed(error.to_string()),
+        }
+    }
+}
+
+impl SysctlReadError {
+    /// Retain a caller/OS diagnostic using fallible text admission. When that
+    /// fails, retain an inline allocation failure instead of allocating an error.
+    pub fn read_failed(message: impl AsRef<str>) -> Self {
+        match crate::MemoryText::try_new(message.as_ref()) {
+            Ok(message) => Self::ReadFailed(message),
+            Err(error) => Self::Allocation(error),
         }
     }
 }
@@ -66,6 +82,7 @@ impl From<io::Error> for SysctlReadError {
 impl std::fmt::Display for SysctlReadError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Allocation(error) => std::fmt::Display::fmt(error, formatter),
             Self::PermissionDenied => formatter.write_str("permission denied"),
             Self::NotFound => formatter.write_str("source not found"),
             Self::ReadFailed(message) => formatter.write_str(message),
@@ -74,6 +91,12 @@ impl std::fmt::Display for SysctlReadError {
 }
 
 impl std::error::Error for SysctlReadError {}
+
+impl From<crate::HeapError> for SysctlReadError {
+    fn from(error: crate::HeapError) -> Self {
+        Self::Allocation(error)
+    }
+}
 
 /// Why a present memory sysctl entry was not opened.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -142,8 +165,7 @@ impl MemorySysctls {
             };
             let name = entry.file_name();
             let Some(name) = name.to_str() else {
-                self.unavailable
-                    .insert(namespace.into(), SysctlReadError::ReadFailed("non-UTF-8 sysctl name".into()));
+                self.unavailable.insert(namespace.into(), SysctlReadError::read_failed("non-UTF-8 sysctl name"));
                 continue;
             };
             if !include(name) {
@@ -180,7 +202,7 @@ impl MemorySysctls {
         }
     }
 
-    fn read_value(&mut self, entry: &fs::DirEntry, key: &str) -> io::Result<Option<String>> {
+    fn read_value(&mut self, entry: &fs::DirEntry, key: &str) -> io::Result<Option<crate::files::ReadText>> {
         // DirEntry::metadata does not follow symbolic links.
         let metadata = entry.metadata()?;
         if !metadata.is_file() {
@@ -192,8 +214,7 @@ impl MemorySysctls {
             self.skipped.insert(key.into(), SysctlSkipReason::WriteOnly);
             return Ok(None);
         }
-        let mut value = crate::files::read_text(&entry.path(), 4 * 1024 * 1024)?;
-        value.truncate(value.trim_end_matches('\n').len());
+        let value = crate::files::read_text(&entry.path(), 4 * 1024 * 1024)?;
         Ok(Some(value))
     }
 }

@@ -79,6 +79,10 @@ pub enum CollectionLimit {
     PathBytes,
     /// Cgroup ancestor visibility exceeded its allowance.
     Ancestors,
+    /// Instrumented retained allocation allowance.
+    RetainedHeap,
+    /// Instrumented temporary allocation allowance.
+    ScratchHeap,
 }
 
 /// Bounded collection accounting; `limit_exceeded` explicitly marks partial data.
@@ -132,7 +136,7 @@ pub fn collect_with_limits<T>(limits: CollectionLimits, collect: impl FnOnce() -
         Ok(())
     })?;
     let _reset = Reset;
-    let result = collect();
+    let result = crate::heap::with_default_budget(collect);
     let report = ACTIVE.with(|active| active.borrow().as_ref().map(|state| state.report).unwrap_or_default());
     Ok((result, report))
 }
@@ -146,12 +150,16 @@ pub(crate) fn file_limit(requested: usize) -> usize {
 }
 
 pub(crate) fn exceeded(limit: CollectionLimit) -> io::Error {
+    mark_exceeded(limit);
+    io::Error::other(format!("memory collection limit exceeded: {limit:?}"))
+}
+
+pub(crate) fn mark_exceeded(limit: CollectionLimit) {
     ACTIVE.with(|active| {
         if let Some(state) = active.borrow_mut().as_mut() {
             state.report.limit_exceeded.get_or_insert(limit);
         }
     });
-    io::Error::other(format!("memory collection limit exceeded: {limit:?}"))
 }
 
 pub(crate) fn charge_bytes(bytes: usize) -> io::Result<()> {

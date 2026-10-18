@@ -25,9 +25,9 @@ fn kmemleak_suspects_keep_uncertain_metadata_and_stacks_but_discard_object_bytes
     assert_eq!(records[0].get("size_bytes").and_then(ParsedMemoryValue::as_u64), Some(9_007_199_254_740_993));
     assert_eq!(records[0].get("allocation_jiffies").and_then(ParsedMemoryValue::as_u64), Some(u64::MAX));
     assert_eq!(records[0].get("checksum").and_then(ParsedMemoryValue::as_u64), Some(u64::from(u32::MAX)));
-    assert_eq!(records[1].get("address_space"), Some(&ParsedMemoryValue::Text("percpu".into())));
+    assert_eq!(records[1].get("address_space"), Some(&ParsedMemoryValue::try_text("percpu")?));
     assert_eq!(records[1].get("dump_cpu").and_then(ParsedMemoryValue::as_u64), Some(17));
-    assert_eq!(records[2].get("address_space"), Some(&ParsedMemoryValue::Text("physical".into())));
+    assert_eq!(records[2].get("address_space"), Some(&ParsedMemoryValue::try_text("physical")?));
     assert_eq!(records[2].get("address").and_then(ParsedMemoryValue::as_u64), Some(0));
     #[cfg(feature = "serde1")]
     {
@@ -55,7 +55,7 @@ fn kmemleak_rejects_truncated_malformed_or_oversized_dumps_without_partial_suspe
     ] {
         assert!(parse_memory_file("kmemleak", &bad).is_err());
     }
-    assert_eq!(parse_memory_file("kmemleak", "")?, Some(ParsedMemoryValue::List(Vec::new())));
+    assert_eq!(parse_memory_file("kmemleak", "")?, Some(ParsedMemoryValue::try_list(Vec::new())?));
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join("kmemleak"), LEAK)?;
     let limited = KernelLeakStats::from_debug_root_with_limit(root.path(), 8);
@@ -79,11 +79,11 @@ fn page_owner_records_preserve_allocation_page_stack_and_charge_scopes() -> Resu
     let allocation = records[0].get("allocation").ok_or("no allocation")?;
     assert_eq!(allocation.get("order").and_then(ParsedMemoryValue::as_u64), Some(2));
     assert_eq!(allocation.get("timestamp_ns").and_then(ParsedMemoryValue::as_u64), Some(u64::MAX));
-    assert_eq!(allocation.get("comm"), Some(&ParsedMemoryValue::Text("worker (pool)".into())));
+    assert_eq!(allocation.get("comm"), Some(&ParsedMemoryValue::try_text("worker (pool)")?));
     let page = records[0].get("page").ok_or("no page")?;
     assert_eq!(page.get("pfn").and_then(ParsedMemoryValue::as_u64), Some(9_007_199_254_740_993));
     assert_eq!(page.get("block").and_then(ParsedMemoryValue::as_u64), Some(77));
-    assert_eq!(records[0].get("migration_reason"), Some(&ParsedMemoryValue::Text("compaction".into())));
+    assert_eq!(records[0].get("migration_reason"), Some(&ParsedMemoryValue::try_text("compaction")?));
     let charge = records[0].get("charge").ok_or("no charge")?;
     assert_eq!(charge.get("offline").and_then(ParsedMemoryValue::as_bool), Some(true));
     assert_eq!(charge.get("via_objcg").and_then(ParsedMemoryValue::as_bool), Some(true));
@@ -149,7 +149,7 @@ fn provenance_parsing_rejects_bad_or_partial_records_and_bounds_stack_growth() -
         assert!(parse_memory_file(name, bad).is_err());
     }
     assert!(parse_memory_file("show_stacks", &(" ".to_owned() + &"x".repeat(4096))).is_err());
-    assert_eq!(parse_memory_file("page_owner", "\n\n")?, Some(ParsedMemoryValue::List(Vec::new())));
+    assert_eq!(parse_memory_file("page_owner", "\n\n")?, Some(ParsedMemoryValue::try_list(Vec::new())?));
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join("page_owner"), OWNER.to_owned() + "unknown record\n")?;
     let snapshot = PageOwnerStats::from_debug_root(root.path());

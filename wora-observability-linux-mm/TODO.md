@@ -5,8 +5,8 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 
 ## Collector and allocation limits
 
-- [ ] Account for reader container capacities, key/error-map growth and allocator
-  overhead before allocation.
+- [ ] Extend heap accounting to remaining typed/third-party tables, directory/path
+  buffers, temporary sets/formatting and other collectors' error maps; validate allocator reserve.
 - [ ] Stream cgroup membership/mount discovery in `src/cgroup.rs`; retain current
   bounded reads, deterministic mount selection and incomplete-ancestor reporting.
 

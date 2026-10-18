@@ -98,7 +98,7 @@ impl HugePageStats {
             let node = match node.parse::<u32>() {
                 Ok(node) => node,
                 Err(error) => {
-                    snapshot.unavailable.insert(name.into(), MemoryReadError::ReadFailed(error.to_string()));
+                    snapshot.unavailable.insert(name.into(), MemoryReadError::read_failed(error.to_string()));
                     continue;
                 }
             };
@@ -186,8 +186,7 @@ impl HugePageFiles {
             let result = crate::files::read_text(&entry.path(), 4 * 1024 * 1024)
                 .map_err(MemoryReadError::from)
                 .and_then(|text| {
-                    crate::parse_memory_file(root.join(&path), &text)?
-                        .ok_or_else(|| MemoryReadError::ReadFailed("unsupported hugepage-information layout".into()))
+                    crate::parse_memory_file(root.join(&path), &text)?.ok_or_else(|| MemoryReadError::read_failed("unsupported hugepage-information layout"))
                 });
             match result {
                 Ok(value) => {

@@ -28,6 +28,7 @@ and [Semantic Versioning](https://semver.org/) starts at 1.0.0. Earlier releases
 
 ### Changes
 
+- Use fallible shared `MemoryList`/`MemoryMap`/`MemoryText` storage for parsed values, `MemoryFiles` and smaps. Replace direct value literals with `try_list`/`try_map`/`try_text` builders and error strings with `SysctlReadError::read_failed`. Reserve capacity before growth/copying; expose allocation failures separately, including an inline `MemoryFiles::allocation_error`. JSON value shapes stay unchanged.
 - `RunnerOptions` struct literals gain `resources: None`; builders preserve the handle through provider/lock type changes. Existing sender types and `schedule_task` return types stay compatible; non-exhaustive resource limits use `Default` plus field assignment.
 - Share routine Linux memory tables through `LinuxMemoryStats::data: Arc<LinuxMemoryData>` and move owned host statistics into periodic observability events. Construct routine struct literals with `LinuxMemoryData { .. }.into()`; field reads remain available through `Deref`, and mutations use copy-on-write. Collected snapshots add `collection` accounting to JSON.
 - Route routine and diagnostic procfs/sysfs reads through shared input/work budgets, including cgroup, sysctl, hugepage, process rollup, and binary page readers. Keep only the best cgroup mount candidate and bound ancestor traversal.

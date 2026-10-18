@@ -22,10 +22,10 @@ fn access_class_topology_preserves_node_scope_units_and_independent_failures() -
     let files = &snapshot.nodes[&9];
     let latency = &files.parsed["access0/initiators/read_latency"];
     assert_eq!(latency.get("value").and_then(ParsedMemoryValue::as_u64), Some(112));
-    assert_eq!(latency.get("unit"), Some(&ParsedMemoryValue::Text("ns".into())));
+    assert_eq!(latency.get("unit"), Some(&ParsedMemoryValue::try_text("ns")?));
     let bandwidth = &files.parsed["access0/initiators/read_bandwidth"];
     assert_eq!(bandwidth.get("value").and_then(ParsedMemoryValue::as_u64), Some(u64::MAX));
-    assert_eq!(bandwidth.get("unit"), Some(&ParsedMemoryValue::Text("MiB/s".into())));
+    assert_eq!(bandwidth.get("unit"), Some(&ParsedMemoryValue::try_text("MiB/s")?));
     assert_eq!(
         files.parsed["access0/initiators/write_bandwidth"]
             .get("value")
@@ -176,10 +176,10 @@ fn sparse_nodes_tiers_and_native_units_survive_capture() -> Result<(), Box<dyn s
     );
     assert_eq!(
         snapshot.tiers[&22].parsed["nodelist"],
-        ParsedMemoryValue::List(vec![ParsedMemoryValue::Map(std::collections::BTreeMap::from([
-            ("start".into(), ParsedMemoryValue::Unsigned(9)),
-            ("end".into(), ParsedMemoryValue::Unsigned(9))
-        ]))])
+        ParsedMemoryValue::try_list(vec![ParsedMemoryValue::try_map(std::collections::BTreeMap::from([
+            ("start", ParsedMemoryValue::Unsigned(9)),
+            ("end", ParsedMemoryValue::Unsigned(9))
+        ]))?])?
     );
     assert_eq!(snapshot.nodes[&9].unavailable["vmstat"], MemoryReadError::NotFound);
     #[cfg(feature = "serde1")]

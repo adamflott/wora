@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt;
@@ -16,17 +15,33 @@ use crate::{MemoryReadError, MemorySkipReason};
 /// that relative key. This container does not retain the root: its enclosing
 /// type documents whether that root is a process, sysfs node/device, or debugfs
 /// directory. Values keep the file's units; parser-only calls perform no reads.
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct MemoryFiles {
     /// Structured numbers, named tables, flags, units and ranges.
     /// Raw file contents are not retained. Unsupported or malformed layouts use
     /// the source path in `unavailable`, just like read failures.
-    pub parsed: BTreeMap<String, crate::ParsedMemoryValue>,
+    pub parsed: crate::MemoryMap<crate::ParsedMemoryValue>,
     /// Read/parse failures; `.` denotes directory or budget-admission failure.
-    pub unavailable: BTreeMap<String, MemoryReadError>,
+    pub unavailable: crate::MemoryMap<MemoryReadError>,
     /// Entries deliberately not opened, including symlinks and write-only files.
-    pub skipped: BTreeMap<String, MemorySkipReason>,
+    pub skipped: crate::MemoryMap<MemorySkipReason>,
+    /// Inline failure when even a source/error-map entry cannot be admitted.
+    /// Prevents allocation failures from looking like successfully empty data.
+    #[cfg_attr(feature = "serde1", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub allocation_error: Option<crate::HeapError>,
+}
+
+impl Default for MemoryFiles {
+    fn default() -> Self {
+        let budget = crate::HeapBudget::current();
+        Self {
+            parsed: crate::MemoryMap::new(budget.clone()),
+            unavailable: crate::MemoryMap::new(budget.clone()),
+            skipped: crate::MemoryMap::new(budget),
+            allocation_error: None,
+        }
+    }
 }
 
 impl MemoryFiles {
@@ -41,15 +56,29 @@ impl MemoryFiles {
     /// Read named information files with an explicit per-file byte limit.
     /// Limits must be between one byte and 64 MiB; invalid limits fail before I/O.
     pub fn from_names_with_limit(root: impl AsRef<Path>, names: &[&str], limit: u64) -> Self {
+        let budget = crate::HeapBudget::current();
+        crate::with_heap_budget(&budget, || Self::collect_names(root.as_ref(), names, limit))
+    }
+
+    /// Read selected sources in a caller-owned shared allocation budget.
+    /// Source failures remain per-file errors; allocation refusal returns an error.
+    /// Captured roots are used as supplied and are not fresh live samples.
+    pub fn try_from_names(root: impl AsRef<Path>, names: &[&str], limit: u64, budget: &crate::HeapBudget) -> Result<Self, crate::HeapError> {
+        let result = crate::with_heap_budget(budget, || Self::collect_names(root.as_ref(), names, limit));
+        match result.allocation_error {
+            Some(error) => Err(error),
+            None => Ok(result),
+        }
+    }
+
+    fn collect_names(root: &Path, names: &[&str], limit: u64) -> Self {
         let mut result = Self::default();
         for name in names {
             if !crate::budget::file_available() {
-                result
-                    .unavailable
-                    .insert(".".into(), crate::budget::exceeded(crate::CollectionLimit::Files).into());
+                result.record_error(".", crate::budget::exceeded(crate::CollectionLimit::Files).into());
                 break;
             }
-            result.read(root.as_ref(), name, limit);
+            result.read(root, name, limit);
         }
         result
     }
@@ -65,7 +94,7 @@ impl MemoryFiles {
                 }
             }
             Err(error) => {
-                result.unavailable.insert(".".into(), error.into());
+                result.record_error(".", error.into());
             }
         }
         result
@@ -73,9 +102,25 @@ impl MemoryFiles {
 
     pub(crate) fn read(&mut self, root: &Path, name: &str, limit: u64) {
         if let Some(value) = self.read_with(root, name, limit, |text| {
-            crate::parse_memory_file(root.join(name), text)?.ok_or_else(|| MemoryReadError::ReadFailed("unsupported memory-information layout".into()))
-        }) {
-            self.parsed.insert(name.into(), value);
+            crate::parse_memory_file(root.join(name), text)?.ok_or_else(|| MemoryReadError::read_failed("unsupported memory-information layout"))
+        }) && let Err(error) = self.parsed.try_insert(name, value)
+        {
+            self.record_error(name, error.into());
+        }
+    }
+
+    pub(crate) fn record_error(&mut self, name: &str, error: MemoryReadError) {
+        if let MemoryReadError::Allocation(error) = &error {
+            self.allocation_error.get_or_insert(*error);
+        }
+        if let Err(error) = self.unavailable.try_insert(name, error) {
+            self.allocation_error.get_or_insert(error);
+        }
+    }
+
+    pub(crate) fn record_skipped(&mut self, name: &str, reason: MemorySkipReason) {
+        if let Err(error) = self.skipped.try_insert(name, reason) {
+            self.allocation_error.get_or_insert(error);
         }
     }
 
@@ -89,7 +134,7 @@ impl MemoryFiles {
             crate::budget::check_path(Path::new(name))
         });
         if let Err(error) = admitted {
-            self.unavailable.insert(".".into(), error.into());
+            self.record_error(".", error.into());
             return None;
         }
         let result: Result<Option<T>, MemoryReadError> = (|| {
@@ -106,41 +151,57 @@ impl MemoryFiles {
                 crate::budget::check_path(&path)?;
                 let metadata = fs::symlink_metadata(&path)?;
                 if metadata.file_type().is_symlink() {
-                    self.skipped.insert(name.into(), MemorySkipReason::NotRegularFile);
+                    self.record_skipped(name, MemorySkipReason::NotRegularFile);
                     return Ok(None);
                 }
             }
             let metadata = fs::symlink_metadata(&path)?;
             if !metadata.is_file() {
-                self.skipped.insert(name.into(), MemorySkipReason::NotRegularFile);
+                self.record_skipped(name, MemorySkipReason::NotRegularFile);
                 return Ok(None);
             }
             if metadata.permissions().mode() & 0o444 == 0 && metadata.permissions().mode() & 0o222 != 0 {
-                self.skipped.insert(name.into(), MemorySkipReason::WriteOnly);
+                self.record_skipped(name, MemorySkipReason::WriteOnly);
                 return Ok(None);
             }
-            let text = read_admitted_text(&path, limit)?;
-            parse(&text).map(Some)
+            let budget = self.parsed.budget().clone();
+            crate::with_heap_budget(&budget, || {
+                let text = read_admitted_text(&path, limit)?;
+                parse(&text).map(Some)
+            })
         })();
         match result {
             Ok(value) => value,
             Err(error) => {
-                self.unavailable.insert(name.into(), error);
+                self.record_error(name, error);
                 None
             }
         }
     }
 }
 
-pub(crate) fn read_text(path: &Path, limit: u64) -> io::Result<String> {
+pub(crate) struct ReadText {
+    text: String,
+    _reservation: Option<crate::HeapReservation>,
+}
+impl std::ops::Deref for ReadText {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+pub(crate) fn read_text(path: &Path, limit: u64) -> io::Result<ReadText> {
     crate::budget::charge_file()?;
     read_admitted_text(path, limit)
 }
 
-fn read_admitted_text(path: &Path, limit: u64) -> io::Result<String> {
+fn read_admitted_text(path: &Path, limit: u64) -> io::Result<ReadText> {
     crate::budget::check_path(path)?;
     let limit = crate::budget::file_limit(usize::try_from(limit).unwrap_or(usize::MAX));
     let mut data = Vec::new();
+    let budget = crate::HeapBudget::current();
+    let mut reservation = None;
     let mut file = File::open(path)?;
     let mut chunk = [0; 8192];
     let mut line_bytes = 0;
@@ -172,11 +233,20 @@ fn read_admitted_text(path: &Path, limit: u64) -> io::Result<String> {
         }
         if data.capacity() - data.len() < count {
             let capacity = (data.len() + count).max(data.capacity().saturating_mul(2)).min(limit);
+            let replacement = budget.try_reserve(crate::HeapKind::Scratch, capacity, 1)?;
             data.try_reserve_exact(capacity - data.len()).map_err(io::Error::other)?;
+            if data.capacity() > capacity {
+                return Err(crate::HeapError::AllocationFailed.into());
+            }
+            reservation = Some(replacement);
         }
         data.extend_from_slice(&chunk[..count]);
     }
-    String::from_utf8(data).map_err(io::Error::other)
+    let text = String::from_utf8(data).map_err(io::Error::other)?;
+    Ok(ReadText {
+        text,
+        _reservation: reservation,
+    })
 }
 
 /// Read and parse a procfs source through the active collection budget.

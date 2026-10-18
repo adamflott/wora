@@ -1,7 +1,8 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::MemoryReadError;
+use crate::storage::CollectMemory;
 
 /// Structured kernel data without floating-point conversion or assumed units.
 ///
@@ -24,14 +25,28 @@ pub enum ParsedMemoryValue {
     /// A documented textual boolean, such as KSM's yes/no flags.
     Bool(bool),
     /// Ordered values, ranges, flags, reserved fields or records.
-    List(Vec<Self>),
+    List(crate::MemoryList<Self>),
     /// Named fields, counters, quantities or node-specific values.
-    Map(BTreeMap<String, Self>),
+    Map(crate::MemoryMap<Self>),
     /// Textual enum, unit, filename, or unfamiliar value with no numeric meaning.
-    Text(String),
+    Text(crate::MemoryText),
 }
 
 impl ParsedMemoryValue {
+    /// Copy caller/source text after allocation admission in the active budget.
+    pub fn try_text(text: impl AsRef<str>) -> Result<Self, MemoryReadError> {
+        Ok(Self::Text(crate::MemoryText::try_new(text.as_ref())?))
+    }
+
+    /// Collect values with fallible capacity growth in the active budget.
+    pub fn try_list(values: impl IntoIterator<Item = Self>) -> Result<Self, MemoryReadError> {
+        Ok(Self::List(crate::MemoryList::try_from_iter(values)?))
+    }
+
+    /// Collect named fields with fallible key/entry admission in the active budget.
+    pub fn try_map<K: AsRef<str>>(fields: impl IntoIterator<Item = (K, Self)>) -> Result<Self, MemoryReadError> {
+        Ok(Self::Map(crate::MemoryMap::try_from_iter(fields)?))
+    }
     /// Look up a named field in a structured record.
     pub fn get(&self, name: &str) -> Option<&Self> {
         match self {
@@ -68,6 +83,10 @@ impl ParsedMemoryValue {
 /// `vm.lowmem_reserve_ratio` vectors. Unknown textual settings remain strings.
 /// Malformed known vectors fail atomically; no missing counter is invented.
 pub fn parse_sysctl_value(name: &str, text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
+    crate::heap::with_default_budget(|| parse_sysctl_inner(name, text))
+}
+
+fn parse_sysctl_inner(name: &str, text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
     let fields = words(text)?;
     match name {
         "fs.dentry-state" => named_vector(&fields, &["nr_dentry", "nr_unused", "age_limit", "want_pages", "nr_negative"], 4, 6),
@@ -78,7 +97,7 @@ pub fn parse_sysctl_value(name: &str, text: &str) -> Result<ParsedMemoryValue, M
             if fields.is_empty() {
                 return Err(invalid("empty lowmem reserve ratio vector"));
             }
-            Ok(ParsedMemoryValue::List(fields.iter().map(|field| number(field)).collect::<Result<_, _>>()?))
+            Ok(ParsedMemoryValue::List(fields.iter().map(|field| number(field)).collect_memory()?))
         }
         _ => atom(text),
     }
@@ -89,7 +108,10 @@ pub fn parse_sysctl_value(name: &str, text: &str) -> Result<ParsedMemoryValue, M
 /// multiline diagnostic dumps return `None`; collectors report them unavailable
 /// rather than retaining unparsed contents.
 pub fn parse_memory_file(path: impl AsRef<Path>, text: &str) -> Result<Option<ParsedMemoryValue>, MemoryReadError> {
-    let path = path.as_ref();
+    crate::heap::with_default_budget(|| parse_file_inner(path.as_ref(), text))
+}
+
+fn parse_file_inner(path: &Path, text: &str) -> Result<Option<ParsedMemoryValue>, MemoryReadError> {
     let name = path.file_name().and_then(|v| v.to_str()).unwrap_or_default();
     let parent = path.parent().and_then(Path::file_name).and_then(|v| v.to_str()).unwrap_or_default();
     let value = match name {
@@ -109,8 +131,8 @@ pub fn parse_memory_file(path: impl AsRef<Path>, text: &str) -> Result<Option<Pa
             }
             map([
                 ("value", number(text)?),
-                ("unit", ParsedMemoryValue::Text(if name.ends_with("latency") { "ns" } else { "MiB/s" }.into())),
-            ])
+                ("unit", ParsedMemoryValue::try_text(if name.ends_with("latency") { "ns" } else { "MiB/s" })?),
+            ])?
         }
         "auto" if parent == "weighted_interleave" => match text.trim() {
             "true" => ParsedMemoryValue::Bool(true),
@@ -160,16 +182,9 @@ pub fn parse_memory_file(path: impl AsRef<Path>, text: &str) -> Result<Option<Pa
         }
         "mm_stat" => {
             let parsed = crate::ZramMemoryStat::parse(text)?;
-            let mut fields = parsed
-                .fields
-                .into_iter()
-                .map(|(name, value)| (name, ParsedMemoryValue::Unsigned(value)))
-                .collect::<BTreeMap<_, _>>();
+            let mut fields = crate::MemoryMap::try_from_iter(parsed.fields.into_iter().map(|(name, value)| (name, ParsedMemoryValue::Unsigned(value))))?;
             if !parsed.extra.is_empty() {
-                fields.insert(
-                    "extra".into(),
-                    ParsedMemoryValue::List(parsed.extra.into_iter().map(ParsedMemoryValue::Unsigned).collect()),
-                );
+                fields.try_insert("extra", ParsedMemoryValue::try_list(parsed.extra.into_iter().map(ParsedMemoryValue::Unsigned))?)?;
             }
             ParsedMemoryValue::Map(fields)
         }
@@ -185,7 +200,7 @@ pub fn parse_memory_file(path: impl AsRef<Path>, text: &str) -> Result<Option<Pa
         "cpumap" | "bitmap" => bitmap(text)?,
         "block_size_bytes" | "phys_index" => hexadecimal(text)?,
         "enabled" | "defrag" | "shmem_enabled" | "advisor_mode" | "comp_algorithm" | "recomp_algorithm" if text.contains(['[', ']']) => policy(&words(text)?)?,
-        "distance" => ParsedMemoryValue::List(words(text)?.iter().map(|field| number(field)).collect::<Result<_, _>>()?),
+        "distance" => ParsedMemoryValue::List(words(text)?.iter().map(|field| number(field)).collect_memory()?),
         "objects" | "objects_partial" | "total_objects" | "slabs" | "partial" | "slabs_cpu_partial" if text.contains("N") => node_counts(text)?,
         name if name.starts_with("hugetlb.") && name.ends_with(".numa_stat") => assignments(text)?,
         "page_owner" => crate::provenance::page_owner(text)?,
@@ -208,11 +223,14 @@ pub fn parse_memory_file(path: impl AsRef<Path>, text: &str) -> Result<Option<Pa
 }
 
 pub(crate) fn invalid(message: &str) -> MemoryReadError {
-    MemoryReadError::ReadFailed(message.into())
+    MemoryReadError::read_failed(message)
 }
 
-pub(crate) fn words(text: &str) -> Result<Vec<&str>, MemoryReadError> {
-    let fields: Vec<_> = text.split_ascii_whitespace().take(65537).collect();
+pub(crate) fn words(text: &str) -> Result<crate::MemoryList<&str>, MemoryReadError> {
+    let mut fields = crate::MemoryList::scratch(crate::HeapBudget::current());
+    for field in text.split_ascii_whitespace().take(65537) {
+        fields.try_push(field)?;
+    }
     if fields.len() > 65536 {
         return Err(invalid("structured value exceeds 65536 items"));
     }
@@ -262,7 +280,7 @@ pub(crate) fn atom(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
     }
     let fields = words(text)?;
     if fields.len() > 1 && fields.iter().all(|field| numeric_token(field)) {
-        return Ok(ParsedMemoryValue::List(fields.iter().map(|field| number(field)).collect::<Result<_, _>>()?));
+        return Ok(ParsedMemoryValue::List(fields.iter().map(|field| number(field)).collect_memory()?));
     }
     let quantity = if fields.len() == 2 && numeric_token(fields[0]) && is_unit(fields[1]) {
         Some((fields[0], fields[1]))
@@ -276,21 +294,21 @@ pub(crate) fn atom(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
         None
     };
     if let Some((value, unit)) = quantity {
-        return Ok(map([("value", number(value)?), ("unit", ParsedMemoryValue::Text(unit.into()))]));
+        return map([("value", number(value)?), ("unit", ParsedMemoryValue::try_text(unit)?)]);
     }
-    Ok(ParsedMemoryValue::Text(text.into()))
+    ParsedMemoryValue::try_text(text)
 }
 
 fn is_unit(unit: &str) -> bool {
     !unit.is_empty() && unit.bytes().all(|b| b.is_ascii_alphabetic() || matches!(b, b'%' | b'/'))
 }
 
-pub(crate) fn map<const N: usize>(fields: [(&str, ParsedMemoryValue); N]) -> ParsedMemoryValue {
-    ParsedMemoryValue::Map(fields.into_iter().map(|(name, value)| (name.into(), value)).collect())
+pub(crate) fn map<const N: usize>(fields: [(&str, ParsedMemoryValue); N]) -> Result<ParsedMemoryValue, MemoryReadError> {
+    ParsedMemoryValue::try_map(fields)
 }
 
-pub(crate) fn put(fields: &mut BTreeMap<String, ParsedMemoryValue>, name: &str, value: ParsedMemoryValue) -> Result<(), MemoryReadError> {
-    if name.is_empty() || fields.insert(name.into(), value).is_some() {
+pub(crate) fn put(fields: &mut crate::MemoryMap<ParsedMemoryValue>, name: &str, value: ParsedMemoryValue) -> Result<(), MemoryReadError> {
+    if name.is_empty() || fields.try_insert(name, value)?.is_some() {
         return Err(invalid("empty or duplicate structured field"));
     }
     Ok(())
@@ -300,28 +318,28 @@ fn named_vector(fields: &[&str], names: &[&str], minimum: usize, reserved_end: u
     if fields.len() < minimum {
         return Err(invalid("incomplete kernel counter vector"));
     }
-    let mut result = BTreeMap::new();
+    let mut result = crate::MemoryMap::default();
     for (name, value) in names.iter().zip(fields) {
-        result.insert((*name).into(), number(value)?);
+        result.try_insert(*name, number(value)?)?;
     }
-    let reserved: Vec<_> = fields
+    let reserved: crate::MemoryList<_> = fields
         .iter()
         .skip(names.len())
         .take(reserved_end.saturating_sub(names.len()))
         .map(|v| number(v))
-        .collect::<Result<_, _>>()?;
+        .collect_memory()?;
     if !reserved.is_empty() {
-        result.insert("reserved".into(), ParsedMemoryValue::List(reserved));
+        result.try_insert("reserved", ParsedMemoryValue::List(reserved))?;
     }
-    let extra: Vec<_> = fields.iter().skip(reserved_end.max(names.len())).map(|v| number(v)).collect::<Result<_, _>>()?;
+    let extra: crate::MemoryList<_> = fields.iter().skip(reserved_end.max(names.len())).map(|v| number(v)).collect_memory()?;
     if !extra.is_empty() {
-        result.insert("extra".into(), ParsedMemoryValue::List(extra));
+        result.try_insert("extra", ParsedMemoryValue::List(extra))?;
     }
     Ok(ParsedMemoryValue::Map(result))
 }
 
 fn counter_table(text: &str, ksm: bool) -> Result<ParsedMemoryValue, MemoryReadError> {
-    let mut result = BTreeMap::new();
+    let mut result = crate::MemoryMap::default();
     for (index, line) in text.lines().filter(|v| !v.trim().is_empty()).enumerate() {
         if index >= 65536 {
             return Err(invalid("counter table exceeds 65536 records"));
@@ -346,7 +364,7 @@ fn counter_table(text: &str, ksm: bool) -> Result<ParsedMemoryValue, MemoryReadE
 }
 
 fn node_meminfo(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
-    let mut result = BTreeMap::new();
+    let mut result = crate::MemoryMap::default();
     let mut node = None;
     for line in text.lines().filter(|v| !v.trim().is_empty()) {
         let fields = words(line)?;
@@ -369,7 +387,7 @@ fn node_meminfo(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
 }
 
 pub(crate) fn ranges(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
-    let mut result = Vec::new();
+    let mut result = crate::MemoryList::default();
     let mut previous = None;
     if text.trim().is_empty() {
         return Ok(ParsedMemoryValue::List(result));
@@ -388,10 +406,10 @@ pub(crate) fn ranges(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
             return Err(invalid("reversed, duplicate or overlapping ID range"));
         }
         previous = Some(end);
-        result.push(map([
+        result.try_push(map([
             ("start", ParsedMemoryValue::Unsigned(u64::from(start))),
             ("end", ParsedMemoryValue::Unsigned(u64::from(end))),
-        ]));
+        ])?)?;
     }
     Ok(ParsedMemoryValue::List(result))
 }
@@ -407,24 +425,24 @@ pub(crate) fn hexadecimal(text: &str) -> Result<ParsedMemoryValue, MemoryReadErr
 }
 
 pub(crate) fn bitmap(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
-    let mut result = Vec::new();
+    let mut result = crate::MemoryList::default();
     for (index, word) in text.trim().split(',').enumerate() {
         if index >= 65536 {
             return Err(invalid("bitmap exceeds 65536 words"));
         }
         let value = u32::from_str_radix(word, 16).map_err(|_| invalid("invalid 32-bit bitmap word"))?;
-        result.push(ParsedMemoryValue::Unsigned(u64::from(value)));
+        result.try_push(ParsedMemoryValue::Unsigned(u64::from(value)))?;
     }
-    Ok(map([("words", ParsedMemoryValue::List(result))]))
+    map([("words", ParsedMemoryValue::List(result))])
 }
 
 fn policy(fields: &[&str]) -> Result<ParsedMemoryValue, MemoryReadError> {
     let mut selected = None;
-    let mut choices = Vec::new();
+    let mut choices = crate::MemoryList::default();
     let mut seen = BTreeSet::new();
     for field in fields {
         let name = if let Some(name) = field.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
-            if selected.replace(ParsedMemoryValue::Text(name.into())).is_some() {
+            if selected.replace(ParsedMemoryValue::try_text(name)?).is_some() {
                 return Err(invalid("multiple selected policy choices"));
             }
             name
@@ -434,17 +452,17 @@ fn policy(fields: &[&str]) -> Result<ParsedMemoryValue, MemoryReadError> {
         if name.is_empty() || name.contains(['[', ']']) || !seen.insert(name) {
             return Err(invalid("malformed policy choice"));
         }
-        choices.push(ParsedMemoryValue::Text(name.into()));
+        choices.try_push(ParsedMemoryValue::try_text(name)?)?;
     }
-    Ok(map([
+    map([
         ("selected", selected.ok_or_else(|| invalid("missing selected policy choice"))?),
         ("choices", ParsedMemoryValue::List(choices)),
-    ]))
+    ])
 }
 
 fn node_counts(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
     let fields = words(text)?;
-    let mut nodes = BTreeMap::new();
+    let mut nodes = crate::MemoryMap::default();
     for field in fields.iter().skip(1) {
         let (node, value) = field
             .strip_prefix('N')
@@ -453,14 +471,14 @@ fn node_counts(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
         let node = node.parse::<u32>().map_err(|_| invalid("invalid allocator node ID"))?;
         put(&mut nodes, &node.to_string(), number(value)?)?;
     }
-    Ok(map([
+    map([
         ("total", number(fields.first().ok_or_else(|| invalid("missing allocator total"))?)?),
         ("nodes", ParsedMemoryValue::Map(nodes)),
-    ]))
+    ])
 }
 
 fn assignments(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
-    let mut result = BTreeMap::new();
+    let mut result = crate::MemoryMap::default();
     for field in words(text)? {
         let (name, value) = field.split_once('=').ok_or_else(|| invalid("invalid named counter"))?;
         put(&mut result, name, number(value)?)?;

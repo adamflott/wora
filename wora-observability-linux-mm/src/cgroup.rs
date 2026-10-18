@@ -266,17 +266,17 @@ fn dmem_file(name: &str) -> bool {
 fn parse_value(name: &str, text: &str) -> Result<CgroupMemoryValue, MemoryReadError> {
     match name {
         name if dmem_file(name) => {
-            let mut regions = BTreeMap::new();
+            let mut regions = crate::MemoryMap::default();
             for line in text.lines().filter(|line| !line.trim().is_empty()) {
                 let mut fields = line.split_ascii_whitespace();
                 let region = fields.next().ok_or_else(|| invalid("missing DMEM region"))?;
                 let value = fields.next().ok_or_else(|| invalid("missing DMEM byte value"))?;
                 let value = if value == "max" && matches!(name, "dmem.min" | "dmem.low" | "dmem.max") {
-                    crate::ParsedMemoryValue::Text("max".into())
+                    crate::ParsedMemoryValue::try_text("max")?
                 } else {
                     crate::ParsedMemoryValue::Unsigned(unsigned(value)?)
                 };
-                if fields.next().is_some() || regions.insert(region.into(), value).is_some() {
+                if fields.next().is_some() || regions.try_insert(region, value)?.is_some() {
                     return Err(invalid("malformed or duplicate DMEM region"));
                 }
             }
@@ -330,7 +330,7 @@ fn parse_value(name: &str, text: &str) -> Result<CgroupMemoryValue, MemoryReadEr
                 Ok(CgroupMemoryValue::Text(value.into()))
             } else if !known_scalar(name) {
                 match crate::parse_memory_file(name, text)? {
-                    Some(crate::ParsedMemoryValue::Text(value)) => Ok(CgroupMemoryValue::Text(value)),
+                    Some(crate::ParsedMemoryValue::Text(value)) => Ok(CgroupMemoryValue::Text(value.to_string())),
                     Some(value) => Ok(CgroupMemoryValue::Structured(value)),
                     None => Err(invalid("unsupported cgroup memory-information layout")),
                 }
@@ -352,8 +352,8 @@ fn unsigned(value: &str) -> Result<u64, MemoryReadError> {
     value.parse().map_err(|_| invalid("value exceeds u64"))
 }
 
-fn invalid(message: impl Into<String>) -> MemoryReadError {
-    MemoryReadError::ReadFailed(message.into())
+fn invalid(message: impl AsRef<str>) -> MemoryReadError {
+    MemoryReadError::read_failed(message)
 }
 
 fn validate_path(path: &Path) -> Result<(), MemoryReadError> {

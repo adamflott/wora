@@ -36,11 +36,11 @@ fn bit_57_uses_vma_wp_rwp_context_and_preserves_unknown_and_legacy_flags() -> Re
     let entry = PageMapEntry::decode(1 << 57);
     assert_eq!(entry.userfaultfd_protection(None), UserfaultfdProtection::Unknown);
     assert_eq!(
-        entry.userfaultfd_protection(Some(&ParsedMemoryValue::Text("ur".into()))),
+        entry.userfaultfd_protection(Some(&ParsedMemoryValue::try_text("ur")?)),
         UserfaultfdProtection::Unknown
     );
     assert_eq!(
-        entry.userfaultfd_protection(Some(&ParsedMemoryValue::List(vec![ParsedMemoryValue::Unsigned(1)]))),
+        entry.userfaultfd_protection(Some(&ParsedMemoryValue::try_list(vec![ParsedMemoryValue::Unsigned(1)])?)),
         UserfaultfdProtection::Unknown
     );
     let header_only = MemoryMapping::parse_smaps("1000-3000 rw-p 0 00:00 0\n")?;

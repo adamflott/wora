@@ -23,12 +23,12 @@ fn shrinker_counts_keep_object_units_identifiers_and_node_column_order() -> Resu
     assert_eq!(rows[1].get("cgroup_id").and_then(ParsedMemoryValue::as_u64), Some(u64::MAX));
     assert_eq!(
         rows[0].get("node_counts"),
-        Some(&ParsedMemoryValue::List(vec![
+        Some(&ParsedMemoryValue::try_list(vec![
             ParsedMemoryValue::Unsigned(9_007_199_254_740_993),
             ParsedMemoryValue::Unsigned(0)
-        ]))
+        ])?)
     );
-    assert_eq!(snapshot.counts["b-cache-2"].parsed["count"], ParsedMemoryValue::List(Vec::new()));
+    assert_eq!(snapshot.counts["b-cache-2"].parsed["count"], ParsedMemoryValue::try_list(Vec::new())?);
     assert!(matches!(snapshot.counts["c-cache-3"].unavailable.get("count"), Some(MemoryReadError::NotFound)));
     assert!(!snapshot.counts["a-cache-1"].unavailable.contains_key("scan"));
     assert_eq!(fs::read_to_string(count)?, text);
@@ -93,6 +93,6 @@ fn malformed_shrinker_tables_fail_atomically_without_assuming_dense_nodes() -> R
     }
     let too_many = "1 ".to_owned() + &vec!["0"; 4097].join(" ");
     assert!(parse_memory_file("shrinker/example/count", &too_many).is_err());
-    assert_eq!(parse_memory_file("shrinker/example/count", "")?, Some(ParsedMemoryValue::List(Vec::new())));
+    assert_eq!(parse_memory_file("shrinker/example/count", "")?, Some(ParsedMemoryValue::try_list(Vec::new())?));
     Ok(())
 }

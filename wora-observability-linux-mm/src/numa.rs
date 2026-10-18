@@ -97,25 +97,23 @@ fn collect_access_classes(node: &Path, files: &mut MemoryFiles) {
     let classes = match entries(node) {
         Ok(classes) => classes,
         Err(error) => {
-            files.unavailable.insert(".".into(), error.into());
+            files.record_error(".", error.into());
             return;
         }
     };
     for (index, (name, path)) in classes.into_iter().filter(|(name, _)| numbered(name, "access").is_some()).enumerate() {
         if index == 64 {
-            files
-                .unavailable
-                .insert(".".into(), crate::budget::exceeded(crate::CollectionLimit::Entries).into());
+            files.record_error(".", crate::budget::exceeded(crate::CollectionLimit::Entries).into());
             break;
         }
         match std::fs::symlink_metadata(path) {
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => {
-                files.skipped.insert(name, crate::MemorySkipReason::NotRegularFile);
+                files.record_skipped(&name, crate::MemorySkipReason::NotRegularFile);
                 continue;
             }
             Err(error) => {
-                files.unavailable.insert(name, error.into());
+                files.record_error(&name, error.into());
                 continue;
             }
         }

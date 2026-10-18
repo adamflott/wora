@@ -37,9 +37,9 @@ fn retains_native_values_vectors_and_new_memory_settings() -> Result<(), Box<dyn
     assert_eq!(snapshot.parsed["vm.swappiness"], Value::Unsigned(60));
     assert_eq!(
         snapshot.parsed["vm.lowmem_reserve_ratio"],
-        Value::List([256, 256, 32, 0, 0].map(Value::Unsigned).into())
+        Value::try_list([256, 256, 32, 0, 0].map(Value::Unsigned))?
     );
-    assert_eq!(snapshot.parsed["vm.numa_zonelist_order"], Value::Text("Node".into()));
+    assert_eq!(snapshot.parsed["vm.numa_zonelist_order"], Value::try_text("Node")?);
     assert_eq!(snapshot.parsed["vm.defrag_mode"], Value::Unsigned(0));
     assert_eq!(snapshot.parsed["vm.future_memory_setting"], Value::Unsigned(9));
     assert_eq!(snapshot.parsed["kernel.shmall"], Value::Unsigned(18446744073692774399));

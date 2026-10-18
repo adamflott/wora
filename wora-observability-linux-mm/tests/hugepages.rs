@@ -26,7 +26,7 @@ fn collects_policy_per_size_stats_and_sparse_node_pools() -> Result<(), Box<dyn 
     let snapshot = HugePageStats::from_sys_root(root.path());
     assert_eq!(
         snapshot.transparent.parsed["enabled"].get("selected"),
-        Some(&ParsedMemoryValue::Text("madvise".into()))
+        Some(&ParsedMemoryValue::try_text("madvise")?)
     );
     assert_eq!(snapshot.transparent.parsed["hpage_pmd_size"], ParsedMemoryValue::Unsigned(2_097_152));
     assert_eq!(

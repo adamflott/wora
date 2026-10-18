@@ -101,6 +101,23 @@ include attempts, entries, paths and ancestor depth. These are not heap/RSS limi
 and live/peak counters. `with_heap_budget` scopes a budget to synchronous builders.
 The per-allocation overhead is an explicit reserve, not measured allocator/RSS usage.
 
+`ParsedMemoryValue::{List,Map,Text}` use `MemoryList`, `MemoryMap` and `MemoryText`.
+Use `try_list`, `try_map`, `try_text`, or the containers' `try_push`/`try_insert`.
+Clones share storage; changes reserve a replacement before copying. Map lookups
+are logarithmic; sorted-vector insertion is linear in the number of entries.
+The JSON value shape is unchanged.
+
+`MemoryFiles::try_from_names` accepts a shared heap budget and returns allocation
+failures. Best-effort readers expose inline `allocation_error` when a source or
+even an error entry cannot fit. Source buffers and borrowed-token lists charge
+scratch; keys, parsed storage and retained error messages charge retained bytes.
+`SysctlReadError::read_failed` replaces direct string construction of `ReadFailed`.
+Smaps mappings also use budgeted text, field maps and mapping lists.
+
+These are partial heap limits: other typed/third-party parser tables, directory
+and path buffers, temporary sets/formatting and Serde's own buffering remain
+outside this accounting. Supplied generic container elements own their own heaps.
+
 Oversized/malformed sources fail without a successful truncated prefix. Multi-file
 snapshots retain independent errors; `CollectionReport::limit_exceeded` marks
 incomplete collection. Reads are non-atomic, and missing/denied data differs from zero.

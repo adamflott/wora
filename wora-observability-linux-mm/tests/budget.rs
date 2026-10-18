@@ -156,3 +156,97 @@ fn failed_explicit_sources_cannot_bypass_the_budget_with_zero_input_bytes() -> R
     assert_eq!(report.limit_exceeded, Some(CollectionLimit::Files));
     Ok(())
 }
+
+#[test]
+fn shared_storage_keeps_credit_and_refuses_copy_before_mutation() -> Result<(), Box<dyn std::error::Error>> {
+    use wora_observability_linux_mm::{HeapBudget, HeapError, HeapKind, HeapLimits, MemoryList};
+    let probe = HeapBudget::default();
+    let mut values = MemoryList::new(probe.clone());
+    values.try_push(1u64)?;
+    let charged = probe.usage().retained_bytes;
+    let budget = HeapBudget::new(HeapLimits {
+        retained_bytes: charged,
+        scratch_bytes: 1024,
+        allocation_overhead: probe.limits().allocation_overhead,
+    })?;
+    let mut values = MemoryList::new(budget.clone());
+    values.try_push(1u64)?;
+    let retained = values.clone();
+    assert_eq!(budget.usage().retained_bytes, charged);
+    assert_eq!(values.try_push(2), Err(HeapError::Exhausted(HeapKind::Retained)));
+    assert_eq!(&*values, &[1]);
+    assert_eq!(&*retained, &[1]);
+    drop(values);
+    assert_eq!(budget.usage().retained_bytes, charged);
+    drop(retained);
+    assert_eq!(budget.usage().retained_bytes, 0);
+    assert!(budget.usage().retained_peak_bytes <= charged);
+    Ok(())
+}
+
+#[test]
+fn source_scratch_and_error_maps_fail_without_successful_empty_samples() -> Result<(), Box<dyn std::error::Error>> {
+    use wora_observability_linux_mm::{HeapBudget, HeapError, HeapKind, HeapLimits, MemoryReadError, with_heap_budget};
+    let root = tempfile::tempdir()?;
+    fs::write(root.path().join("value"), "12345678\n")?;
+    let scratch = HeapBudget::new(HeapLimits {
+        scratch_bytes: 8,
+        allocation_overhead: 0,
+        ..Default::default()
+    })?;
+    let (files, report) = with_heap_budget(&scratch, || {
+        collect_with_limits(CollectionLimits::default(), || MemoryFiles::from_names(root.path(), &["value"]))
+    })?;
+    assert!(files.parsed.is_empty());
+    assert_eq!(files.allocation_error, Some(HeapError::Exhausted(HeapKind::Scratch)));
+    assert_eq!(
+        files.unavailable.get("value"),
+        Some(&MemoryReadError::Allocation(HeapError::Exhausted(HeapKind::Scratch)))
+    );
+    assert_eq!(report.limit_exceeded, Some(CollectionLimit::ScratchHeap));
+    assert_eq!(scratch.usage().scratch_bytes, 0);
+    drop(files);
+    assert_eq!(scratch.usage().retained_bytes, 0);
+
+    let retained = HeapBudget::new(HeapLimits {
+        retained_bytes: 1,
+        ..Default::default()
+    })?;
+    let (files, report) = with_heap_budget(&retained, || {
+        collect_with_limits(CollectionLimits::default(), || MemoryFiles::from_names(root.path(), &["missing", "other"]))
+    })?;
+    assert!(files.parsed.is_empty());
+    assert!(files.unavailable.is_empty());
+    assert_eq!(files.allocation_error, Some(HeapError::Exhausted(HeapKind::Retained)));
+    assert_eq!(report.limit_exceeded, Some(CollectionLimit::RetainedHeap));
+    assert_eq!(retained.usage().retained_bytes, 0);
+    assert!(MemoryFiles::try_from_names(root.path(), &["value"], 100, &retained).is_err());
+    Ok(())
+}
+
+#[test]
+fn parsed_storage_shares_credit_and_refusal_releases_partial_tables() -> Result<(), Box<dyn std::error::Error>> {
+    use wora_observability_linux_mm::{HeapBudget, HeapLimits, parse_memory_file, with_heap_budget};
+    let budget = HeapBudget::default();
+    let value = with_heap_budget(&budget, || parse_memory_file("/proc/self/status", "Name:\ttest\nVmRSS:\t12 kB\n"))?.ok_or("missing parsed value")?;
+    let bytes = budget.usage().retained_bytes;
+    assert!(bytes > 0);
+    let cloned = value.clone();
+    assert_eq!(budget.usage().retained_bytes, bytes);
+    drop(value);
+    assert_eq!(budget.usage().retained_bytes, bytes);
+    drop(cloned);
+    assert_eq!(budget.usage().retained_bytes, 0);
+    assert_eq!(budget.usage().scratch_bytes, 0);
+
+    let small = HeapBudget::new(HeapLimits {
+        retained_bytes: 1024,
+        ..Default::default()
+    })?;
+    let text = (0..100).map(|key| format!("key{key} {key}\n")).collect::<String>();
+    assert!(with_heap_budget(&small, || parse_memory_file("/proc/vmstat", &text)).is_err());
+    assert_eq!(small.usage().retained_bytes, 0);
+    assert_eq!(small.usage().scratch_bytes, 0);
+    assert!(small.usage().retained_peak_bytes <= 1024);
+    Ok(())
+}

@@ -267,6 +267,14 @@ instrumented allocations are charged; the overhead reserve is a policy, not a
 measurement of allocator metadata. Budget control state has a fixed allocation
 outside its counters.
 
+Structured lists/maps/text, `MemoryFiles` entries/errors and smaps storage now
+reserve retained capacity; source buffers and borrowed-token lists reserve scratch.
+Clones share leases, and replacement capacity is reserved while old storage lives.
+Use fallible `ParsedMemoryValue::try_{list,map,text}` / container builders;
+JSON values keep their existing shape. `MemoryFiles::allocation_error` preserves
+failure when an error-map entry cannot fit. Other typed/third-party tables,
+directory/path buffers, temporary sets/formatting and Serde buffering remain unmetered.
+
 Input and encoded bytes are not heap capacity or RSS. Other inventories, queues,
 sinks, tasks, reloads, custom providers and writer buffers need separate budgets.
 Visible cgroup limits are not allocation headroom: `memory.high` applies pressure;
@@ -309,10 +317,10 @@ is incomplete; the current input/payload limits do not establish a heap ceiling.
 
 | Account | Required charge and lifetime | Current coverage |
 | --- | --- | --- |
-| Retained data | Allocated capacities of tables, strings, keys, errors, shared payloads and control blocks; count shared ownership once until its last owner releases it. | Linux generations account for encoded payload bytes, not heap capacity. |
-| Scratch | Concurrent input, conversion, parser and output buffers, including container growth and old/new overlap. | Source/line/work limits and capped memory-report JSON; no aggregate heap accounting. |
+| Retained data | Allocated capacities of tables, strings, keys, errors, shared payloads and control blocks; count shared ownership once until its last owner releases it. | Budgeted structured/MemoryFiles/smaps storage; other typed tables remain unmetered. Encoded-generation admission is separate. |
+| Scratch | Concurrent input, conversion, parser and output buffers, including container growth and old/new overlap. | Budgeted source/token buffers and capped memory-report JSON; other temporary storage remains unmetered. |
 | Runtime state | Queued payloads, waiting producers, futures, registries, sinks, exporters, watcher/reload state and their retained capacities. | Opt-in queue/task/provider/sink/service counts; heap/byte accounting remains incomplete. |
-| Reserve | Allocator rounding/metadata and bounded error/control/shutdown capacity, measured for the selected allocator/build. | No validated allocator reserve yet. |
+| Reserve | Allocator rounding/metadata and bounded error/control/shutdown capacity, measured for the selected allocator/build. | Configurable per-allocation reserve; requires allocator/build validation. |
 | Thread stacks | Thread-count × configured stack size for runner/runtime/blocking workers; account separately from heap. | Caller/runtime configuration, without a WORA-wide stack limit. |
 
 `owned_heap = retained + scratch + runtime_state + reserve`. Stack mappings,

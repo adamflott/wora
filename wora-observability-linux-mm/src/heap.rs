@@ -40,6 +40,7 @@ impl HeapLimits {
 
 /// Ownership class chosen by the collector, not a Linux memory-accounting scope.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub enum HeapKind {
     /// Storage that can outlive collection, including shared snapshot contents.
     Retained,
@@ -143,7 +144,13 @@ impl HeapBudget {
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
                 live.checked_add(bytes).filter(|next| *next <= limit)
             })
-            .map_err(|_| HeapError::Exhausted(kind))?;
+            .map_err(|_| {
+                crate::budget::mark_exceeded(match kind {
+                    HeapKind::Retained => crate::CollectionLimit::RetainedHeap,
+                    HeapKind::Scratch => crate::CollectionLimit::ScratchHeap,
+                });
+                HeapError::Exhausted(kind)
+            })?;
         counter.peak.fetch_max(previous + bytes, Ordering::AcqRel);
         Ok(HeapReservation {
             budget: self.clone(),
@@ -185,6 +192,7 @@ impl Drop for HeapReservation {
 
 /// Allocation admission/construction failure, independent of OS source errors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub enum HeapError {
     /// A retained or scratch allowance was zero.
     InvalidLimits,
@@ -231,6 +239,14 @@ pub fn with_heap_budget<T>(budget: &HeapBudget, collect: impl FnOnce() -> T) -> 
     let previous = ACTIVE.with(|active| active.borrow_mut().replace(budget.clone()));
     let _restore = Restore(previous);
     collect()
+}
+
+pub(crate) fn with_default_budget<T>(collect: impl FnOnce() -> T) -> T {
+    if ACTIVE.with(|active| active.borrow().is_some()) {
+        collect()
+    } else {
+        with_heap_budget(&HeapBudget::default(), collect)
+    }
 }
 
 #[cfg(test)]

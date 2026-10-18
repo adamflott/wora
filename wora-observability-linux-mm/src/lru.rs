@@ -137,7 +137,7 @@ pub(crate) fn full_histograms(text: &str) -> Result<ParsedMemoryValue, MemoryRea
     let mut node = None;
     let mut scopes = BTreeSet::new();
     let mut sequences = BTreeSet::new();
-    let mut result = Vec::new();
+    let mut result = crate::MemoryList::default();
     while let Some(line) = lines.next() {
         if line.len() > 8192 {
             return Err(full_invalid());
@@ -172,28 +172,28 @@ pub(crate) fn full_histograms(text: &str) -> Result<ParsedMemoryValue, MemoryRea
                 if sequences.len() == 4 || !sequences.insert(sequence) {
                     return Err(full_invalid());
                 }
-                let mut tiers = Vec::with_capacity(4);
+                let mut tiers = crate::MemoryList::default();
                 for tier in 0..4 {
                     let row = full_fields(lines.next().ok_or_else(full_invalid)?, 7)?;
                     if number(row[0])? != tier {
                         return Err(full_invalid());
                     }
-                    tiers.push(map([
+                    tiers.try_push(map([
                         ("tier", ParsedMemoryValue::Unsigned(tier)),
                         ("anonymous", tagged_columns(&row[1..4], &["rep", "RTx", "xxx"])?),
                         ("file", tagged_columns(&row[4..7], &["rep", "RTx", "xxx"])?),
-                    ]));
+                    ])?)?;
                 }
-                let mut record = std::collections::BTreeMap::from([
-                    ("cgroup_id".into(), ParsedMemoryValue::Unsigned(*id)),
-                    ("cgroup_path".into(), ParsedMemoryValue::Text(path.clone())),
-                    ("node".into(), ParsedMemoryValue::Unsigned(u64::from(node))),
-                    ("sequence".into(), ParsedMemoryValue::Unsigned(sequence)),
-                    ("age_ms".into(), ParsedMemoryValue::Unsigned(number(fields[1])?)),
-                    ("anonymous_pages".into(), full_pages(fields[2])?),
-                    ("file_pages".into(), full_pages(fields[3])?),
-                    ("tiers".into(), ParsedMemoryValue::List(tiers)),
-                ]);
+                let mut record = crate::MemoryMap::try_from_iter([
+                    ("cgroup_id", ParsedMemoryValue::Unsigned(*id)),
+                    ("cgroup_path", ParsedMemoryValue::try_text(path.clone())?),
+                    ("node", ParsedMemoryValue::Unsigned(u64::from(node))),
+                    ("sequence", ParsedMemoryValue::Unsigned(sequence)),
+                    ("age_ms", ParsedMemoryValue::Unsigned(number(fields[1])?)),
+                    ("anonymous_pages", full_pages(fields[2])?),
+                    ("file_pages", full_pages(fields[3])?),
+                    ("tiers", ParsedMemoryValue::List(tiers)),
+                ])?;
                 let has_mm = lines
                     .peek()
                     .and_then(|line| line.split_ascii_whitespace().next())
@@ -201,9 +201,9 @@ pub(crate) fn full_histograms(text: &str) -> Result<ParsedMemoryValue, MemoryRea
                     .is_some_and(|tag| matches!(tag, b't' | b'T' | b'x'));
                 if has_mm {
                     let row = full_fields(lines.next().ok_or_else(full_invalid)?, 4)?;
-                    record.insert("mm_stats".into(), tagged_columns(&row, &["tyfa", "TYFA", "xxxx"])?);
+                    record.try_insert("mm_stats", tagged_columns(&row, &["tyfa", "TYFA", "xxxx"])?)?;
                 }
-                result.push(ParsedMemoryValue::Map(record));
+                result.try_push(ParsedMemoryValue::Map(record))?;
             }
         }
     }
@@ -222,11 +222,14 @@ fn memcg(line: &str) -> Result<(u64, String), MemoryReadError> {
     Ok((number(fields[1])?, path.into()))
 }
 
-fn full_fields(line: &str, count: usize) -> Result<Vec<&str>, MemoryReadError> {
+fn full_fields(line: &str, count: usize) -> Result<crate::MemoryList<&str>, MemoryReadError> {
     if line.len() > 8192 {
         return Err(full_invalid());
     }
-    let fields: Vec<_> = line.split_ascii_whitespace().take(count + 1).collect();
+    let mut fields = crate::MemoryList::scratch(crate::HeapBudget::current());
+    for field in line.split_ascii_whitespace().take(count + 1) {
+        fields.try_push(field)?;
+    }
     if fields.len() != count {
         return Err(full_invalid());
     }
@@ -235,29 +238,29 @@ fn full_fields(line: &str, count: usize) -> Result<Vec<&str>, MemoryReadError> {
 
 fn full_pages(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
     let value = text.strip_suffix('x').unwrap_or(text);
-    Ok(map([
+    map([
         ("value", ParsedMemoryValue::Unsigned(number(value)?)),
         ("expired", ParsedMemoryValue::Bool(value.len() != text.len())),
-    ]))
+    ])
 }
 
 fn tagged_columns(fields: &[&str], layouts: &[&str]) -> Result<ParsedMemoryValue, MemoryReadError> {
     let mut tags = String::new();
-    let mut values = Vec::with_capacity(fields.len());
+    let mut values = crate::MemoryList::default();
     for field in fields {
         let split = field.len().checked_sub(1).ok_or_else(full_invalid)?;
         let (value, tag) = field.split_at_checked(split).ok_or_else(full_invalid)?;
         let value = number(value)?;
         tags.push_str(tag);
-        let mut column = std::collections::BTreeMap::from([("tag".into(), ParsedMemoryValue::Text(tag.into()))]);
+        let mut column = crate::MemoryMap::try_from_iter([("tag", ParsedMemoryValue::try_text(tag)?)])?;
         if tag == "x" {
             if value != 0 {
                 return Err(full_invalid());
             }
         } else {
-            column.insert("value".into(), ParsedMemoryValue::Unsigned(value));
+            column.try_insert("value", ParsedMemoryValue::Unsigned(value))?;
         }
-        values.push(ParsedMemoryValue::Map(column));
+        values.try_push(ParsedMemoryValue::Map(column))?;
     }
     if !layouts.contains(&tags.as_str()) {
         return Err(full_invalid());
@@ -266,11 +269,11 @@ fn tagged_columns(fields: &[&str], layouts: &[&str]) -> Result<ParsedMemoryValue
 }
 
 fn full_invalid() -> MemoryReadError {
-    MemoryReadError::ReadFailed("malformed or unsupported full MGLRU histogram".into())
+    MemoryReadError::read_failed("malformed or unsupported full MGLRU histogram")
 }
 
 fn invalid() -> MemoryReadError {
-    MemoryReadError::ReadFailed("malformed basic MGLRU histogram".into())
+    MemoryReadError::read_failed("malformed basic MGLRU histogram")
 }
 fn number(value: &str) -> Result<u64, MemoryReadError> {
     if !value.bytes().all(|b| b.is_ascii_digit()) {

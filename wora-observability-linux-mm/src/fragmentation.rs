@@ -98,5 +98,5 @@ impl FragmentationZone {
 }
 
 fn invalid() -> MemoryReadError {
-    MemoryReadError::ReadFailed("malformed fragmentation table".into())
+    MemoryReadError::read_failed("malformed fragmentation table")
 }

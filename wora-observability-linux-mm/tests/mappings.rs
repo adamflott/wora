@@ -17,7 +17,7 @@ fn mapping_fields_flags_paths_and_process_controls_are_preserved() -> Result<(),
     );
     assert_eq!(
         mappings[0].fields["VmFlags"],
-        ParsedMemoryValue::List(["rd", "wr", "zz"].map(|flag| ParsedMemoryValue::Text(flag.into())).into())
+        ParsedMemoryValue::try_list(["rd", "wr", "zz"].map(ParsedMemoryValue::try_text).into_iter().collect::<Result<Vec<_>, _>>()?)?
     );
     assert_eq!(mappings[0].pathname, "/path with spaces (deleted)");
     assert_eq!(mappings[0].permissions, "rw-p");

@@ -44,7 +44,7 @@ fn dmem_uses_existing_discovery_and_keeps_region_scope_bytes_and_unlimited_limit
     let CgroupMemoryValue::Structured(regions) = &group.parsed["dmem.max"] else {
         return Err("not a limit table".into());
     };
-    assert_eq!(regions.get("drm/0000:03:00.0/vram0"), Some(&ParsedMemoryValue::Text("max".into())));
+    assert_eq!(regions.get("drm/0000:03:00.0/vram0"), Some(&ParsedMemoryValue::try_text("max")?));
     assert!(!group.parsed.contains_key("dmem.capacity"));
     assert!(!group.parsed.contains_key("dmem.peak"));
     assert_eq!(snapshot.ancestors.len(), 1);

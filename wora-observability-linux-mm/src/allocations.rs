@@ -96,5 +96,5 @@ impl AllocationSites {
 }
 
 fn invalid(message: &str) -> MemoryReadError {
-    MemoryReadError::ReadFailed(message.into())
+    MemoryReadError::read_failed(message)
 }

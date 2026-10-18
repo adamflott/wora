@@ -24,6 +24,7 @@ mod provenance;
 mod shrinker;
 mod slabinfo;
 mod slub;
+mod storage;
 mod structured;
 mod swaps;
 mod sysctl;
@@ -84,6 +85,7 @@ pub use provenance::{KernelLeakStats, PageOwnerStats};
 pub use shrinker::ShrinkerStats;
 pub use slabinfo::{SlabCache, SlabCpuStats, SlabGlobalStats, SlabInfo};
 pub use slub::SlubStats;
+pub use storage::{MemoryList, MemoryMap, MemoryText};
 pub use structured::{ParsedMemoryValue, parse_memory_file, parse_sysctl_value};
 pub use swaps::{SwapEntry, SwapType, Swaps};
 /// Read failures shared by memory information collectors.

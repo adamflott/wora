@@ -57,13 +57,16 @@ fn sysctls_have_named_vector_fields_reserved_slots_signed_scalars_and_arrays() -
     assert_eq!(field(dentry, "nr_unused")?.as_u64(), Some(300300));
     assert_eq!(field(dentry, "age_limit")?.as_u64(), Some(45));
     assert_eq!(field(dentry, "nr_negative")?.as_u64(), Some(34063));
-    assert_eq!(field(dentry, "reserved")?, &Value::List(vec![Value::Unsigned(0)]));
-    assert_eq!(field(dentry, "extra")?, &Value::List(vec![Value::Unsigned(123)]));
+    assert_eq!(field(dentry, "reserved")?, &Value::try_list(vec![Value::Unsigned(0)])?);
+    assert_eq!(field(dentry, "extra")?, &Value::try_list(vec![Value::Unsigned(123)])?);
     assert_eq!(field(&snapshot.parsed["fs.file-nr"], "max_files")?.as_u64(), Some(u64::MAX));
     assert_eq!(snapshot.parsed["kernel.shm_next_id"].as_i64(), Some(-1));
     assert_eq!(snapshot.parsed["vm.swappiness"], Value::Unsigned(0));
-    assert_eq!(snapshot.parsed["vm.numa_zonelist_order"], Value::Text("Node".into()));
-    assert_eq!(parse_sysctl_value("vm.lowmem_reserve_ratio", "256")?, Value::List(vec![Value::Unsigned(256)]));
+    assert_eq!(snapshot.parsed["vm.numa_zonelist_order"], Value::try_text("Node")?);
+    assert_eq!(
+        parse_sysctl_value("vm.lowmem_reserve_ratio", "256")?,
+        Value::try_list(vec![Value::Unsigned(256)])?
+    );
     #[cfg(feature = "serde1")]
     {
         let json = serde_json::to_value(&snapshot)?;
@@ -114,24 +117,24 @@ fn malformed_known_formats_fail_atomically_without_retaining_raw_values() -> Res
 fn numa_policies_units_masks_and_node_counts_keep_their_meanings() -> Result<(), Box<dyn std::error::Error>> {
     let meminfo = parse_memory_file("meminfo", "Node 9 MemFree: 9007199254740993 kB\nNode 9 HugePages_Total: 3\n")?.ok_or("no meminfo")?;
     assert_eq!(field(field(&meminfo, "MemFree")?, "value")?.as_u64(), Some(9_007_199_254_740_993));
-    assert_eq!(field(field(&meminfo, "MemFree")?, "unit")?, &Value::Text("kB".into()));
+    assert_eq!(field(field(&meminfo, "MemFree")?, "unit")?, &Value::try_text("kB")?);
     let policy = parse_memory_file("enabled", "always [madvise] never")?.ok_or("no policy")?;
-    assert_eq!(field(&policy, "selected")?, &Value::Text("madvise".into()));
+    assert_eq!(field(&policy, "selected")?, &Value::try_text("madvise")?);
     assert_eq!(parse_memory_file("block_size_bytes", "8000000")?, Some(Value::Unsigned(0x8000000)));
     assert_eq!(parse_memory_file("phys_index", "0000001a")?, Some(Value::Unsigned(26)));
     assert_eq!(
         parse_memory_file("cpumap", "00000001,80000000")?,
-        Some(Value::Map(BTreeMap::from([(
-            "words".into(),
-            Value::List(vec![Value::Unsigned(1), Value::Unsigned(0x80000000)])
-        )])))
+        Some(Value::try_map(BTreeMap::from([(
+            "words",
+            Value::try_list(vec![Value::Unsigned(1), Value::Unsigned(0x80000000)])?
+        )]))?)
     );
     let nodes = parse_memory_file("objects", "100 N0=25 N9=75")?.ok_or("no counts")?;
     assert_eq!(field(field(&nodes, "nodes")?, "9")?.as_u64(), Some(75));
     let size = parse_memory_file("demote_size", "32768kB")?.ok_or("no size")?;
     assert_eq!(field(&size, "value")?.as_u64(), Some(32768));
     assert_eq!(parse_memory_file("shrinker_enabled", "N")?, Some(Value::Bool(false)));
-    assert_eq!(parse_memory_file("dimm_label", "[DIMM_A1]")?, Some(Value::Text("[DIMM_A1]".into())));
+    assert_eq!(parse_memory_file("dimm_label", "[DIMM_A1]")?, Some(Value::try_text("[DIMM_A1]")?));
     assert!(parse_memory_file("page_owner", "Page allocated via order 0\n allocation_stack+0x1\n").is_err());
     Ok(())
 }
@@ -140,7 +143,7 @@ fn numa_policies_units_masks_and_node_counts_keep_their_meanings() -> Result<(),
 fn recorded_process_files_parse_status_limits_faults_and_numa_placement() -> Result<(), Box<dyn std::error::Error>> {
     let status = parse_memory_file("status", include_str!("fixtures/process-information-status"))?.ok_or("no status")?;
     assert_eq!(field(field(&status, "Uid")?, "real")?.as_u64(), Some(1000));
-    assert_eq!(field(field(&status, "VmRSS")?, "unit")?, &Value::Text("kB".into()));
+    assert_eq!(field(field(&status, "VmRSS")?, "unit")?, &Value::try_text("kB")?);
     let limits = parse_memory_file("limits", include_str!("fixtures/process-information-limits"))?.ok_or("no limits")?;
     assert!(field(field(&limits, "Max locked memory")?, "soft")?.as_u64().is_some());
     let stat = parse_memory_file("stat", include_str!("fixtures/process-information-stat"))?.ok_or("no stat")?;
@@ -157,7 +160,7 @@ fn recorded_process_files_parse_status_limits_faults_and_numa_placement() -> Res
         "Name:\t123\nUmask:\t0022\nCapBnd:\tffffffffffffffff\nMems_allowed_list:\t0-4294967295\n",
     )?
     .ok_or("no status")?;
-    assert_eq!(field(&status, "Name")?, &Value::Text("123".into()));
+    assert_eq!(field(&status, "Name")?, &Value::try_text("123")?);
     assert_eq!(field(&status, "Umask")?.as_u64(), Some(0o22));
     assert_eq!(field(&status, "CapBnd")?.as_u64(), Some(u64::MAX));
     Ok(())
@@ -169,11 +172,11 @@ fn per_mapping_accounting_block_vectors_and_vmalloc_areas_are_structured() -> Re
     let Value::List(mappings) = parse_memory_file("smaps", smaps)?.ok_or("no mappings")? else {
         return Err("expected mappings".into());
     };
-    assert_eq!(field(&mappings[0], "pathname")?, &Value::Text("/path with  two spaces".into()));
+    assert_eq!(field(&mappings[0], "pathname")?, &Value::try_text("/path with  two spaces")?);
     assert_eq!(field(field(field(&mappings[0], "fields")?, "Rss")?, "value")?.as_u64(), Some(12));
     let io = parse_memory_file("io_stat", "1 2 3 4 5")?.ok_or("no io stats")?;
     assert_eq!(field(&io, "failed_reads")?.as_u64(), Some(1));
-    assert_eq!(field(&io, "extra")?, &Value::List(vec![Value::Unsigned(5)]));
+    assert_eq!(field(&io, "extra")?, &Value::try_list(vec![Value::Unsigned(5)])?);
     let Value::List(areas) = parse_memory_file("vmallocinfo", "0x00000000-0x00000000 8192 caller+0x4 pages=2 vmalloc N9=2\n")?.ok_or("no areas")? else {
         return Err("expected areas".into());
     };
@@ -195,7 +198,7 @@ fn cgroup_node_constraints_and_hugepage_policy_are_emitted_as_structures() -> Re
     assert_eq!(field(numa, "N9")?.as_u64(), Some(4096));
     fs::write(root.path().join("enabled"), "always [madvise] never")?;
     let huge = HugePageFiles::from_directory(root.path());
-    assert_eq!(field(&huge.parsed["enabled"], "selected")?, &Value::Text("madvise".into()));
+    assert_eq!(field(&huge.parsed["enabled"], "selected")?, &Value::try_text("madvise")?);
     Ok(())
 }
 

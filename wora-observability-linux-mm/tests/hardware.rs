@@ -25,7 +25,7 @@ fn hardware_scopes_and_cma_ranges_remain_separate_and_actions_untouched() -> Res
     let data = MemoryHardwareStats::from_sys_root(root.path());
     assert_eq!(data.block_size_bytes, Some(0x8000000));
     assert_eq!(data.memory.parsed["block_size_bytes"], ParsedMemoryValue::Unsigned(0x8000000));
-    assert_eq!(data.blocks[&17].parsed["state"], ParsedMemoryValue::Text("online".into()));
+    assert_eq!(data.blocks[&17].parsed["state"], ParsedMemoryValue::try_text("online")?);
     assert_eq!(data.edac["mc2/dimm15"].parsed["dimm_ce_count"], ParsedMemoryValue::Unsigned(4));
     assert_eq!(data.poisoned[&9].parsed["recovered"], ParsedMemoryValue::Unsigned(3));
     assert_eq!(data.cma["pool/ranges/1"].parsed["base_pfn"], ParsedMemoryValue::Unsigned(9_007_199_254_740_993));

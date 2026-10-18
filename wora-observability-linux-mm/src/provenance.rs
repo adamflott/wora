@@ -39,37 +39,37 @@ pub(crate) fn page_owner(text: &str) -> Result<ParsedMemoryValue, MemoryReadErro
         if fields[0] != "PFN" || fields[2] != "type" || fields[4] != "Block" || fields[6] != "type" || fields[8] != "Flags" {
             return Err(bad_owner());
         }
-        let mut result = std::collections::BTreeMap::from([
+        let mut result = crate::MemoryMap::try_from_iter([
             (
-                "allocation".into(),
+                "allocation",
                 map([
                     ("order", unsigned(order)?),
                     ("mask", bit_names(mask)?),
                     ("pid", signed_id(pid)?),
                     ("tgid", signed_id(tgid)?),
-                    ("comm", ParsedMemoryValue::Text(comm.into())),
+                    ("comm", ParsedMemoryValue::try_text(comm)?),
                     ("timestamp_ns", unsigned(timestamp)?),
-                ]),
+                ])?,
             ),
             (
-                "page".into(),
+                "page",
                 map([
                     ("pfn", hex(fields[1])?),
-                    ("migratetype", ParsedMemoryValue::Text(fields[3].into())),
+                    ("migratetype", ParsedMemoryValue::try_text(fields[3])?),
                     ("block", unsigned(fields[5])?),
-                    ("block_migratetype", ParsedMemoryValue::Text(fields[7].into())),
+                    ("block_migratetype", ParsedMemoryValue::try_text(fields[7])?),
                     ("flags", bit_names(flags)?),
-                ]),
+                ])?,
             ),
-        ]);
-        let mut stack = Vec::new();
+        ])?;
+        let mut stack = crate::MemoryList::default();
         for line in &lines[2..] {
             if let Some(reason) = line.strip_prefix("Page has been migrated, last migrate reason: ") {
-                if reason.is_empty() || result.insert("migration_reason".into(), ParsedMemoryValue::Text(reason.into())).is_some() {
+                if reason.is_empty() || result.try_insert("migration_reason", ParsedMemoryValue::try_text(reason)?)?.is_some() {
                     return Err(bad_owner());
                 }
             } else if *line == "Slab cache page" {
-                if result.insert("slab_cache_page".into(), ParsedMemoryValue::Bool(true)).is_some() {
+                if result.try_insert("slab_cache_page", ParsedMemoryValue::Bool(true))?.is_some() {
                     return Err(bad_owner());
                 }
             } else if let Some(charge) = line.strip_prefix("Charged ") {
@@ -78,18 +78,18 @@ pub(crate) fn page_owner(text: &str) -> Result<ParsedMemoryValue, MemoryReadErro
                 let (offline, charge) = charge.strip_prefix("offline ").map_or((false, charge), |rest| (true, rest));
                 let label = charge.strip_prefix("memcg ").filter(|label| !label.is_empty()).ok_or_else(bad_owner)?;
                 let value = map([
-                    ("label", ParsedMemoryValue::Text(label.into())),
+                    ("label", ParsedMemoryValue::try_text(label)?),
                     ("via_objcg", ParsedMemoryValue::Bool(objcg)),
                     ("offline", ParsedMemoryValue::Bool(offline)),
-                ]);
-                if result.insert("charge".into(), value).is_some() {
+                ])?;
+                if result.try_insert("charge", value)?.is_some() {
                     return Err(bad_owner());
                 }
             } else {
                 push_frame(&mut stack, line)?;
             }
         }
-        result.insert("stack".into(), ParsedMemoryValue::List(stack));
+        result.try_insert("stack", ParsedMemoryValue::List(stack))?;
         Ok(ParsedMemoryValue::Map(result))
     })
 }
@@ -104,21 +104,21 @@ pub(crate) fn owner_stacks(name: &str, text: &str) -> Result<ParsedMemoryValue, 
         if !has_stack && stack_end != 0 {
             return Err(bad_owner());
         }
-        let mut record = std::collections::BTreeMap::new();
+        let mut record = crate::MemoryMap::default();
         if has_stack {
-            let mut stack = Vec::new();
+            let mut stack = crate::MemoryList::default();
             for line in &lines[..stack_end] {
                 push_frame(&mut stack, line)?;
             }
-            record.insert("stack".into(), ParsedMemoryValue::List(stack));
+            record.try_insert("stack", ParsedMemoryValue::List(stack))?;
         }
         if has_handle {
             let handle = lines[stack_end].strip_prefix("handle: ").ok_or_else(bad_owner)?;
-            record.insert("handle".into(), signed_id(handle)?);
+            record.try_insert("handle", signed_id(handle)?)?;
         }
         if has_pages {
             let pages = lines[lines.len() - 1].strip_prefix("nr_base_pages: ").ok_or_else(bad_owner)?;
-            record.insert("nr_base_pages".into(), unsigned(pages)?);
+            record.try_insert("nr_base_pages", unsigned(pages)?)?;
         }
         Ok(ParsedMemoryValue::Map(record))
     })
@@ -129,8 +129,8 @@ fn provenance_records(
     header: Option<&str>,
     parse: impl Fn(&[&str]) -> Result<ParsedMemoryValue, MemoryReadError>,
 ) -> Result<ParsedMemoryValue, MemoryReadError> {
-    let mut records = Vec::new();
-    let mut lines = Vec::new();
+    let mut records = crate::MemoryList::default();
+    let mut lines = crate::MemoryList::scratch(crate::HeapBudget::current());
     for line in text.lines().chain(std::iter::once("")) {
         if line.len() > 4096 {
             return Err(invalid("provenance line exceeds 4096 bytes"));
@@ -139,24 +139,24 @@ fn provenance_records(
             if records.len() == 65536 {
                 return Err(invalid("provenance dump exceeds 65536 records"));
             }
-            records.push(parse(&lines)?);
+            records.try_push(parse(&lines)?)?;
             lines.clear();
         }
         if !line.trim().is_empty() {
             if lines.len() == 512 {
                 return Err(invalid("provenance record exceeds 512 lines"));
             }
-            lines.push(line);
+            lines.try_push(line)?;
         }
     }
     Ok(ParsedMemoryValue::List(records))
 }
 
-fn push_frame(stack: &mut Vec<ParsedMemoryValue>, line: &str) -> Result<(), MemoryReadError> {
+fn push_frame(stack: &mut crate::MemoryList<ParsedMemoryValue>, line: &str) -> Result<(), MemoryReadError> {
     if !line.starts_with([' ', '\t']) || line.trim().is_empty() || stack.len() == 256 {
         return Err(invalid("invalid provenance stack or more than 256 frames"));
     }
-    stack.push(ParsedMemoryValue::Text(line.trim().into()));
+    stack.try_push(ParsedMemoryValue::try_text(line.trim())?)?;
     Ok(())
 }
 
@@ -187,7 +187,7 @@ fn bit_names(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
         Some((bits, names)) => (bits, names.strip_suffix(')').ok_or_else(bad_owner)?),
         None => (text, ""),
     };
-    Ok(map([("bits", hex(bits)?), ("names", ParsedMemoryValue::Text(names.into()))]))
+    map([("bits", hex(bits)?), ("names", ParsedMemoryValue::try_text(names)?)])
 }
 
 fn bad_owner() -> MemoryReadError {
@@ -254,14 +254,14 @@ pub(crate) fn kernel_leaks(text: &str) -> Result<ParsedMemoryValue, MemoryReadEr
         let identity = lines.get(1).and_then(|line| line.strip_prefix("  comm \"")).ok_or_else(bad_leak)?;
         let (comm, identity) = identity.rsplit_once("\", pid ").ok_or_else(bad_leak)?;
         let (pid, jiffies) = identity.split_once(", jiffies ").ok_or_else(bad_leak)?;
-        let mut result = std::collections::BTreeMap::from([
-            ("address".into(), hex(address)?),
-            ("address_space".into(), ParsedMemoryValue::Text(kind.into())),
-            ("size_bytes".into(), unsigned(size)?),
-            ("comm".into(), ParsedMemoryValue::Text(comm.into())),
-            ("pid".into(), signed_id(pid)?),
-            ("allocation_jiffies".into(), unsigned(jiffies)?),
-        ]);
+        let mut result = crate::MemoryMap::try_from_iter([
+            ("address", hex(address)?),
+            ("address_space", ParsedMemoryValue::try_text(kind)?),
+            ("size_bytes", unsigned(size)?),
+            ("comm", ParsedMemoryValue::try_text(comm)?),
+            ("pid", signed_id(pid)?),
+            ("allocation_jiffies", unsigned(jiffies)?),
+        ])?;
         let mut index = 2;
         if let Some(header) = lines.get(index).and_then(|line| line.strip_prefix("  hex dump (first ")) {
             let header = header.strip_suffix("):").ok_or_else(bad_leak)?;
@@ -275,9 +275,9 @@ pub(crate) fn kernel_leaks(text: &str) -> Result<ParsedMemoryValue, MemoryReadEr
             if count > 32 || count > size {
                 return Err(bad_leak());
             }
-            result.insert("discarded_dump_bytes".into(), ParsedMemoryValue::Unsigned(count));
+            result.try_insert("discarded_dump_bytes", ParsedMemoryValue::Unsigned(count))?;
             if let Some(cpu) = cpu {
-                result.insert("dump_cpu".into(), unsigned(cpu)?);
+                result.try_insert("dump_cpu", unsigned(cpu)?)?;
             }
             index += 1;
             let mut remaining = count as usize;
@@ -301,15 +301,15 @@ pub(crate) fn kernel_leaks(text: &str) -> Result<ParsedMemoryValue, MemoryReadEr
         }
         let backtrace = lines.get(index).ok_or_else(bad_leak)?;
         if let Some(checksum) = backtrace.strip_prefix("  backtrace (crc ").and_then(|value| value.strip_suffix("):")) {
-            result.insert("checksum".into(), hex(checksum)?);
+            result.try_insert("checksum", hex(checksum)?)?;
         } else if *backtrace != "  backtrace:" {
             return Err(bad_leak());
         }
-        let mut stack = Vec::new();
+        let mut stack = crate::MemoryList::default();
         for line in &lines[index + 1..] {
             push_frame(&mut stack, line)?;
         }
-        result.insert("stack".into(), ParsedMemoryValue::List(stack));
+        result.try_insert("stack", ParsedMemoryValue::List(stack))?;
         Ok(ParsedMemoryValue::Map(result))
     })
 }
