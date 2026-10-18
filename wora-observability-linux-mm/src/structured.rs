@@ -191,7 +191,7 @@ pub fn parse_memory_file(path: impl AsRef<Path>, text: &str) -> Result<Option<Pa
         "page_owner" => crate::provenance::page_owner(text)?,
         "show_stacks" | "show_handles" | "show_stacks_handles" => crate::provenance::owner_stacks(name, text)?,
         "kmemleak" => crate::provenance::kernel_leaks(text)?,
-        "lru_gen_full" => return Ok(None),
+        "lru_gen_full" => crate::lru::full_histograms(text)?,
         _ if text.lines().count() > 1 => return Ok(None),
         _ => atom(text)?,
     };

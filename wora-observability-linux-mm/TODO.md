@@ -5,7 +5,6 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 
 ## Collector coverage
 
-- [ ] **MGLRU:** parse `lru_gen_full` in `src/lru.rs`; preserve cgroup/node/generation scope.
 - [ ] **Shrinkers:** add opt-in `shrinker/*/count` diagnostics; cap callbacks/entries
   and exclude `scan`. [ABI][shrinkers]
 - [ ] **Mapping queries:** evaluate `PROCMAP_QUERY` (6.11) for bounded/filtered

@@ -133,7 +133,7 @@ nested values and conversions.
 | `diagnostics.slub`: object caches | Per-cache/node occupancy, policy/debug counters and canonical aliases. | Selected `/sys/kernel/slab/<cache>/*` |
 | `diagnostics.kernel_allocations`: vmalloc/call sites | Area metadata and allocinfo bytes/counts/source locations/accuracy markers. | `/proc/{vmallocinfo,allocinfo}` |
 | `diagnostics.fragmentation`: contiguous allocation | Per-node/zone/order indices in thousandths, including the `-1.000` sentinel. | `/sys/kernel/debug/extfrag/{unusable_index,extfrag_index}` |
-| `diagnostics.lru_generations`: Multi-Gen LRU | Policy and basic cgroup/node generation ages/page counts. Full layout is unsupported. | `/sys/kernel/mm/lru_gen`, `/sys/kernel/debug/{lru_gen,lru_gen_full}` |
+| `diagnostics.lru_generations`: Multi-Gen LRU | Policy, basic histograms and full cgroup/node/generation/tier statistics. Preserve page units, expiry/average/unavailable tags and optional MM counts; reviewed 6.12/7.2 layouts. | `/sys/kernel/mm/lru_gen`, `/sys/kernel/debug/{lru_gen,lru_gen_full}` |
 | `diagnostics.physical_pages`: frame metadata | Bounded flags, mapping counts and charged cgroup inode numbers. | `/proc/{kpageflags,kpagecount,kpagecgroup}` |
 | `diagnostics.page_map`: process page tables | Bounded raw/decoded flags and permitted PFN/swap identities. | `/proc/self/pagemap` |
 | `diagnostics.page_owner`: allocation provenance | Allocation/PFN/pageblock/stack records, migration/charge labels, aggregate handles/base-page counts and threshold. Reviewed 6.12/7.2 layouts; 65536 records, 256 frames/stack, 4 KiB/line. | `/sys/kernel/debug/page_owner`, `page_owner_stacks/*` |

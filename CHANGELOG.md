@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Features
 
+- Parse bounded `lru_gen_full` generation/tier/MM statistics, retaining cgroup/node scope, page units, expiry and average/unavailable markers. Preserve empty paths when memory cgroups are disabled.
 - Parse bounded kmemleak suspects with address scope, byte sizes, allocation jiffies, checksum and stacks. Discard embedded object-byte dumps; preserve uncertainty and never issue scan/clear commands.
 - Parse bounded page-owner allocation/page/stack records and aggregate stack/handle tables, retaining exact timestamps, masks, page units and migration/charge metadata without changing tracking or filters.
 - Add VMA-aware pagemap bit-57 interpretation through `PageMapEntry::userfaultfd_protection`, distinguishing WP/RWP and unknown context while preserving existing fields and serialization.

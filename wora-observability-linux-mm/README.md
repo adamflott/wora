@@ -21,7 +21,6 @@ The [subsystem/source tables](https://github.com/adamflott/wora/blob/master/docs
 and each type's Rustdoc describe paths, scope and units.
 Zswap includes compression/decompression failure counts and stored-incompressible
 page counts; counters absent on older kernels remain per-file errors.
-MGLRU full layouts currently return unsupported-layout errors.
 
 ## Kernel compatibility
 
@@ -68,6 +67,7 @@ Captured cgroup mount paths are used as written.
 | NumaStats | Access-class topology quantities retain nanoseconds and MiB/s under per-node source paths; they describe rated performance. |
 | PageOwnerStats | Bounded allocation/page/stack records, optional migration/charge labels, aggregate signed handles and base-page counts; reviewed 6.12/7.2 layouts. |
 | KernelLeakStats | Bounded unreferenced-object suspects: addresses, byte sizes, PID/comm, jiffies, checksum and stack. Embedded byte dumps are discarded; findings do not prove leaks. |
+| LruStats | Basic histograms and full per-generation/tier statistics; preserve cgroup/node scope, page units, expiry, averages and unavailable markers. |
 | MemoryFiles / sysctls | Structured integers, flags, units, ranges and policies; relative path/dotted keys. |
 
 Unknown supported numeric keys are retained. Fixed typed fields, filename
