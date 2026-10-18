@@ -14,11 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changes
 
+- Limit default `sysinfo` collection to host CPU/memory and the current process's CPU, memory, and disk counters, with task enumeration disabled. Reuse samplers across refreshes and environment clones, and avoid collecting telemetry in `Host::from_parts`.
+- Build refreshed host statistics from the retained CPU sampler so interval CPU values are preserved. Keep standalone `HostStats::update` as a host-only collection and document using `Host::update` for repeated CPU measurements.
+- Share cached Linux diagnostic batches across host samples, memory events, and cloned snapshots using `Arc`. `LinuxMemoryStats::diagnostics` changes from `Option<Box<LinuxMemoryDiagnostics>>` to `Option<Arc<LinuxMemoryDiagnostics>>`; construct with `Arc::new` or convert with `Arc::from`, and use `Arc::make_mut` for an independent writable copy. JSON output retains its existing shape.
+- Serialize memory-report and memory-trace JSON from borrowed fields, avoiding report-only snapshot clones and intermediate trace JSON values.
 - Store only structured data in memory-file, sysctl, cgroup, and hugepage `parsed` maps; remove their former `values` maps and raw-value types. Parse specialized diagnostics during their bounded read without retaining source text.
 - Structure smaps headers and accounting into mapping metadata, quantities, and flag lists. Report malformed or unsupported layouts under their source names in `unavailable`, without retaining raw contents or partial records. Raw-only serialized snapshots require migration.
 
 ### Tests
 
+- Verify that host samplers retain no process tables, process sampling retains only the current PID without command/environment/task inventories, supplied host snapshots cause no telemetry collection, and CPU/disk counter history survives refreshes through cloned environments.
+- Verify diagnostic sharing across provider clones, host samples and memory events, immutable retained snapshots across refreshes, release of old batches, and report JSON parity with public memory snapshots.
 - Add coverage for mixed KSM counter/boolean records, filesystem sysctl layouts, integer limits, malformed data, native bases and units, captured process files, structured-only serialization, and propagation through memory events.
 
 ## [0.0.18] - 2026-10-16

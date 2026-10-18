@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::Serialize;
 
@@ -18,7 +19,10 @@ use super::linux_mm::{
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct LinuxMemoryStats {
     /// Explicitly enabled diagnostics, with an independent collection timestamp.
-    pub diagnostics: Option<Box<super::LinuxMemoryDiagnostics>>,
+    ///
+    /// Snapshots share each diagnostic batch until the next collection. Use
+    /// [`Arc::make_mut`] to obtain an independent writable copy when needed.
+    pub diagnostics: Option<Arc<super::LinuxMemoryDiagnostics>>,
     /// KSM saved/shared pages, scanner policy and process-specific accounting.
     pub ksm: Option<Box<super::linux_mm::KsmStats>>,
     /// Zram device accounting and zswap policy/debugfs counters.

@@ -1,4 +1,5 @@
 //! Opt-in Linux memory diagnostics with independent report/diagnostic intervals.
+//! One Tokio worker keeps the reporting runtime's per-thread overhead small.
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -63,7 +64,7 @@ mod linux {
 }
 
 #[cfg(target_os = "linux")]
-#[tokio::main]
+#[tokio::main(worker_threads = 1)]
 async fn main() -> Result<(), wora::errors::MainEarlyReturn> {
     linux::run().await
 }

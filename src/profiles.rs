@@ -8,11 +8,12 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use serde::Serialize;
 use tokio::io::{AsyncWrite, AsyncWriteExt, Stdout};
 use tokio::sync::mpsc::Sender;
 
 use crate::errors::{MainEarlyReturn, WoraSetupError};
-use crate::events::{ControlEvent, Event, MemorySnapshot};
+use crate::events::{ControlEvent, Event};
 use crate::exec::AsyncExecutor;
 use crate::exec_unix::UnixLikeUser;
 use crate::lock::LockBackend;
@@ -29,9 +30,15 @@ use crate::{App, EventLoopAction, NoConfig, NoSecrets, ReadinessState, RunnerOpt
 /// record as it arrives. Output failures stop the runner and return an error.
 /// Termination signals use the runner's normal graceful shutdown behavior.
 ///
-/// Each line is a serialized [`MemorySnapshot`]: a timestamp, memory and swap
-/// totals in bytes, and, on Linux, all sources in `LinuxMemoryStats`, including
-/// nested zone, node, per-CPU, cache, allocation-order, and memory sysctl data.
+/// The reporting examples use one Tokio worker to reduce per-thread memory
+/// overhead. The profile runs on the caller's runtime; choose its worker count
+/// when creating that runtime. Periodic synchronous collection runs on a blocking
+/// worker.
+///
+/// Each line has the serialized [`crate::events::MemorySnapshot`] format: a
+/// timestamp, memory and swap totals in bytes, and, on Linux, all sources in
+/// `LinuxMemoryStats`, including nested zone, node, per-CPU, cache,
+/// allocation-order, and memory sysctl data.
 /// Linux reports also include the collecting process's cgroup v2 usage and
 /// ancestor limits, THP/HugeTLB sysfs views, and process `smaps_rollup` with PID.
 /// Source units and page-type lower bounds are preserved. Unavailable sources
@@ -44,7 +51,7 @@ use crate::{App, EventLoopAction, NoConfig, NoSecrets, ReadinessState, RunnerOpt
 /// ```no_run
 /// use wora::profiles::MemoryReporter;
 ///
-/// #[tokio::main]
+/// #[tokio::main(worker_threads = 1)]
 /// async fn main() -> Result<(), wora::errors::MainEarlyReturn> {
 ///     MemoryReporter::new().run().await
 /// }
@@ -180,20 +187,46 @@ struct MemoryReportSink<W> {
     writer: W,
 }
 
+// Borrow the memory fields so reporting does not construct another owned
+// MemorySnapshot. Keep this view's JSON identical to the public snapshot type.
+#[derive(Serialize)]
+struct MemoryReport<'a> {
+    timestamp: &'a chrono::DateTime<chrono::Utc>,
+    memory: &'a crate::o11y::MemStats,
+    swap: &'a crate::o11y::SwapStats,
+    #[cfg(target_os = "linux")]
+    linux_mm: &'a crate::o11y::LinuxMemoryStats,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Serialize)]
+struct MemoryTraceReport<'a> {
+    timestamp: &'a chrono::DateTime<chrono::Utc>,
+    memory_trace: &'a crate::o11y::linux_mm::MemoryTraceRecord,
+}
+
 #[async_trait]
 impl<W: AsyncWrite + Unpin + Send> O11ySink<()> for MemoryReportSink<W> {
     async fn handle_event(&mut self, event: &O11yEvent<()>) -> Result<(), O11ySinkError> {
         #[cfg(target_os = "linux")]
         if let O11yEventKind::MemoryTrace(record) = &event.kind {
-            let mut line = serde_json::to_vec(&serde_json::json!({"timestamp": event.timestamp, "memory_trace": record}))?;
+            let mut line = serde_json::to_vec(&MemoryTraceReport {
+                timestamp: &event.timestamp,
+                memory_trace: record,
+            })?;
             line.push(b'\n');
             self.writer.write_all(&line).await?;
             self.writer.flush().await?;
             return Ok(());
         }
         if let O11yEventKind::HostStats(stats) = &event.kind {
-            let mut snapshot = MemorySnapshot::from_host_stats(stats);
-            snapshot.timestamp = event.timestamp;
+            let snapshot = MemoryReport {
+                timestamp: &event.timestamp,
+                memory: &stats.memory,
+                swap: &stats.swap,
+                #[cfg(target_os = "linux")]
+                linux_mm: &stats.linux_mm,
+            };
             let mut line = serde_json::to_vec(&snapshot)?;
             line.push(b'\n');
             self.writer.write_all(&line).await?;
@@ -265,6 +298,7 @@ mod tests {
     use tokio::io::BufWriter;
 
     use super::*;
+    use crate::events::MemorySnapshot;
     use crate::o11y::{HostStats, MemStats, SwapStats, o11y_new_ev_finish};
 
     #[cfg(target_os = "linux")]
@@ -305,6 +339,8 @@ mod tests {
             ..HostStats::default()
         };
         let event = o11y_new_ev_hoststats(&stats);
+        let mut expected = MemorySnapshot::from_host_stats(&stats);
+        expected.timestamp = event.timestamp;
         sink.handle_event(&event).await?;
         // Inspect the underlying writer before the pipeline's periodic flush.
         assert!(sink.writer.get_ref().ends_with(b"\n"));
@@ -313,6 +349,7 @@ mod tests {
         let output = std::str::from_utf8(sink.writer.get_ref())?;
         let reports = output.lines().map(serde_json::from_str::<serde_json::Value>).collect::<Result<Vec<_>, _>>()?;
         assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0], serde_json::to_value(expected)?);
         assert_eq!(reports[0]["timestamp"], serde_json::to_value(event.timestamp)?);
         assert_eq!(reports[0]["memory"]["total"], 100);
         assert_eq!(reports[0]["memory"]["used"], 60);
@@ -393,8 +430,12 @@ mod tests {
             ..HostStats::default()
         };
         let mut sink = MemoryReportSink { writer: Vec::new() };
-        sink.handle_event(&o11y_new_ev_hoststats(&stats)).await?;
+        let event = o11y_new_ev_hoststats(&stats);
+        sink.handle_event(&event).await?;
         let report: serde_json::Value = serde_json::from_slice(&sink.writer)?;
+        let mut expected = MemorySnapshot::from_host_stats(&stats);
+        expected.timestamp = event.timestamp;
+        assert_eq!(report, serde_json::to_value(expected)?);
         let mm = &report["linux_mm"];
         assert_eq!(mm["vmstat"]["nr_anomalous"], -2);
         assert_eq!(mm["buddyinfo"]["zones"][0]["free_blocks"][0], 2553);

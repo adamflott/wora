@@ -39,6 +39,14 @@ notification; the cache and watch listeners still receive the latest sample.
 Failed host refreshes retain the previous sample, and watch listeners may
 coalesce updates when they read slowly.
 
+The default `SystemRuntimeEnvironment` retains a host CPU/memory sampler and a
+sampler for the daemon's own CPU, memory, and disk statistics. Process sampling
+disables task enumeration and skips command lines and environments. Clones share
+the sampling history needed for CPU percentages and disk deltas. `Host::update()`
+reuses its host sampler; `Host::from_parts(...)` uses the supplied snapshot without
+collecting telemetry. Standalone `HostStats::update()` performs a fresh host-only
+collection; use `Host::update()` for CPU measurements across an interval.
+
 On Linux, `snapshot.linux_mm` and `HostStats::linux_mm` include `Meminfo`,
 `VmStat`, `MemoryPressure`, `SharedMemorySegments`, `Iomem`, `BuddyInfo`,
 `ZoneInfo`, `Swaps`, `SlabInfo`, and `PageTypeInfo`, including their nested data.
@@ -178,7 +186,7 @@ host sample, flushing each line immediately. Stop it with Ctrl-C or SIGTERM.
 ```rust,no_run
 use wora::profiles::MemoryReporter;
 
-#[tokio::main]
+#[tokio::main(worker_threads = 1)]
 async fn main() -> Result<(), wora::errors::MainEarlyReturn> {
     MemoryReporter::new().run().await
 }
@@ -190,6 +198,11 @@ name `wora-memory-report`, and a per-user Unix executor. Customize it with
 `.with_writer(writer)` for a Tokio async writer. Use `.run_with(exec, fs, options)`
 to supply an existing executor and `RunnerOptions`. The profile uses `NoConfig`
 and `NoSecrets`, and does not install a global tracing subscriber.
+
+The `memory_report` and `memory_diagnostics` examples use one Tokio worker to
+reduce per-thread memory overhead. Periodic synchronous collection runs on a
+blocking worker. `MemoryReporter` runs on the caller's runtime, so applications
+choose their worker count when creating that runtime.
 
 On Linux, expensive diagnostics are explicitly selected and sampled separately
 (60 seconds by default). Cached diagnostics carry `sampled_at`, so their age is
@@ -212,6 +225,14 @@ Use `LinuxMemoryEnvironment::new(provider, options)` with runner options to add
 the same diagnostics to another application or custom telemetry provider.
 `.with_interval(...)` on `LinuxMemoryOptions` sets the diagnostic cadence;
 the profile's interval controls routine reports. Neither grants privileges.
+
+`LinuxMemoryStats::diagnostics` is an `Option<Arc<LinuxMemoryDiagnostics>>`.
+Host samples, memory events, and cloned snapshots share each diagnostic batch;
+refreshing diagnostics creates a new batch while retained snapshots keep their
+original data. Construct this field with `Arc::new(...)` (or convert an existing
+box with `Arc::from(...)`). Use `Arc::make_mut(...)` when a private writable copy
+is needed. JSON fields and values retain the same format. Memory reporting
+serializes borrowed fields directly, avoiding another owned snapshot copy.
 
 Routine Linux reports also include NUMA nodes/tiers, zram/zswap accounting, KSM,
 process status/limits/OOM preferences, and HugeTLB/cpuset cgroup context.

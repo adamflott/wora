@@ -13,7 +13,7 @@ use procfs;
 #[cfg(target_os = "linux")]
 use procfs::ProcError;
 use serde::Serialize;
-use sysinfo::{Disks, Networks, Pid, System};
+use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, Networks, Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
 use thiserror::Error;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncWriteExt, BufWriter};
@@ -241,10 +241,13 @@ pub struct ProcessStats {
 
 impl ProcessStats {
     /// Collect statistics for the current process.
+    ///
+    /// Uses a short-lived sampler primed for CPU and disk counters. For CPU
+    /// usage over a sampling interval, retain a [`SystemRuntimeEnvironment`]
+    /// and call [`RuntimeEnvironment::refresh_process_stats`] periodically.
     pub fn current() -> Option<Self> {
-        let mut sys = System::new_all();
-        sys.refresh_all();
-        Self::from_system(&sys, std::process::id())
+        let mut sys = new_process_sampler();
+        refresh_current_process(&mut sys)
     }
 
     /// Collect statistics for `pid` from `sys`.
@@ -267,6 +270,30 @@ impl ProcessStats {
     }
 }
 
+fn host_refresh_kind() -> RefreshKind {
+    RefreshKind::nothing()
+        .with_cpu(CpuRefreshKind::everything())
+        .with_memory(MemoryRefreshKind::everything())
+}
+
+fn refresh_current_process(sys: &mut System) -> Option<ProcessStats> {
+    let pid = std::process::id();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+        true,
+        ProcessRefreshKind::nothing().without_tasks().with_cpu().with_memory().with_disk_usage(),
+    );
+    ProcessStats::from_system(sys, pid)
+}
+
+fn new_process_sampler() -> System {
+    let mut sys = System::new();
+    // Seed the counters so the first reported disk delta covers the interval
+    // since construction, matching subsequent refreshes.
+    let _ = refresh_current_process(&mut sys);
+    sys
+}
+
 /// Provider for runtime host and process telemetry.
 pub trait RuntimeEnvironment: Clone + Send + Sync + 'static {
     /// Collect the initial host snapshot used to build `Wora`.
@@ -283,6 +310,10 @@ pub trait RuntimeEnvironment: Clone + Send + Sync + 'static {
 }
 
 /// Default runtime environment backed by `sysinfo` and host OS APIs.
+///
+/// Host sampling collects CPU and memory data without a process table. The
+/// process sampler retains only the calling process, with task enumeration
+/// disabled. Clones share the samplers and their CPU/disk counter history.
 #[derive(Clone, Debug)]
 pub struct SystemRuntimeEnvironment {
     host_sampler: Arc<std::sync::Mutex<Option<Host>>>,
@@ -293,7 +324,7 @@ impl Default for SystemRuntimeEnvironment {
     fn default() -> Self {
         Self {
             host_sampler: Arc::new(std::sync::Mutex::new(None)),
-            process_sampler: Arc::new(std::sync::Mutex::new(System::new_all())),
+            process_sampler: Arc::new(std::sync::Mutex::new(new_process_sampler())),
         }
     }
 }
@@ -339,8 +370,7 @@ impl RuntimeEnvironment for SystemRuntimeEnvironment {
 
     fn refresh_process_stats(&self) -> Option<ProcessStats> {
         let mut guard = self.process_sampler.lock().ok()?;
-        guard.refresh_all();
-        ProcessStats::from_system(&guard, std::process::id())
+        refresh_current_process(&mut guard)
     }
 }
 
@@ -1548,9 +1578,12 @@ pub struct Host {
 
 impl Host {
     /// Build a host snapshot from explicit parts.
+    ///
+    /// Performs no telemetry collection. The first [`Self::update`] initializes
+    /// the CPU sampling baseline; subsequent updates retain that history.
     pub fn from_parts(info: HostInfo, stats: HostStats) -> Self {
         Self {
-            sys: System::new_all(),
+            sys: System::new(),
             info,
             stats,
         }
@@ -1558,8 +1591,7 @@ impl Host {
 
     /// Collect host information and resource statistics.
     pub fn new() -> Result<Self, O11yError> {
-        let mut sys = sysinfo::System::new_all();
-        sys.refresh_all();
+        let sys = System::new_with_specifics(host_refresh_kind());
 
         let info = HostInfo::new(&sys)?;
         let stats = HostStats::new(&sys);
@@ -1568,10 +1600,12 @@ impl Host {
     }
 
     /// Refresh host information and resource statistics.
+    ///
+    /// Reuses the CPU sampling baseline and collects no process table.
     pub fn update(&mut self) -> Result<(), O11yError> {
-        self.sys.refresh_all();
+        self.sys.refresh_specifics(host_refresh_kind());
         self.info.update(&self.sys)?;
-        self.stats.update()?;
+        self.stats = HostStats::new(&self.sys);
         Ok(())
     }
 }
@@ -1670,9 +1704,11 @@ impl HostStats {
     }
 
     /// Refresh host resource statistics.
+    ///
+    /// Creates a host-only sampler for this call. Use [`Host::update`] for
+    /// repeated CPU measurements so the sampling baseline is retained.
     pub fn update(&mut self) -> Result<(), O11yError> {
-        let mut sys = System::new_all();
-        sys.refresh_all();
+        let sys = System::new_with_specifics(host_refresh_kind());
         *self = HostStats::new(&sys);
         Ok(())
     }
@@ -1803,6 +1839,107 @@ impl HostInfo {
         self.ncpus = System::physical_core_count().unwrap_or(0);
         self.maxcpus = sys.cpus().len();
 
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod sampling_tests {
+    use std::io::Write;
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    #[test]
+    fn host_from_parts_preserves_supplied_data_without_collecting_telemetry() {
+        let stats = HostStats {
+            memory: MemStats {
+                total: 100,
+                used: 60,
+                free: 40,
+            },
+            ..HostStats::default()
+        };
+        let host = Host::from_parts(HostInfo::default(), stats);
+        assert!(host.sys().processes().is_empty());
+        assert!(host.sys().cpus().is_empty());
+        assert_eq!(host.sys().total_memory(), 0);
+        assert_eq!(host.stats.memory.used, 60);
+    }
+
+    #[test]
+    fn samplers_target_current_process_and_preserve_cpu_and_disk_history() -> Result<(), Box<dyn std::error::Error>> {
+        fn exercise_cpu() {
+            let started = Instant::now();
+            let mut work = 1_u64;
+            while started.elapsed() < sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.saturating_mul(2) {
+                work = std::hint::black_box(work.wrapping_mul(6364136223846793005).wrapping_add(1));
+            }
+        }
+
+        struct TemporaryFile(PathBuf);
+        impl Drop for TemporaryFile {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
+        let environment = SystemRuntimeEnvironment::default();
+        let mut host = Host::new()?;
+        assert!(host.sys().processes().is_empty());
+
+        let mut before = environment.initial_process_stats().ok_or("initial process statistics unavailable")?;
+        // A newly started process can still have zero CPU ticks. sysinfo treats
+        // that as an uninitialized baseline, so establish a nonzero one first.
+        if before.accumulated_cpu_time == 0 {
+            exercise_cpu();
+            before = environment.refresh_process_stats().ok_or("process CPU baseline unavailable")?;
+        }
+        let path = std::env::temp_dir().join(format!(
+            "wora-process-sampler-{}-{}.tmp",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+        let _cleanup = TemporaryFile(path);
+        file.write_all(&[42; 64 * 1024])?;
+        file.sync_all()?;
+
+        // Give both retained CPU baselines a measurable interval and workload.
+        exercise_cpu();
+
+        let after = environment.clone().refresh_process_stats().ok_or("refreshed process statistics unavailable")?;
+        assert_eq!(after.pid, std::process::id());
+        assert_eq!(after.start_time, before.start_time);
+        assert!(after.memory > 0);
+        assert!(after.cpu_usage.is_finite() && after.cpu_usage > 0.0);
+        assert!(after.accumulated_cpu_time > before.accumulated_cpu_time);
+        assert!(after.total_read_bytes >= before.total_read_bytes);
+        assert!(after.total_written_bytes >= before.total_written_bytes);
+        assert_eq!(after.read_bytes, after.total_read_bytes - before.total_read_bytes);
+        assert_eq!(after.written_bytes, after.total_written_bytes - before.total_written_bytes);
+
+        let sampler = environment.process_sampler.lock().map_err(|error| error.to_string())?;
+        assert_eq!(sampler.processes().len(), 1);
+        let process = sampler.process(Pid::from_u32(after.pid)).ok_or("current process missing")?;
+        assert!(process.cmd().is_empty());
+        assert!(process.environ().is_empty());
+        #[cfg(target_os = "linux")]
+        assert!(process.tasks().is_none());
+        drop(sampler);
+
+        host.update()?;
+        assert!(host.sys().processes().is_empty());
+        assert!(!host.sys().cpus().is_empty());
+        assert_eq!(host.stats.cpu.len(), host.sys().cpus().len());
+        for (reported, sampled) in host.stats.cpu.iter().zip(host.sys().cpus()) {
+            assert_eq!(reported.usage, sampled.cpu_usage());
+        }
+        assert_eq!(host.stats.memory.total, host.sys().total_memory());
+
+        let current = ProcessStats::current().ok_or("one-off process statistics unavailable")?;
+        assert_eq!(current.pid, after.pid);
+        assert_eq!(current.start_time, after.start_time);
         Ok(())
     }
 }

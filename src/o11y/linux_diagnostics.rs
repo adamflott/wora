@@ -141,14 +141,15 @@ pub struct LinuxMemoryDiagnostics {
 
 /// Decorates any existing telemetry provider with selected Linux diagnostics.
 ///
-/// Clones share the cache. Collection happens on the runner's blocking worker
-/// after startup, no more often than `interval`; regular snapshots retain the
-/// diagnostic timestamp. No settings or tracing controls are changed.
+/// Clones and published snapshots share each cached diagnostic batch. Collection
+/// happens on the runner's blocking worker after startup, no more often than
+/// `interval`. A refresh creates a new batch; retained snapshots keep their
+/// original data and timestamp. No settings or tracing controls are changed.
 #[derive(Clone, Debug)]
 pub struct LinuxMemoryEnvironment<R> {
     inner: R,
     options: LinuxMemoryOptions,
-    cache: Arc<Mutex<Option<(Instant, LinuxMemoryDiagnostics)>>>,
+    cache: Arc<Mutex<Option<(Instant, Arc<LinuxMemoryDiagnostics>)>>>,
 }
 
 impl<R> LinuxMemoryEnvironment<R> {
@@ -231,9 +232,9 @@ impl<R> LinuxMemoryEnvironment<R> {
                     ))
                 }),
             };
-            *cache = Some((Instant::now(), data));
+            *cache = Some((Instant::now(), Arc::new(data)));
         }
-        stats.linux_mm.diagnostics = cache.as_ref().map(|(_, data)| Box::new(data.clone()));
+        stats.linux_mm.diagnostics = cache.as_ref().map(|(_, data)| Arc::clone(data));
         Ok(())
     }
 }

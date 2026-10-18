@@ -84,6 +84,7 @@ fn diagnostic_selection_caching_and_independent_timestamps() -> Result<(), Box<d
         .diagnostics
         .ok_or("no diagnostics")?;
     assert_eq!(initial.sampled_at, cached.sampled_at);
+    assert!(std::sync::Arc::ptr_eq(&initial, &cached));
     assert_eq!(
         cached.process_mappings.as_ref().ok_or("no mappings")?.mappings.as_ref().ok_or("bad mappings")?[0].fields["Rss"]
             .get("value")
@@ -113,6 +114,71 @@ fn diagnostic_selection_caching_and_independent_timestamps() -> Result<(), Box<d
             .is_none()
     );
     assert!(LinuxMemoryEnvironment::new(CapturedEnvironment, LinuxMemoryOptions::new().with_interval(std::time::Duration::ZERO)).is_err());
+    Ok(())
+}
+
+#[test]
+fn diagnostic_batches_are_shared_and_retained_snapshots_survive_refresh() -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::Arc;
+    use wora::events::MemorySnapshot;
+    use wora::o11y::{LinuxMemoryCollector, LinuxMemoryDiagnostics, LinuxMemoryEnvironment, LinuxMemoryOptions, RuntimeEnvironment};
+
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("self"))?;
+    let smaps = root.path().join("self/smaps");
+    std::fs::write(&smaps, "1000-3000 rw-p 0 00:00 0\nRss: 12 kB\n")?;
+    let options = LinuxMemoryOptions::new()
+        .enable(LinuxMemoryCollector::ProcessMappings)
+        .with_roots(root.path(), root.path())
+        .with_interval(std::time::Duration::from_nanos(1));
+    let provider = LinuxMemoryEnvironment::new(CapturedEnvironment, options)?;
+    let rss = |batch: &LinuxMemoryDiagnostics| {
+        batch
+            .process_mappings
+            .as_ref()
+            .and_then(|details| details.mappings.as_ref())
+            .and_then(|mappings| mappings.first())
+            .and_then(|mapping| mapping.fields.get("Rss"))
+            .and_then(|value| value.get("value"))
+            .and_then(wora::o11y::linux_mm::ParsedMemoryValue::as_u64)
+            .ok_or("missing mapping RSS")
+    };
+
+    let previous = {
+        let stats = provider.initial_host()?.stats;
+        let initial = stats.linux_mm.diagnostics.as_ref().ok_or("no diagnostics")?;
+        let cloned_stats = stats.clone();
+        let snapshot = MemorySnapshot::from_host_stats(&stats);
+        let cloned_snapshot = snapshot.clone();
+        let O11yEventKind::HostStats(event_stats) = o11y_new_ev_hoststats::<()>(&stats).kind else {
+            return Err("expected host stats event".into());
+        };
+        for diagnostics in [
+            &cloned_stats.linux_mm.diagnostics,
+            &snapshot.linux_mm.diagnostics,
+            &cloned_snapshot.linux_mm.diagnostics,
+            &event_stats.linux_mm.diagnostics,
+        ] {
+            assert!(Arc::ptr_eq(initial, diagnostics.as_ref().ok_or("no cloned diagnostics")?));
+        }
+
+        // Explicit mutation makes a private copy, preserving published samples.
+        let mut edited = Arc::clone(initial);
+        Arc::make_mut(&mut edited).sampled_at = chrono::DateTime::UNIX_EPOCH;
+        assert!(!Arc::ptr_eq(initial, &edited));
+        assert_ne!(initial.sampled_at, edited.sampled_at);
+
+        std::fs::write(&smaps, "1000-3000 rw-p 0 00:00 0\nRss: 24 kB\n")?;
+        let refreshed = provider.refresh_host_stats()?.ok_or("no refreshed stats")?;
+        let next = refreshed.linux_mm.diagnostics.as_ref().ok_or("no refreshed diagnostics")?;
+        assert!(!Arc::ptr_eq(initial, next));
+        assert_eq!(rss(initial)?, 12);
+        assert_eq!(rss(snapshot.linux_mm.diagnostics.as_ref().ok_or("no snapshot diagnostics")?)?, 12);
+        assert_eq!(rss(next)?, 24);
+        Arc::downgrade(initial)
+    };
+    // The cache retains only its newest batch, not diagnostic history.
+    assert!(previous.upgrade().is_none());
     Ok(())
 }
 
