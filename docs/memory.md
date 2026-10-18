@@ -120,7 +120,7 @@ nested values and conversions.
 | `cgroup`: memcg/cpuset/HugeTLB | v2 usage, limits, stats, pressure, events, swap/zswap, HugeTLB and allowed memory nodes; selected ancestor usage/limits. | Membership/mount discovery in `/proc/self/{cgroup,mountinfo}`, then `memory.*`, `hugetlb.*`, `cpuset.mems{,.effective}` |
 | `hugepages`: THP/mTHP/HugeTLB | Policies, khugepaged/per-size counters and global/node pools. Counts remain size-specific. | `/sys/kernel/mm/{transparent_hugepage,hugepages}`, `/sys/devices/system/node/node*/hugepages` |
 | `numa`: locality/balancing/tiers | Node memory/VM/locality tables, CPU lists/maps, distances and tier membership. | `/sys/devices/system/node`, `/sys/devices/virtual/memory_tiering` |
-| `compressed`: zswap/zram | Selected zswap policy/debug counters and zram device memory/I/O/backing-device statistics. | `/sys/module/zswap/parameters`, `/sys/kernel/debug/zswap`, `/sys/block/zram*` |
+| `compressed`: zswap/zram | Zswap policy, failure counters, stored/incompressible pages and zram device memory/I/O/backing-device statistics. | `/sys/module/zswap/parameters`, `/sys/kernel/debug/zswap`, `/sys/block/zram*` |
 | `ksm`: identical-page sharing | Global/process counters, scanner policy, signed profit and flags. | `/sys/kernel/mm/ksm/*`, `/proc/self/{ksm_stat,ksm_merging_pages}` |
 | `process`: process VM/accounting | Status/peaks, limits, faults, OOM preferences and RSS/PSS/private/shared/swap rollup. | `/proc/self/{status,limits,stat,oom_score,oom_score_adj,smaps_rollup}` |
 

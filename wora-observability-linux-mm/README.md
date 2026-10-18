@@ -19,6 +19,8 @@ Typed Linux memory readers extending `procfs` 0.18. Linux-only; requires Rust
 
 The [subsystem/source tables](https://github.com/adamflott/wora/blob/master/docs/memory.md#linux-mm-subsystems)
 and each type's Rustdoc describe paths, scope and units.
+Zswap includes compression/decompression failure counts and stored-incompressible
+page counts; counters absent on older kernels remain per-file errors.
 Page-owner stacks, kmemleak findings and MGLRU full layouts currently return
 unsupported-layout errors rather than structured findings.
 

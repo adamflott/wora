@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Features
 
+- Read zswap compression/decompression failure counters and stored-incompressible page counts; preserve missing-counter errors on older kernels.
 - Add shared Linux collection limits, per-batch and aggregate retained snapshot payload limits, generation admission, and skipped-sample status. Mark budget-exhausted collections explicitly incomplete.
 - Add a configurable memory-report output byte limit, including the newline, with a reusable capped buffer and no partial output for oversized records.
 - Add structured `parsed` maps for process KSM counters and flags, sysctl numbers and vectors, NUMA tables, process memory information, zram statistics, SLUB node counts, cgroup node constraints, and hugepage policy selections.

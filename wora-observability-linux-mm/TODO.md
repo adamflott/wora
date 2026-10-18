@@ -5,8 +5,6 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 
 ## Collector coverage
 
-- [ ] **Zswap:** add `reject_compress_fail`, `decompress_fail` (6.15) and
-  `stored_incompressible_pages` (6.18) to `src/compressed.rs`; test missing counters.
 - [ ] **DAMON_STAT:** add a reader and WORA diagnostic selection for existing
   `damon_stat` module statistics; preserve signed percentiles, intervals and monitor
   state. Cover 6.17, 6.19 and 7.2 layouts; never enable monitoring. [ABI][damon]

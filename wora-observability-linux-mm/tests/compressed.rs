@@ -1,6 +1,45 @@
 #![cfg(target_os = "linux")]
 use std::{fs, os::unix::fs::symlink};
-use wora_observability_linux_mm::{CompressedMemoryStats, ParsedMemoryValue, ZramMemoryStat};
+use wora_observability_linux_mm::{CompressedMemoryStats, MemoryReadError, ParsedMemoryValue, ZramMemoryStat};
+
+#[test]
+fn zswap_failures_and_incompressible_pages_preserve_units_and_precision() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let source = root.path().join("kernel/debug/zswap");
+    fs::create_dir_all(&source)?;
+    for (name, value) in [
+        ("reject_compress_fail", "0"),
+        ("decompress_fail", "7"),
+        ("stored_incompressible_pages", "18446744073709551615"),
+    ] {
+        fs::write(source.join(name), value)?;
+    }
+    let snapshot = CompressedMemoryStats::from_sys_root(root.path());
+    assert_eq!(snapshot.zswap.parsed["reject_compress_fail"], ParsedMemoryValue::Unsigned(0));
+    assert_eq!(snapshot.zswap.parsed["decompress_fail"], ParsedMemoryValue::Unsigned(7));
+    assert_eq!(snapshot.zswap.parsed["stored_incompressible_pages"], ParsedMemoryValue::Unsigned(u64::MAX));
+    assert!(matches!(snapshot.zswap.unavailable.get("stored_pages"), Some(MemoryReadError::NotFound)));
+    Ok(())
+}
+
+#[test]
+fn absent_zswap_counters_are_errors_and_disappearing_counters_do_not_stay_cached() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let source = root.path().join("kernel/debug/zswap");
+    fs::create_dir_all(&source)?;
+    fs::write(source.join("stored_pages"), "23")?;
+    fs::write(source.join("decompress_fail"), "4")?;
+    let before = CompressedMemoryStats::from_sys_root(root.path());
+    assert_eq!(before.zswap.parsed["decompress_fail"], ParsedMemoryValue::Unsigned(4));
+    fs::remove_file(source.join("decompress_fail"))?;
+    let after = CompressedMemoryStats::from_sys_root(root.path());
+    for name in ["reject_compress_fail", "decompress_fail", "stored_incompressible_pages"] {
+        assert!(!after.zswap.parsed.contains_key(name));
+        assert!(matches!(after.zswap.unavailable.get(name), Some(MemoryReadError::NotFound)));
+    }
+    assert_eq!(after.zswap.parsed["stored_pages"], ParsedMemoryValue::Unsigned(23));
+    Ok(())
+}
 
 #[test]
 fn device_links_native_tables_and_future_fields_are_preserved() -> Result<(), Box<dyn std::error::Error>> {

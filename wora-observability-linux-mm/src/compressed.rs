@@ -14,7 +14,10 @@ use crate::{MemoryFiles, MemoryReadError};
 pub struct CompressedMemoryStats {
     /// Zswap runtime policy from module parameters.
     pub zswap_parameters: MemoryFiles,
-    /// Zswap debugfs counters; commonly inaccessible without root.
+    /// Selected counters from `/sys/kernel/debug/zswap`; commonly restricted.
+    /// `reject_compress_fail` and `decompress_fail` count failures;
+    /// `stored_incompressible_pages` counts pages, not bytes. Missing counters
+    /// remain per-file errors on kernels that do not expose them.
     pub zswap: MemoryFiles,
     /// Zram devices keyed by sparse device ID (including devices not used as swap).
     pub zram: BTreeMap<u32, ZramDevice>,
@@ -112,10 +115,13 @@ impl CompressedMemoryStats {
                 &[
                     "pool_total_size",
                     "stored_pages",
+                    "stored_incompressible_pages",
                     "same_filled_pages",
                     "pool_limit_hit",
                     "written_back_pages",
                     "reject_compress_poor",
+                    "reject_compress_fail",
+                    "decompress_fail",
                     "reject_alloc_fail",
                     "reject_kmemcache_fail",
                     "reject_reclaim_fail",
