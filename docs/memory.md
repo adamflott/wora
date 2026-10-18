@@ -243,6 +243,8 @@ make page-owner, kmemleak, EDAC or CMA universally available.
 | Path / visible cgroup ancestors | 4,096 bytes / 64 |
 | Live generations | 4 per routine/diagnostic provider |
 | Encoded batch / retained encoded batches | 8 MiB / 32 MiB per provider |
+| Instrumented retained / scratch reservations | 64 MiB / 16 MiB per heap budget |
+| Allocation overhead reserve | 64 bytes per admitted allocation |
 | Reporter JSON record, including newline | 8 MiB |
 
 `CollectionReport::limit_exceeded` marks incomplete collection. Oversized sources
@@ -256,6 +258,14 @@ Configure with `LinuxMemoryLimits`,
 `LinuxMemoryOptions::with_memory_limits` and the reporter's limit setters.
 Standalone readers need `collect_with_limits` plus `read_source` to share a budget;
 calling procfs parsers/`Current` directly does not acquire that budget.
+
+`LinuxMemoryLimits::heap` configures independent retained/scratch allowances.
+`HeapBudget::try_reserve` admits requested layouts plus the configured overhead;
+leases release credit on drop, and `usage()` exposes live/peak reservations.
+`with_heap_budget` supplies that shared budget to synchronous builders. Only
+instrumented allocations are charged; the overhead reserve is a policy, not a
+measurement of allocator metadata. Budget control state has a fixed allocation
+outside its counters.
 
 Input and encoded bytes are not heap capacity or RSS. Other inventories, queues,
 sinks, tasks, reloads, custom providers and writer buffers need separate budgets.

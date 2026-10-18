@@ -96,6 +96,11 @@ Defaults include 16 MiB input per batch, 4 MiB per file and 64 KiB per line;
 [all limits](https://github.com/adamflott/wora/blob/master/docs/memory.md#collection-and-retention-limits)
 include attempts, entries, paths and ancestor depth. These are not heap/RSS limits.
 
+`HeapBudget` separately admits retained/scratch allocation requests through
+`try_reserve`; keep each lease until its storage is freed. Clones share limits
+and live/peak counters. `with_heap_budget` scopes a budget to synchronous builders.
+The per-allocation overhead is an explicit reserve, not measured allocator/RSS usage.
+
 Oversized/malformed sources fail without a successful truncated prefix. Multi-file
 snapshots retain independent errors; `CollectionReport::limit_exceeded` marks
 incomplete collection. Reads are non-atomic, and missing/denied data differs from zero.

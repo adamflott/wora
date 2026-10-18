@@ -16,6 +16,9 @@ use super::linux_mm::{
 /// custom providers, queues and output writers require their own limits.
 #[derive(Clone, Copy, Debug)]
 pub struct LinuxMemoryLimits {
+    /// Separate retained/scratch allocation allowances for instrumented storage.
+    /// Includes a caller-configured allocator reserve, not measured RSS.
+    pub heap: super::linux_mm::HeapLimits,
     /// Shared source/work budget for one routine or diagnostic batch.
     pub collection: CollectionLimits,
     /// Maximum live generations, including the replacement under construction.
@@ -33,6 +36,7 @@ pub struct LinuxMemoryLimits {
 impl Default for LinuxMemoryLimits {
     fn default() -> Self {
         Self {
+            heap: super::linux_mm::HeapLimits::default(),
             collection: CollectionLimits::default(),
             live_snapshots: 4,
             snapshot_bytes: 8 * 1024 * 1024,
@@ -44,6 +48,7 @@ impl Default for LinuxMemoryLimits {
 impl LinuxMemoryLimits {
     /// Validate limits before collecting or allocating snapshot data.
     pub fn validate(&self) -> std::io::Result<()> {
+        self.heap.validate()?;
         self.collection.validate()?;
         if self.snapshot_bytes == 0 || self.retained_snapshot_bytes < self.snapshot_bytes {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid memory snapshot byte limits"));

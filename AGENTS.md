@@ -70,7 +70,7 @@ ignored by default; ordinary fixture tests should not require root.
 
 ## Coding Guidance
 
-- Preserve the public trait-oriented API shape unless the task explicitly asks for a breaking change.
+- Breaking API changes are allowed before 1.0.0; SemVer starts at 1.0.0.
 - Prefer extending existing abstractions (`App`, `AsyncExecutor`, `WFS`, `O11yEvent`) over adding parallel mechanisms.
 - Use `tokio` async APIs in runtime paths.
 - Keep Linux-only behavior behind `#[cfg(target_os = "linux")]`; macOS support exists for host info and user-mode examples.

@@ -2,13 +2,14 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/)
-and this project adheres to [Semantic Versioning](https://semver.org/).
+and [Semantic Versioning](https://semver.org/) starts at 1.0.0. Earlier releases may break APIs.
 
 <!-- next-header -->
 ## [Unreleased]
 
 ### Features
 
+- Add `LinuxMemoryLimits::heap` and shared retained/scratch `HeapBudget` reservations with live/peak counters, checked admission and an explicit per-allocation overhead reserve. These APIs account for instrumented storage, not whole-process heap or RSS.
 - Add opt-in `RuntimeResources` count admission through `RunnerOptions::with_resources`: per-runner queue caps and shared task/provider/sink/service allowances. Add immediate-refusal `Wora::try_schedule_task`; legacy scheduling waits for configured slots. Worker leases survive cancellation until work exits; these counts do not impose heap/payload-byte limits.
 - Add opt-in shrinker object counts with bounded discovery/read requests and no `scan` access. Preserve cgroup identifiers and node-column order; per-read kernel callback work remains outside these limits. Diagnostic/options struct literals gain `shrinkers`/`shrinker_count_reads` fields.
 - Parse bounded `lru_gen_full` generation/tier/MM statistics, retaining cgroup/node scope, page units, expiry and average/unavailable markers. Preserve empty paths when memory cgroups are disabled.
