@@ -4,6 +4,69 @@ use wora_observability_linux_mm::{KernelLeakStats, PageOwnerStats, ParsedMemoryV
 // Synthetic records matching mm/page_owner.c in Linux 6.12 and 7.2.
 const OWNER: &str = "Page allocated via order 2, mask 0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), pid 12, tgid 9 (worker (pool)), ts 18446744073709551615 ns\nPFN 0x20000000000001 type Movable Block 77 type Unmovable Flags 0x17ffffc0000000(anon|swapbacked)\n alloc_pages+0x123/0x456\n caller+0x1/0x2 [test_module]\nPage has been migrated, last migrate reason: compaction\nSlab cache page\nCharged (via objcg) to offline memcg worker\n\n";
 
+const LEAK: &str = "unreferenced object 0xffff000000000001 (size 9007199254740993):\n  comm \"worker\", pid 9, jiffies 18446744073709551615\n  hex dump (first 6 bytes):\n    53 45 43 52 45 54                                 SECRET\n  backtrace (crc ffffffff):\n    [<0000000000000000>] allocate+0x1/0x2 [module]\n";
+
+#[test]
+fn kmemleak_suspects_keep_uncertain_metadata_and_stacks_but_discard_object_bytes() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    // Native seq_file records need no blank separator. Newer variants add scope
+    // and a per-CPU dump label; physical objects have no byte dump.
+    let percpu = LEAK
+        .replace("unreferenced object ", "unreferenced object (percpu) ")
+        .replace("6 bytes):", "6 bytes on cpu 17):");
+    let physical = "unreferenced object (phys) 0x0 (size 32):\n  comm \"init\", pid 0, jiffies 0\n  backtrace:\n    0x0000000000000000\n";
+    std::fs::write(root.path().join("kmemleak"), format!("{LEAK}{percpu}{physical}"))?;
+    let snapshot = KernelLeakStats::from_debug_root(root.path());
+    let ParsedMemoryValue::List(records) = &snapshot.files.parsed["kmemleak"] else {
+        return Err("no suspects".into());
+    };
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].get("address").and_then(ParsedMemoryValue::as_u64), Some(0xffff000000000001));
+    assert_eq!(records[0].get("size_bytes").and_then(ParsedMemoryValue::as_u64), Some(9_007_199_254_740_993));
+    assert_eq!(records[0].get("allocation_jiffies").and_then(ParsedMemoryValue::as_u64), Some(u64::MAX));
+    assert_eq!(records[0].get("checksum").and_then(ParsedMemoryValue::as_u64), Some(u64::from(u32::MAX)));
+    assert_eq!(records[1].get("address_space"), Some(&ParsedMemoryValue::Text("percpu".into())));
+    assert_eq!(records[1].get("dump_cpu").and_then(ParsedMemoryValue::as_u64), Some(17));
+    assert_eq!(records[2].get("address_space"), Some(&ParsedMemoryValue::Text("physical".into())));
+    assert_eq!(records[2].get("address").and_then(ParsedMemoryValue::as_u64), Some(0));
+    #[cfg(feature = "serde1")]
+    {
+        let json = serde_json::to_string(&snapshot)?;
+        assert!(!json.contains("SECRET"));
+        assert!(!json.contains("53 45 43"));
+        let decoded: KernelLeakStats = serde_json::from_str(&json)?;
+        assert_eq!(decoded.files.parsed["kmemleak"], snapshot.files.parsed["kmemleak"]);
+    }
+    assert_eq!(std::fs::read_to_string(root.path().join("kmemleak"))?, format!("{LEAK}{percpu}{physical}"));
+    Ok(())
+}
+
+#[test]
+fn kmemleak_rejects_truncated_malformed_or_oversized_dumps_without_partial_suspects() -> Result<(), Box<dyn std::error::Error>> {
+    use wora_observability_linux_mm::parse_memory_file;
+    for bad in [
+        LEAK.replace(" (size 9007199254740993):", " (size -1):"),
+        LEAK.replace("jiffies 18446744073709551615", "jiffies 18446744073709551616"),
+        LEAK.replace("53 45 43 52 45 54", "zz 45 43 52 45 54"),
+        LEAK.replace("first 6 bytes", "first 33 bytes"),
+        LEAK.split("  backtrace").next().ok_or("no prefix")?.into(),
+        LEAK.to_owned() + "unreferenced object 0xff (size 1):\n",
+        LEAK.replace("    [<0000000000000000>] allocate+0x1/0x2 [module]\n", &"    allocate+0x1/0x2\n".repeat(257)),
+    ] {
+        assert!(parse_memory_file("kmemleak", &bad).is_err());
+    }
+    assert_eq!(parse_memory_file("kmemleak", "")?, Some(ParsedMemoryValue::List(Vec::new())));
+    let root = tempfile::tempdir()?;
+    std::fs::write(root.path().join("kmemleak"), LEAK)?;
+    let limited = KernelLeakStats::from_debug_root_with_limit(root.path(), 8);
+    assert!(!limited.files.parsed.contains_key("kmemleak"));
+    assert!(limited.files.unavailable.contains_key("kmemleak"));
+    std::fs::write(root.path().join("kmemleak"), LEAK.to_owned() + "bad record\n")?;
+    let malformed = KernelLeakStats::from_debug_root(root.path());
+    assert!(!malformed.files.parsed.contains_key("kmemleak"));
+    Ok(())
+}
+
 #[test]
 fn page_owner_records_preserve_allocation_page_stack_and_charge_scopes() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;

@@ -209,6 +209,32 @@ fn damon_diagnostics_are_opt_in_cached_and_serialized() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn selected_kmemleak_suspects_reach_memory_events_without_object_bytes() -> Result<(), Box<dyn std::error::Error>> {
+    use wora::o11y::{LinuxMemoryCollector, LinuxMemoryEnvironment, LinuxMemoryOptions, RuntimeEnvironment};
+    let root = tempfile::tempdir()?;
+    let debug = root.path().join("kernel/debug");
+    std::fs::create_dir_all(&debug)?;
+    std::fs::write(
+        debug.join("kmemleak"),
+        "unreferenced object 0x0 (size 3):\n  comm \"worker\", pid 9, jiffies 123\n  hex dump (first 3 bytes):\n    61 62 63                                         abc\n  backtrace (crc 1):\n    allocate+0x1/0x2\n",
+    )?;
+    let provider = LinuxMemoryEnvironment::new(
+        CapturedEnvironment,
+        LinuxMemoryOptions::new()
+            .enable(LinuxMemoryCollector::KernelLeaks)
+            .with_roots(root.path(), root.path()),
+    )?;
+    let stats = provider.initial_host()?.stats;
+    let json = serde_json::to_value(wora::events::MemorySnapshot::from_host_stats(&stats))?;
+    let suspect = &json["linux_mm"]["diagnostics"]["kernel_leaks"]["files"]["parsed"]["kmemleak"][0];
+    assert_eq!(suspect["size_bytes"], 3);
+    assert_eq!(suspect["discarded_dump_bytes"], 3);
+    assert_eq!(suspect["stack"][0], "allocate+0x1/0x2");
+    assert!(!serde_json::to_string(&json)?.contains("61 62 63"));
+    Ok(())
+}
+
+#[test]
 fn diagnostic_selection_caching_and_independent_timestamps() -> Result<(), Box<dyn std::error::Error>> {
     use wora::o11y::{LinuxMemoryCollector, LinuxMemoryEnvironment, LinuxMemoryOptions, RuntimeEnvironment};
     let root = tempfile::tempdir()?;

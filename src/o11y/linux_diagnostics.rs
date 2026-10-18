@@ -144,7 +144,8 @@ pub struct LinuxMemoryDiagnostics {
     /// as bounded allocation/page/stack records, without changing tracking/filters.
     pub page_owner: Option<Box<super::linux_mm::PageOwnerStats>>,
     /// `/sys/kernel/debug/kmemleak`; only present with explicit KernelLeaks
-    /// selection. Unsupported suspect dumps remain errors without retaining text.
+    /// selection. Bounded unreferenced-object suspects retain metadata/stacks;
+    /// embedded byte dumps are discarded and findings remain uncertain.
     pub kernel_leaks: Option<Box<super::linux_mm::KernelLeakStats>>,
     /// Requested PFNs in `/proc/{kpageflags,kpagecount,kpagecgroup}`, with
     /// independent file errors. Values are flags, mapping counts and cgroup inodes.

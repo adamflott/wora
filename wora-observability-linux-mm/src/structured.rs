@@ -190,7 +190,8 @@ pub fn parse_memory_file(path: impl AsRef<Path>, text: &str) -> Result<Option<Pa
         name if name.starts_with("hugetlb.") && name.ends_with(".numa_stat") => assignments(text)?,
         "page_owner" => crate::provenance::page_owner(text)?,
         "show_stacks" | "show_handles" | "show_stacks_handles" => crate::provenance::owner_stacks(name, text)?,
-        "kmemleak" | "lru_gen_full" => return Ok(None),
+        "kmemleak" => crate::provenance::kernel_leaks(text)?,
+        "lru_gen_full" => return Ok(None),
         _ if text.lines().count() > 1 => return Ok(None),
         _ => atom(text)?,
     };

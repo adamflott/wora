@@ -137,7 +137,7 @@ nested values and conversions.
 | `diagnostics.physical_pages`: frame metadata | Bounded flags, mapping counts and charged cgroup inode numbers. | `/proc/{kpageflags,kpagecount,kpagecgroup}` |
 | `diagnostics.page_map`: process page tables | Bounded raw/decoded flags and permitted PFN/swap identities. | `/proc/self/pagemap` |
 | `diagnostics.page_owner`: allocation provenance | Allocation/PFN/pageblock/stack records, migration/charge labels, aggregate handles/base-page counts and threshold. Reviewed 6.12/7.2 layouts; 65536 records, 256 frames/stack, 4 KiB/line. | `/sys/kernel/debug/page_owner`, `page_owner_stacks/*` |
-| `diagnostics.kernel_leaks`: kmemleak | Read/unsupported-layout errors; no structured suspect parser yet. | `/sys/kernel/debug/kmemleak` |
+| `diagnostics.kernel_leaks`: kmemleak | Uncertain unreferenced-object suspects: address/scope, byte size, PID/comm, allocation jiffies, checksum and stack. Embedded object bytes are discarded; same record/frame/line caps as page owner. | `/sys/kernel/debug/kmemleak` |
 | `diagnostics.hardware`: hotplug/EDAC/poison/CMA | Block state/size/zones, controller/DIMM errors, node recovery counters, CMA PFNs/counts/bitmaps. | `/sys/devices/system/{memory,edac/mc,node/node*/memory_failure}`, `/sys/kernel/debug/cma` |
 
 Tracing reports `oom/mark_victim`, direct-reclaim and compaction begin/end, and
@@ -157,7 +157,8 @@ complete latency census. `MemoryTraceParser` itself performs no privileged I/O.
 - Slab/page-type/debugfs/PFN reads may require privileges. smaps/rollups/page-type
   reads can be expensive; page-owner mixed-table reads can drain CPU page lists,
   and kmemleak reads may incur scans.
-- Snapshot collectors do not change settings or membership and never read page contents.
+- Snapshot collectors do not change settings/membership or open process memory files.
+  Kmemleak's embedded object-byte dump is discarded from retained results.
   `memory.reclaim`, HugeTLB `demote`, write-only actions and `vm.stat_refresh` are excluded.
 - `LinuxMemoryStats::from_roots(proc_root, sys_root)` reads captured trees;
   `from_proc_root` omits sysfs views. Captured cgroup mount paths are used as written.

@@ -23,7 +23,7 @@ pub struct PageOwnerStats {
 }
 
 pub(crate) fn page_owner(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
-    provenance_records(text, |lines| {
+    provenance_records(text, None, |lines| {
         let header = lines
             .first()
             .and_then(|line| line.strip_prefix("Page allocated via order "))
@@ -98,7 +98,7 @@ pub(crate) fn owner_stacks(name: &str, text: &str) -> Result<ParsedMemoryValue, 
     let has_stack = name != "show_handles";
     let has_handle = name != "show_stacks";
     let has_pages = name != "show_stacks_handles";
-    provenance_records(text, |lines| {
+    provenance_records(text, None, |lines| {
         let trailers = usize::from(has_handle) + usize::from(has_pages);
         let stack_end = lines.len().checked_sub(trailers).ok_or_else(bad_owner)?;
         if !has_stack && stack_end != 0 {
@@ -124,22 +124,25 @@ pub(crate) fn owner_stacks(name: &str, text: &str) -> Result<ParsedMemoryValue, 
     })
 }
 
-fn provenance_records(text: &str, parse: impl Fn(&[&str]) -> Result<ParsedMemoryValue, MemoryReadError>) -> Result<ParsedMemoryValue, MemoryReadError> {
+fn provenance_records(
+    text: &str,
+    header: Option<&str>,
+    parse: impl Fn(&[&str]) -> Result<ParsedMemoryValue, MemoryReadError>,
+) -> Result<ParsedMemoryValue, MemoryReadError> {
     let mut records = Vec::new();
     let mut lines = Vec::new();
     for line in text.lines().chain(std::iter::once("")) {
         if line.len() > 4096 {
             return Err(invalid("provenance line exceeds 4096 bytes"));
         }
-        if line.trim().is_empty() {
-            if !lines.is_empty() {
-                if records.len() == 65536 {
-                    return Err(invalid("provenance dump exceeds 65536 records"));
-                }
-                records.push(parse(&lines)?);
-                lines.clear();
+        if !lines.is_empty() && (line.trim().is_empty() || header.is_some_and(|header| line.starts_with(header))) {
+            if records.len() == 65536 {
+                return Err(invalid("provenance dump exceeds 65536 records"));
             }
-        } else {
+            records.push(parse(&lines)?);
+            lines.clear();
+        }
+        if !line.trim().is_empty() {
             if lines.len() == 512 {
                 return Err(invalid("provenance record exceeds 512 lines"));
             }
@@ -223,13 +226,96 @@ impl PageOwnerStats {
 /// These are diagnostic findings, not proof of a leak or a complete leak census.
 ///
 /// Reads `/sys/kernel/debug/kmemleak`, or `kmemleak` below an explicit
-/// debugfs root. Finding dumps currently have no structured parser and are
-/// reported as unsupported without retaining their text. No scan command is written.
+/// debugfs root, using reviewed 6.12/7.2 suspect layouts. Embedded object-byte
+/// dumps are validated then discarded; no scan/clear command is written.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct KernelLeakStats {
-    /// Read errors or an unsupported-layout error for unparsed suspect dumps.
+    /// Suspect records keyed by `kmemleak`, with independent read/parse errors.
+    /// Addresses, byte sizes, PID/comm, allocation jiffies, optional checksum and
+    /// stack symbols retain their native meaning. Addresses may be redacted;
+    /// jiffies are not wall-clock time. Virtual/physical/per-CPU scope stays
+    /// separate. Limits: 65536 records, 256 frames/stack and 4096 bytes/line.
     pub files: MemoryFiles,
+}
+
+pub(crate) fn kernel_leaks(text: &str) -> Result<ParsedMemoryValue, MemoryReadError> {
+    provenance_records(text, Some("unreferenced object"), |lines| {
+        let header = lines.first().and_then(|line| line.strip_prefix("unreferenced object")).ok_or_else(bad_leak)?;
+        let (kind, header) = if let Some(header) = header.strip_prefix(" (phys) ") {
+            ("physical", header)
+        } else if let Some(header) = header.strip_prefix(" (percpu) ") {
+            ("percpu", header)
+        } else {
+            ("virtual", header.strip_prefix(' ').ok_or_else(bad_leak)?)
+        };
+        let (address, size) = header.split_once(" (size ").ok_or_else(bad_leak)?;
+        let size = size.strip_suffix("):").ok_or_else(bad_leak)?;
+        let identity = lines.get(1).and_then(|line| line.strip_prefix("  comm \"")).ok_or_else(bad_leak)?;
+        let (comm, identity) = identity.rsplit_once("\", pid ").ok_or_else(bad_leak)?;
+        let (pid, jiffies) = identity.split_once(", jiffies ").ok_or_else(bad_leak)?;
+        let mut result = std::collections::BTreeMap::from([
+            ("address".into(), hex(address)?),
+            ("address_space".into(), ParsedMemoryValue::Text(kind.into())),
+            ("size_bytes".into(), unsigned(size)?),
+            ("comm".into(), ParsedMemoryValue::Text(comm.into())),
+            ("pid".into(), signed_id(pid)?),
+            ("allocation_jiffies".into(), unsigned(jiffies)?),
+        ]);
+        let mut index = 2;
+        if let Some(header) = lines.get(index).and_then(|line| line.strip_prefix("  hex dump (first ")) {
+            let header = header.strip_suffix("):").ok_or_else(bad_leak)?;
+            let (count, cpu) = if let Some((count, cpu)) = header.split_once(" bytes on cpu ") {
+                (count, Some(cpu))
+            } else {
+                (header.strip_suffix(" bytes").ok_or_else(bad_leak)?, None)
+            };
+            let count = unsigned(count)?.as_u64().ok_or_else(bad_leak)?;
+            let size = result.get("size_bytes").and_then(ParsedMemoryValue::as_u64).ok_or_else(bad_leak)?;
+            if count > 32 || count > size {
+                return Err(bad_leak());
+            }
+            result.insert("discarded_dump_bytes".into(), ParsedMemoryValue::Unsigned(count));
+            if let Some(cpu) = cpu {
+                result.insert("dump_cpu".into(), unsigned(cpu)?);
+            }
+            index += 1;
+            let mut remaining = count as usize;
+            while remaining != 0 {
+                let bytes = remaining.min(16);
+                let line = lines.get(index).and_then(|line| line.strip_prefix("    ")).ok_or_else(bad_leak)?;
+                let hex = line.get(..bytes * 3 - 1).ok_or_else(bad_leak)?;
+                let mut fields = hex.split_ascii_whitespace();
+                for _ in 0..bytes {
+                    let byte = fields.next().ok_or_else(bad_leak)?;
+                    if byte.len() != 2 || !byte.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                        return Err(bad_leak());
+                    }
+                }
+                if fields.next().is_some() || !line.as_bytes().get(bytes * 3 - 1).is_some_and(u8::is_ascii_whitespace) {
+                    return Err(bad_leak());
+                }
+                remaining -= bytes;
+                index += 1;
+            }
+        }
+        let backtrace = lines.get(index).ok_or_else(bad_leak)?;
+        if let Some(checksum) = backtrace.strip_prefix("  backtrace (crc ").and_then(|value| value.strip_suffix("):")) {
+            result.insert("checksum".into(), hex(checksum)?);
+        } else if *backtrace != "  backtrace:" {
+            return Err(bad_leak());
+        }
+        let mut stack = Vec::new();
+        for line in &lines[index + 1..] {
+            push_frame(&mut stack, line)?;
+        }
+        result.insert("stack".into(), ParsedMemoryValue::List(stack));
+        Ok(ParsedMemoryValue::Map(result))
+    })
+}
+
+fn bad_leak() -> MemoryReadError {
+    invalid("malformed kmemleak suspect")
 }
 
 impl KernelLeakStats {

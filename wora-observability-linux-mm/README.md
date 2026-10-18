@@ -21,8 +21,7 @@ The [subsystem/source tables](https://github.com/adamflott/wora/blob/master/docs
 and each type's Rustdoc describe paths, scope and units.
 Zswap includes compression/decompression failure counts and stored-incompressible
 page counts; counters absent on older kernels remain per-file errors.
-Kmemleak findings and MGLRU full layouts currently return
-unsupported-layout errors rather than structured findings.
+MGLRU full layouts currently return unsupported-layout errors.
 
 ## Kernel compatibility
 
@@ -68,6 +67,7 @@ Captured cgroup mount paths are used as written.
 | CgroupMemory | DMEM region tables retain byte usage/capacity/limits and literal `max`; optional `dmem.peak` follows the 7.3-rc7 development ABI. |
 | NumaStats | Access-class topology quantities retain nanoseconds and MiB/s under per-node source paths; they describe rated performance. |
 | PageOwnerStats | Bounded allocation/page/stack records, optional migration/charge labels, aggregate signed handles and base-page counts; reviewed 6.12/7.2 layouts. |
+| KernelLeakStats | Bounded unreferenced-object suspects: addresses, byte sizes, PID/comm, jiffies, checksum and stack. Embedded byte dumps are discarded; findings do not prove leaks. |
 | MemoryFiles / sysctls | Structured integers, flags, units, ranges and policies; relative path/dotted keys. |
 
 Unknown supported numeric keys are retained. Fixed typed fields, filename
@@ -99,7 +99,7 @@ Oversized/malformed sources fail without a successful truncated prefix. Multi-fi
 snapshots retain independent errors; `CollectionReport::limit_exceeded` marks
 incomplete collection. Reads are non-atomic, and missing/denied data differs from zero.
 
-Snapshot collectors never write settings, change membership or read page contents.
+Snapshot collectors never write settings, change membership or open process memory files.
 They exclude `memory.reclaim`, HugeTLB `demote`, `vm.stat_refresh` and write-only
 controls. Reads may still cost kernel work: rollups/smaps walk page tables,
 page-owner mixed pageblocks can drain CPU page lists, and kmemleak may scan.
