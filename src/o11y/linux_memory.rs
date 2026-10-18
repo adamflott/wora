@@ -144,7 +144,7 @@ pub struct LinuxMemoryData {
     /// Action controls and `vm.stat_refresh` are never opened.
     pub sysctls: MemorySysctls,
     /// Cgroup v2 discovered via `/proc/self/{cgroup,mountinfo}`, then read from
-    /// `memory.*`, `hugetlb.*` and cpuset memory-node files in its mounted directory
+    /// `memory.*`, selected `dmem.*`, `hugetlb.*` and cpuset memory-node files in its mounted directory
     /// and visible parents. See [`CgroupMemoryStats`] for scope and discovery limits.
     pub cgroup: Box<CgroupMemoryStats>,
     /// THP policies/counters from `/sys/kernel/mm/transparent_hugepage`, HugeTLB

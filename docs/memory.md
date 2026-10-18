@@ -262,6 +262,36 @@ sinks, tasks, reloads, custom providers and writer buffers need separate budgets
 Visible cgroup limits are not allocation headroom: `memory.high` applies pressure;
 `memory.max` can trigger OOM and can be exceeded temporarily.
 
+### WORA-owned memory contract
+
+The contract below defines admission/accounting rules. Runtime-wide enforcement
+is incomplete; the current input/payload limits do not establish a heap ceiling.
+
+| Account | Required charge and lifetime | Current coverage |
+| --- | --- | --- |
+| Retained data | Allocated capacities of tables, strings, keys, errors, shared payloads and control blocks; count shared ownership once until its last owner releases it. | Linux generations account for encoded payload bytes, not heap capacity. |
+| Scratch | Concurrent input, conversion, parser and output buffers, including container growth and old/new overlap. | Source/line/work limits and capped memory-report JSON; no aggregate heap accounting. |
+| Runtime state | Queued payloads, waiting producers, futures, registries, sinks, exporters, watcher/reload state and their retained capacities. | Record-count queue caps; broader limits remain in the TODO. |
+| Reserve | Allocator rounding/metadata and bounded error/control/shutdown capacity, measured for the selected allocator/build. | No validated allocator reserve yet. |
+| Thread stacks | Thread-count × configured stack size for runner/runtime/blocking workers; account separately from heap. | Caller/runtime configuration, without a WORA-wide stack limit. |
+
+`owned_heap = retained + scratch + runtime_state + reserve`. Stack mappings,
+kernel memory, shared libraries and allocator-retained pages require separate RSS
+measurement; source bytes and encoded bytes cannot substitute for these accounts.
+
+Admission must reserve the peak overlap before allocation/spawn/enqueue, reject
+zero/overflowing/inconsistent budgets, and release charges on final drop or failed
+construction. Restart/cancellation must retain charges for surviving snapshots,
+futures and blocking workers. Exhaustion must preserve active state, coalesce or
+reject new work, and keep shutdown/control capacity available without unbounded
+waiters or replacement workers.
+
+Custom providers, events, sinks and writers must declare and honor retained/scratch
+capacity bounds, transfer accounting with owned data, and bound internal buffering
+and pending operations. The supplied async runtime must declare worker/blocking
+thread counts and stack sizes. Unmetered extensions remain outside a closed
+resource profile. Admission/work counts do not guarantee CPU execution time.
+
 ## Recorded measurements
 
 Historical observations, not current-build benchmarks or memory ceilings.

@@ -91,7 +91,7 @@ ignored by default; ordinary fixture tests should not require root.
   initial snapshots remain roadmap items in `TODO.md`.
 - Linux memory input/payload limits do not account for exact heap overhead, other
   inventories, general sinks, queue payloads, scheduled tasks or reloads. Extended
-  release-process soak measurements and the broader resource contract remain open
+  release-process soak measurements and runtime-wide contract enforcement remain open
   in `wora-observability-linux-mm/TODO.md`.
 
 ## CI Notes

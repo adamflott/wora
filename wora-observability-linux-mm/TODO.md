@@ -5,8 +5,6 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 
 ## Collector and allocation limits
 
-- [ ] Define a WORA-owned heap contract: scratch/retained allocations, task state,
-  thread stacks and reserve; specify requirements for custom providers and runtimes.
 - [ ] Expose validated runtime-wide queue/task/sink/provider budgets through
   existing runner options; plan compatibility for public API changes.
 - [ ] Account for container capacities, key/error-map growth and allocator overhead;
