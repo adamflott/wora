@@ -68,7 +68,8 @@ cargo run --example memory_diagnostics -- --trace
 ```
 
 The diagnostic example selects all snapshot diagnostics, including costly
-kmemleak reads. Page scans require explicit `PageRange` values.
+kmemleak and shrinker reads. `LinuxMemoryOptions::shrinker_count_reads` defaults
+to eight requests per batch (1..=256). Page scans require explicit `PageRange` values.
 `with_linux_memory_trace(LinuxMemoryTraceOptions::new())` adds trace records.
 Tracing requires access to existing tracefs, creates a private instance and removes
 it on normal shutdown. Crashes/SIGKILL may leave the instance named in startup output.
@@ -130,6 +131,7 @@ nested values and conversions.
 | --- | --- | --- |
 | `diagnostics.process_mappings`: mappings/NUMA | Address ranges, backing metadata, native quantities and VM flags. | `/proc/self/{maps,numa_maps,smaps}` |
 | `diagnostics.damon`: DAMON_STAT | Existing monitor state, estimated bytes/s, signed idle-time percentiles in ms, aggregation interval in us and worker PID. Disabled monitoring can leave stale results. | `/sys/module/damon_stat/parameters/*`; select `LinuxMemoryCollector::Damon` |
+| `diagnostics.shrinkers`: reclaimable objects | Object counts by kernel cgroup identifier and possible-node column order; absent rows stay omitted, counts are not bytes. | `/sys/kernel/debug/shrinker/*/count`; select `LinuxMemoryCollector::Shrinkers` |
 | `diagnostics.slub`: object caches | Per-cache/node occupancy, policy/debug counters and canonical aliases. | Selected `/sys/kernel/slab/<cache>/*` |
 | `diagnostics.kernel_allocations`: vmalloc/call sites | Area metadata and allocinfo bytes/counts/source locations/accuracy markers. | `/proc/{vmallocinfo,allocinfo}` |
 | `diagnostics.fragmentation`: contiguous allocation | Per-node/zone/order indices in thousandths, including the `-1.000` sentinel. | `/sys/kernel/debug/extfrag/{unusable_index,extfrag_index}` |
@@ -154,6 +156,9 @@ complete latency census. `MemoryTraceParser` itself performs no privileged I/O.
 - NUMA access-class quantities describe rated topology for linked initiators;
   class 1 is CPU-only. Discovery caps at 64 classes per node, with 4 KiB per
   attribute, plus shared entry/file/byte limits. [Kernel ABI](https://docs.kernel.org/admin-guide/mm/numaperf.html).
+- Shrinker count reads invoke callbacks across applicable cgroups/nodes and can
+  repeat them during kernel buffering. Request/byte caps do not bound callback
+  count or CPU time within a read. `scan` is excluded. [Kernel source](https://github.com/torvalds/linux/blob/v7.2/mm/shrinker_debug.c).
 - Slab/page-type/debugfs/PFN reads may require privileges. smaps/rollups/page-type
   reads can be expensive; page-owner mixed-table reads can drain CPU page lists,
   and kmemleak reads may incur scans.

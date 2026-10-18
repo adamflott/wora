@@ -192,6 +192,15 @@ pub fn parse_memory_file(path: impl AsRef<Path>, text: &str) -> Result<Option<Pa
         "show_stacks" | "show_handles" | "show_stacks_handles" => crate::provenance::owner_stacks(name, text)?,
         "kmemleak" => crate::provenance::kernel_leaks(text)?,
         "lru_gen_full" => crate::lru::full_histograms(text)?,
+        "count"
+            if path
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "shrinker") =>
+        {
+            crate::shrinker::counts(text)?
+        }
         _ if text.lines().count() > 1 => return Ok(None),
         _ => atom(text)?,
     };

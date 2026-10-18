@@ -14,7 +14,7 @@ Typed Linux memory readers extending `procfs` 0.18. Linux-only; requires Rust
 | Accounting/placement | Memory/DMEM cgroups, OOM events, cpuset nodes, NUMA locality/tiers/weighted-interleave policy, THP/mTHP/khugepaged and HugeTLB pools. |
 | Backing/sharing | Swap, zswap, zram, KSM and System V shared memory. |
 | Process/pages | Status/limits/faults/OOM preferences, RSS/PSS rollups, mappings/NUMA policy, physical-frame metadata and pagemap flags. |
-| Kernel/hardware diagnostics | SLAB/SLUB, vmalloc/allocation sites, DAMON_STAT, MGLRU, page owner, kmemleak, hotplug blocks, EDAC, poisoned-page recovery and CMA. |
+| Kernel/hardware diagnostics | SLAB/SLUB, shrinkers, vmalloc/allocation sites, DAMON_STAT, MGLRU, page owner, kmemleak, hotplug blocks, EDAC, poisoned-page recovery and CMA. |
 | Trace parsing | OOM victims, direct reclaim, compaction and migration; WORA supplies the optional live tracefs service. |
 
 The [subsystem/source tables](https://github.com/adamflott/wora/blob/master/docs/memory.md#linux-mm-subsystems)
@@ -68,6 +68,7 @@ Captured cgroup mount paths are used as written.
 | PageOwnerStats | Bounded allocation/page/stack records, optional migration/charge labels, aggregate signed handles and base-page counts; reviewed 6.12/7.2 layouts. |
 | KernelLeakStats | Bounded unreferenced-object suspects: addresses, byte sizes, PID/comm, jiffies, checksum and stack. Embedded byte dumps are discarded; findings do not prove leaks. |
 | LruStats | Basic histograms and full per-generation/tier statistics; preserve cgroup/node scope, page units, expiry, averages and unavailable markers. |
+| ShrinkerStats | Object counts by kernel cgroup ID and possible-node column order; default eight count requests, no `scan` access. Each read can invoke many kernel callbacks. |
 | MemoryFiles / sysctls | Structured integers, flags, units, ranges and policies; relative path/dotted keys. |
 
 Unknown supported numeric keys are retained. Fixed typed fields, filename

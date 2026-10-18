@@ -28,6 +28,8 @@ pub enum LinuxMemoryCollector {
     MemoryHardware,
     /// Existing host-wide DAMON_STAT results and monitor state; never enables it.
     Damon,
+    /// Shrinker object counts; reads invoke callbacks, never scan/reclaim actions.
+    Shrinkers,
 }
 
 /// Explicit selection and cadence for potentially costly memory diagnostics.
@@ -37,6 +39,9 @@ pub struct LinuxMemoryOptions {
     pub limits: super::LinuxMemoryLimits,
     /// Per-file page-owner/kmemleak dump bound, 1..=64 MiB (default 4 MiB).
     pub provenance_byte_limit: u64,
+    /// Maximum shrinker count-file requests per batch, 1..=256 (default 8).
+    /// Does not bound callback work within a read; only used when selected.
+    pub shrinker_count_reads: usize,
     /// Optional physical PFN range; required to collect kpage arrays.
     pub physical_pages: Option<super::linux_mm::PageRange>,
     /// Optional collecting-process virtual page range for pagemap.
@@ -56,6 +61,7 @@ impl Default for LinuxMemoryOptions {
         Self {
             limits: super::LinuxMemoryLimits::default(),
             provenance_byte_limit: 4 * 1024 * 1024,
+            shrinker_count_reads: 8,
             physical_pages: None,
             virtual_pages: None,
             collectors: BTreeSet::new(),
@@ -73,7 +79,7 @@ impl LinuxMemoryOptions {
         self
     }
     /// Explicitly enable every snapshot diagnostic except range-based page scans.
-    /// Includes costly page-owner and kmemleak reads. Event tracing is separate.
+    /// Includes costly page-owner, kmemleak and shrinker reads. Tracing is separate.
     pub fn all_snapshots() -> Self {
         [
             LinuxMemoryCollector::ProcessMappings,
@@ -85,6 +91,7 @@ impl LinuxMemoryOptions {
             LinuxMemoryCollector::KernelLeaks,
             LinuxMemoryCollector::MemoryHardware,
             LinuxMemoryCollector::Damon,
+            LinuxMemoryCollector::Shrinkers,
         ]
         .into_iter()
         .fold(Self::new(), Self::enable)
@@ -136,6 +143,10 @@ pub struct LinuxMemoryDiagnostics {
     /// bytes/s, signed idle-time percentiles in ms, interval in us and monitor
     /// state. Results can be stale when disabled; reads are non-atomic.
     pub damon: Option<Box<super::linux_mm::DamonStats>>,
+    /// `/sys/kernel/debug/shrinker/<name-id>/count`: object counts by kernel
+    /// cgroup identifier and possible-node column order; no byte conversion.
+    /// Reads invoke count callbacks across applicable cgroups/nodes.
+    pub shrinkers: Option<Box<super::linux_mm::ShrinkerStats>>,
     /// Memory blocks from `/sys/devices/system/memory`, EDAC from
     /// `/sys/devices/system/edac/mc`, node `memory_failure` counters and
     /// `/sys/kernel/debug/cma` areas; see [`super::linux_mm::MemoryHardwareStats`].
@@ -200,6 +211,9 @@ impl<R> LinuxMemoryEnvironment<R> {
         if !(1..=64 * 1024 * 1024).contains(&options.provenance_byte_limit) {
             return Err(O11yError::RuntimeEnvironment("provenance byte limit must be 1..=64 MiB".into()));
         }
+        if !(1..=256).contains(&options.shrinker_count_reads) {
+            return Err(O11yError::RuntimeEnvironment("shrinker count requests must be 1..=256".into()));
+        }
         if options.collectors.contains(&LinuxMemoryCollector::PhysicalPages) {
             if options.physical_pages.is_none() && options.virtual_pages.is_none() {
                 return Err(O11yError::RuntimeEnvironment(
@@ -242,6 +256,12 @@ impl<R> LinuxMemoryEnvironment<R> {
             let (mut data, report) = super::linux_mm::collect_with_limits(self.options.limits.collection, || LinuxMemoryDiagnostics {
                 collection: super::linux_mm::CollectionReport::default(),
                 damon: selected(LinuxMemoryCollector::Damon).then(|| Box::new(super::linux_mm::DamonStats::from_sys_root(&self.options.sys_root))),
+                shrinkers: selected(LinuxMemoryCollector::Shrinkers).then(|| {
+                    Box::new(super::linux_mm::ShrinkerStats::from_debug_root_with_read_limit(
+                        self.options.sys_root.join("kernel/debug"),
+                        self.options.shrinker_count_reads,
+                    ))
+                }),
                 hardware: selected(LinuxMemoryCollector::MemoryHardware)
                     .then(|| Box::new(super::linux_mm::MemoryHardwareStats::from_sys_root(&self.options.sys_root))),
                 page_owner: selected(LinuxMemoryCollector::PageOwner).then(|| {

@@ -164,6 +164,7 @@ fn all_selected_diagnostics_reach_serialized_memory_events() -> Result<(), Box<d
         "kernel_leaks",
         "hardware",
         "damon",
+        "shrinkers",
     ] {
         assert!(!diagnostics[field].is_null(), "missing {field}");
     }
@@ -231,6 +232,34 @@ fn selected_kmemleak_suspects_reach_memory_events_without_object_bytes() -> Resu
     assert_eq!(suspect["discarded_dump_bytes"], 3);
     assert_eq!(suspect["stack"][0], "allocate+0x1/0x2");
     assert!(!serde_json::to_string(&json)?.contains("61 62 63"));
+    Ok(())
+}
+
+#[test]
+fn shrinker_selection_limits_and_object_counts_reach_memory_events() -> Result<(), Box<dyn std::error::Error>> {
+    use wora::o11y::{LinuxMemoryCollector, LinuxMemoryEnvironment, LinuxMemoryOptions, RuntimeEnvironment};
+    let root = tempfile::tempdir()?;
+    for name in ["a", "b"] {
+        let directory = root.path().join("kernel/debug/shrinker").join(name);
+        std::fs::create_dir_all(&directory)?;
+        std::fs::write(directory.join("count"), "0 23 0\n")?;
+        std::fs::write(directory.join("scan"), [0xff])?;
+    }
+    let mut options = LinuxMemoryOptions::new()
+        .enable(LinuxMemoryCollector::Shrinkers)
+        .with_roots(root.path(), root.path());
+    options.shrinker_count_reads = 1;
+    let provider = LinuxMemoryEnvironment::new(CapturedEnvironment, options.clone())?;
+    let stats = provider.initial_host()?.stats;
+    let json = serde_json::to_value(wora::events::MemorySnapshot::from_host_stats(&stats))?;
+    let shrinkers = &json["linux_mm"]["diagnostics"]["shrinkers"];
+    assert_eq!(shrinkers["counts"]["a"]["parsed"]["count"][0]["node_counts"][0], 23);
+    assert!(shrinkers["counts"].get("b").is_none());
+    assert_eq!(json["linux_mm"]["diagnostics"]["collection"]["limit_exceeded"], "files");
+    for invalid in [0, 257] {
+        options.shrinker_count_reads = invalid;
+        assert!(LinuxMemoryEnvironment::new(CapturedEnvironment, options.clone()).is_err());
+    }
     Ok(())
 }
 

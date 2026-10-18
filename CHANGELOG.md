@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Features
 
+- Add opt-in shrinker object counts with bounded discovery/read requests and no `scan` access. Preserve cgroup identifiers and node-column order; per-read kernel callback work remains outside these limits. Diagnostic/options struct literals gain `shrinkers`/`shrinker_count_reads` fields.
 - Parse bounded `lru_gen_full` generation/tier/MM statistics, retaining cgroup/node scope, page units, expiry and average/unavailable markers. Preserve empty paths when memory cgroups are disabled.
 - Parse bounded kmemleak suspects with address scope, byte sizes, allocation jiffies, checksum and stacks. Discard embedded object-byte dumps; preserve uncertainty and never issue scan/clear commands.
 - Parse bounded page-owner allocation/page/stack records and aggregate stack/handle tables, retaining exact timestamps, masks, page units and migration/charge metadata without changing tracking or filters.

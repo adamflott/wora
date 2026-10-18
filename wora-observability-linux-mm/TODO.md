@@ -5,8 +5,6 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 
 ## Collector coverage
 
-- [ ] **Shrinkers:** add opt-in `shrinker/*/count` diagnostics; cap callbacks/entries
-  and exclude `scan`. [ABI][shrinkers]
 - [ ] **Mapping queries:** evaluate `PROCMAP_QUERY` (6.11) for bounded/filtered
   mapping metadata; retain smaps for accounting. [UAPI][queries]
 - [ ] **Page queries:** evaluate read-only `PAGEMAP_SCAN` (6.7) with explicit ranges
@@ -72,6 +70,5 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 Version research checked 2026-10-18. 7.3-rc7 is a development kernel.
 
 [dmem]: https://github.com/torvalds/linux/blob/v7.3-rc7/Documentation/admin-guide/cgroup-v2.rst
-[shrinkers]: https://docs.kernel.org/admin-guide/mm/shrinker_debugfs.html
 [queries]: https://github.com/torvalds/linux/blob/v6.11/include/uapi/linux/fs.h
 [thp]: https://github.com/torvalds/linux/blob/v7.2/Documentation/admin-guide/mm/transhuge.rst
