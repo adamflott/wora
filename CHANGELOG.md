@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Features
 
+- Add opt-in `RuntimeResources` count admission through `RunnerOptions::with_resources`: per-runner queue caps and shared task/provider/sink/service allowances. Add immediate-refusal `Wora::try_schedule_task`; legacy scheduling waits for configured slots. Worker leases survive cancellation until work exits; these counts do not impose heap/payload-byte limits.
 - Add opt-in shrinker object counts with bounded discovery/read requests and no `scan` access. Preserve cgroup identifiers and node-column order; per-read kernel callback work remains outside these limits. Diagnostic/options struct literals gain `shrinkers`/`shrinker_count_reads` fields.
 - Parse bounded `lru_gen_full` generation/tier/MM statistics, retaining cgroup/node scope, page units, expiry and average/unavailable markers. Preserve empty paths when memory cgroups are disabled.
 - Parse bounded kmemleak suspects with address scope, byte sizes, allocation jiffies, checksum and stacks. Discard embedded object-byte dumps; preserve uncertainty and never issue scan/clear commands.
@@ -26,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changes
 
+- `RunnerOptions` struct literals gain `resources: None`; builders preserve the handle through provider/lock type changes. Existing sender types and `schedule_task` return types stay compatible; non-exhaustive resource limits use `Default` plus field assignment.
 - Share routine Linux memory tables through `LinuxMemoryStats::data: Arc<LinuxMemoryData>` and move owned host statistics into periodic observability events. Construct routine struct literals with `LinuxMemoryData { .. }.into()`; field reads remain available through `Deref`, and mutations use copy-on-write. Collected snapshots add `collection` accounting to JSON.
 - Route routine and diagnostic procfs/sysfs reads through shared input/work budgets, including cgroup, sysctl, hugepage, process rollup, and binary page readers. Keep only the best cgroup mount candidate and bound ancestor traversal.
 - Limit default `sysinfo` collection to host CPU/memory and the current process's CPU, memory, and disk counters, with task enumeration disabled. Reuse samplers across refreshes and environment clones, and avoid collecting telemetry in `Host::from_parts`.

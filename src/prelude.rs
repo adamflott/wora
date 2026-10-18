@@ -23,6 +23,7 @@ pub use crate::exec_unix::*;
 pub use crate::lock::*;
 pub use crate::o11y::*;
 pub use crate::profiles::MemoryReporter;
+pub use crate::resources::{ResourceError, RuntimeResourceLimits, RuntimeResources};
 pub use crate::restart_policy::{MainRetryAction, RestartPolicyOptions, SupervisionOptions, UnhealthyAction, WorkloadRestartPolicy};
 pub use crate::vfs::*;
 pub use crate::{Config, NoConfig};

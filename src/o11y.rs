@@ -860,6 +860,10 @@ struct O11ySinkEntry<T> {
 }
 
 impl<T: Sync> O11yProcessor<T> {
+    pub(crate) fn sink_count(&self) -> usize {
+        self.sinks.len()
+    }
+
     /// Create a processor with `sinks`.
     pub fn new(sinks: Vec<Box<dyn O11ySink<T>>>) -> Self {
         Self {

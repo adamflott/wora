@@ -6,7 +6,7 @@
 
 WORA aims for deterministic memory and CPU usage through configurable budgets,
 predictable background work, and explicit overload behavior. Current Linux
-collection/snapshot/output limits are partial progress; do not claim a whole-runtime
+collection/snapshot/output and opt-in runtime count limits are partial progress; do not claim a whole-runtime
 heap/RSS ceiling or CPU execution-time guarantee without measurement and coverage.
 
 Key modules and workspace crates:
@@ -23,6 +23,7 @@ Key modules and workspace crates:
 - `src/profiles.rs`: memory reporter profile and bounded JSON output.
 - `src/events.rs`: application/runtime event model.
 - `src/restart_policy.rs`: restart policy and app main return action types.
+- `src/resources.rs`: validated runtime count budgets and shared admission leases.
 - `wora-observability/`: Prometheus and OpenTelemetry adapters.
 - `wora-observability-linux-mm/`: Linux memory readers/parsers and captured fixtures.
 

@@ -5,8 +5,6 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 
 ## Collector and allocation limits
 
-- [ ] Expose validated runtime-wide queue/task/sink/provider budgets through
-  existing runner options; plan compatibility for public API changes.
 - [ ] Account for container capacities, key/error-map growth and allocator overhead;
   reserve old/new snapshot, reload and serialization overlap before allocation.
 - [ ] Add a minimal selectable routine profile in `../src/o11y/linux_memory.rs`;

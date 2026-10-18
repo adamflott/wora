@@ -1409,11 +1409,14 @@ impl App<(), ()> for MetricsApp {
 
     async fn main(
         &mut self,
-        _wora: &mut Wora<(), ()>,
+        wora: &mut Wora<(), ()>,
         _exec: impl AsyncExecutor<(), ()>,
         _fs: impl WFS + 'static,
         _metrics: Sender<O11yEvent<()>>,
     ) -> MainRetryAction {
+        if let Some(resources) = wora.resources() {
+            assert_eq!(wora.sender.max_capacity(), resources.limits().app_event_records);
+        }
         tokio::time::sleep(Duration::from_millis(35)).await;
         MainRetryAction::Success
     }
@@ -2000,11 +2003,42 @@ async fn runner_emits_host_process_and_runtime_metrics() -> Result<(), Box<dyn s
 }
 
 #[tokio::test]
+async fn runner_refuses_oversized_pipeline_before_provider_or_executor_startup() -> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_test_dir("resource-admission");
+    let resources = RuntimeResources::new(RuntimeResourceLimits::default())?;
+    let pipeline = O11yPipeline::builder().capacity(65).sink("discard", O11yDiscardSink).build()?;
+    let result = exec_async_runner_with_options(
+        TestExec { dirs: test_dirs(root.clone()) },
+        MetricsApp,
+        PhysicalVFS::new(),
+        pipeline,
+        RunnerOptions::new()
+            .with_resources(resources.clone())
+            .with_runtime_environment(DeterministicRuntimeEnvironment {
+                host_info: deterministic_host_info(),
+                host_stats: deterministic_host_stats(),
+                process: None,
+            }),
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(MainEarlyReturn::Resources(ResourceError::Exhausted("observability_records")))
+    ));
+    assert!(!root.exists());
+    assert_eq!(resources.provider_workers(), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn runner_uses_injected_runtime_environment() -> Result<(), Box<dyn std::error::Error>> {
     let root = unique_test_dir("o11y-metrics-deterministic");
     let dirs = test_dirs(root.clone());
     std::fs::create_dir_all(&dirs.runtime_root_dir)?;
     let (o11y, mut rx) = test_o11y_with_receiver(Duration::from_millis(10))?;
+    let mut limits = RuntimeResourceLimits::default();
+    limits.app_event_records = 7;
+    let resources = RuntimeResources::new(limits)?;
     let runtime_environment = DeterministicRuntimeEnvironment {
         host_info: deterministic_host_info(),
         host_stats: deterministic_host_stats(),
@@ -2029,6 +2063,7 @@ async fn runner_uses_injected_runtime_environment() -> Result<(), Box<dyn std::e
         PhysicalVFS::new(),
         o11y,
         RunnerOptions::new()
+            .with_resources(resources.clone())
             .with_boot_dir(root.join("boot"))
             .with_runtime_environment(runtime_environment),
     )
@@ -2060,6 +2095,12 @@ async fn runner_uses_injected_runtime_environment() -> Result<(), Box<dyn std::e
 
     assert!(saw_host_stats);
     assert!(saw_process_stats);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while resources.provider_workers() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
     Ok(())
 }
 

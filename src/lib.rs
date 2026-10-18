@@ -34,6 +34,7 @@ pub mod lock;
 pub mod o11y;
 pub mod prelude;
 pub mod profiles;
+pub mod resources;
 pub mod restart_policy;
 pub mod vfs;
 
@@ -44,6 +45,7 @@ use crate::events::*;
 use crate::exec::*;
 use crate::lock::{LockBackend, LockError, ProcLockBackend};
 use crate::o11y::*;
+pub use crate::resources::{ResourceError, RuntimeResourceLimits, RuntimeResources};
 use crate::restart_policy::*;
 use crate::vfs::*;
 
@@ -168,6 +170,7 @@ pub struct Wora<AppEv, AppMetric> {
     /// Shared runtime status for health and readiness supervision.
     status: RuntimeStatusHandle,
     memory_stats_tx: watch::Sender<Arc<MemorySnapshot>>,
+    resources: Option<RuntimeResources>,
 }
 
 /// Current leadership role for a workload.
@@ -303,12 +306,18 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
             o11y,
             status,
             memory_stats_tx,
+            resources: None,
         })
     }
 
     /// Return the host statistics captured when the runtime started.
     pub fn stats_from_start(&self) -> &HostStats {
         &self.host.stats
+    }
+
+    /// Inspect shared runner admission state, if explicitly configured.
+    pub fn resources(&self) -> Option<&RuntimeResources> {
+        self.resources.as_ref()
     }
 
     /// Return the latest stored host memory sample without performing I/O.
@@ -472,13 +481,48 @@ impl<AppEv: Send + Sync + 'static, AppMetric: Send + Sync + 'static> Wora<AppEv,
     /// The task receives a clone of the observability sender. Returning
     /// `TaskOp::Requeue` schedules the next run; returning `TaskOp::Abort`
     /// stops the loop.
+    /// With resource admission configured, waits for a task slot before spawning.
+    /// The caller owns this waiting future; use [`Self::try_schedule_task`] for
+    /// immediate refusal without adding a waiting producer.
     pub async fn schedule_task<F, Fut>(&self, duration: tokio::time::Duration, future: F) -> JoinHandle<TaskOp>
+    where
+        F: Fn(Sender<O11yEvent<AppMetric>>) -> Fut + Send + 'static,
+        Fut: Future<Output = TaskOp> + Send,
+    {
+        let admission = match &self.resources {
+            Some(resources) => match resources.task().await {
+                Ok(lease) => Some(lease),
+                Err(_) => return tokio::spawn(async { TaskOp::Abort }),
+            },
+            None => None,
+        };
+        self.spawn_scheduled_task(duration, future, admission)
+    }
+
+    /// Spawn a scheduled loop only if a task slot is immediately available.
+    /// Refusal happens before spawning; admitted work holds its lease until drop.
+    pub fn try_schedule_task<F, Fut>(&self, duration: tokio::time::Duration, future: F) -> Result<JoinHandle<TaskOp>, ResourceError>
+    where
+        F: Fn(Sender<O11yEvent<AppMetric>>) -> Fut + Send + 'static,
+        Fut: Future<Output = TaskOp> + Send,
+    {
+        let admission = self.resources.as_ref().map(RuntimeResources::try_task).transpose()?;
+        Ok(self.spawn_scheduled_task(duration, future, admission))
+    }
+
+    fn spawn_scheduled_task<F, Fut>(
+        &self,
+        duration: tokio::time::Duration,
+        future: F,
+        admission: Option<tokio::sync::OwnedSemaphorePermit>,
+    ) -> JoinHandle<TaskOp>
     where
         F: Fn(Sender<O11yEvent<AppMetric>>) -> Fut + Send + 'static,
         Fut: Future<Output = TaskOp> + Send,
     {
         let tx = self.o11y.sender().clone();
         tokio::spawn(async move {
+            let _admission = admission;
             loop {
                 tokio::time::sleep(duration).await;
                 match future(tx.clone()).await {
@@ -1049,6 +1093,8 @@ where
 /// backend, restart behavior, boot-state location, and telemetry provider.
 #[derive(Clone)]
 pub struct RunnerOptions<AppEv, L = ProcLockBackend, R = SystemRuntimeEnvironment> {
+    /// Optional shared count admission; `None` preserves legacy scheduling/counts.
+    pub resources: Option<RuntimeResources>,
     /// Optional boot-state directory. Defaults to WORA's host temp boot root.
     pub boot_dir: Option<PathBuf>,
     /// Restart and supervision behavior.
@@ -1070,6 +1116,7 @@ pub struct RunnerOptions<AppEv, L = ProcLockBackend, R = SystemRuntimeEnvironmen
 impl<AppEv: Send + Sync + 'static> Default for RunnerOptions<AppEv> {
     fn default() -> Self {
         Self {
+            resources: None,
             boot_dir: None,
             restart: RestartPolicyOptions::default(),
             signal_mapper: default_signal_mapper(),
@@ -1087,6 +1134,14 @@ impl<AppEv: Send + Sync + 'static> RunnerOptions<AppEv> {
 }
 
 impl<AppEv: Send + Sync + 'static, L, R> RunnerOptions<AppEv, L, R> {
+    /// Apply validated queue/task/sink/service/provider count admission.
+    /// Reuse clones of this handle across replacement runners. These counts do
+    /// not impose payload-byte, custom-provider heap or CPU-time ceilings.
+    pub fn with_resources(mut self, resources: RuntimeResources) -> Self {
+        self.resources = Some(resources);
+        self
+    }
+
     /// Set the boot-state directory.
     pub fn with_boot_dir(mut self, boot_dir: impl Into<PathBuf>) -> Self {
         self.boot_dir = Some(boot_dir.into());
@@ -1108,6 +1163,7 @@ impl<AppEv: Send + Sync + 'static, L, R> RunnerOptions<AppEv, L, R> {
     /// Set the lock backend used to serialize workload execution.
     pub fn with_lock_backend<NewL>(self, lock_backend: NewL) -> RunnerOptions<AppEv, NewL, R> {
         RunnerOptions {
+            resources: self.resources,
             boot_dir: self.boot_dir,
             restart: self.restart,
             signal_mapper: self.signal_mapper,
@@ -1119,6 +1175,7 @@ impl<AppEv: Send + Sync + 'static, L, R> RunnerOptions<AppEv, L, R> {
     /// Set the runtime environment provider used for telemetry.
     pub fn with_runtime_environment<NewR>(self, runtime_environment: NewR) -> RunnerOptions<AppEv, L, NewR> {
         RunnerOptions {
+            resources: self.resources,
             boot_dir: self.boot_dir,
             restart: self.restart,
             signal_mapper: self.signal_mapper,
@@ -1157,14 +1214,34 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
     options: RunnerOptions<AppEv, L, R>,
 ) -> Result<(), MainEarlyReturn> {
     let parts = o11y.into_parts();
+    let pipeline_admission = options
+        .resources
+        .as_ref()
+        .map(|resources| {
+            resources.pipeline(
+                parts.processor.sink_count(),
+                parts.services.len(),
+                parts.options.sender().max_capacity(),
+                parts.commands.max_capacity(),
+            )
+        })
+        .transpose()?
+        .map(Arc::new);
+    let initial_provider_admission = options.resources.as_ref().map(RuntimeResources::try_provider).transpose()?;
     parts.started_tx.send_replace(true);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(None::<String>);
-    let mut processor_task = tokio::spawn(parts.processor.run_controlled(parts.receiver, parts.commands, parts.settings_tx));
+    let processor_admission = pipeline_admission.clone();
+    let mut processor_task = tokio::spawn(async move {
+        let _admission = processor_admission;
+        parts.processor.run_controlled(parts.receiver, parts.commands, parts.settings_tx).await
+    });
     let mut service_tasks = tokio::task::JoinSet::new();
     for service in parts.services {
+        let admission = pipeline_admission.clone();
         let statuses = parts.service_statuses.clone();
         set_o11y_service_state(&statuses, &service.name, crate::o11y::O11yServiceState::Running);
         service_tasks.spawn(async move {
+            let _admission = admission;
             let result = service.future.await;
             let state = match &result {
                 Ok(()) => crate::o11y::O11yServiceState::Stopped,
@@ -1174,7 +1251,16 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
             (service.name, result)
         });
     }
-    let runner = exec_async_runner_inner(exec, app, fs, parts.options, options, Some(parts.settings_rx), Some(shutdown_rx));
+    let runner = exec_async_runner_inner(
+        exec,
+        app,
+        fs,
+        parts.options,
+        options,
+        Some(parts.settings_rx),
+        Some(shutdown_rx),
+        initial_provider_admission,
+    );
     tokio::pin!(runner);
 
     let mut processor_finished = false;
@@ -1209,6 +1295,7 @@ pub async fn exec_async_runner_with_options<AppEv: Send + Sync + 'static, AppMet
             }
             Err(_) => {
                 processor_task.abort();
+                let _ = (&mut processor_task).await;
                 infrastructure_error.get_or_insert_with(|| "observability processor shutdown timed out".to_string());
             }
         };
@@ -1263,7 +1350,7 @@ fn service_task_error(result: Option<O11yServiceTaskResult>) -> String {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn exec_async_runner_inner<AppEv: Send + Sync + 'static, AppMetric: Debug + Send + Sync + 'static, L: LockBackend, R: RuntimeEnvironment>(
     exec: impl AsyncExecutor<AppEv, AppMetric> + 'static,
     app: impl App<AppEv, AppMetric> + Send + 'static,
@@ -1272,8 +1359,10 @@ async fn exec_async_runner_inner<AppEv: Send + Sync + 'static, AppMetric: Debug 
     options: RunnerOptions<AppEv, L, R>,
     runtime_settings: Option<tokio::sync::watch::Receiver<O11yRuntimeSettings>>,
     infrastructure_shutdown: Option<tokio::sync::watch::Receiver<Option<String>>>,
+    initial_provider_admission: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> Result<(), MainEarlyReturn> {
     let RunnerOptions {
+        resources,
         boot_dir,
         restart,
         signal_mapper,
@@ -1314,11 +1403,17 @@ async fn exec_async_runner_inner<AppEv: Send + Sync + 'static, AppMetric: Debug 
                 let metrics_sender = o11y.sender().clone();
                 let restart_counter = Arc::new(AtomicU32::new(0));
 
-                let mut wora = Wora::new_with_runtime_environment(exec.dirs(), app.name().to_string(), EVENT_BUFFER_SIZE, o11y, runtime_environment.clone())?;
+                let app_capacity = resources.as_ref().map_or(EVENT_BUFFER_SIZE, |resources| resources.limits().app_event_records);
+                let dispatch_capacity = resources
+                    .as_ref()
+                    .map_or(EVENT_BUFFER_SIZE, |resources| resources.limits().runtime_event_records);
+                let supervision_capacity = resources.as_ref().map_or(EVENT_BUFFER_SIZE, |resources| resources.limits().supervision_records);
+                let mut wora = Wora::new_with_runtime_environment(exec.dirs(), app.name().to_string(), app_capacity, o11y, runtime_environment.clone())?;
+                wora.resources = resources.clone();
                 let mut health_rx = wora.status_handle().subscribe_health();
                 let readiness_rx = wora.status_handle().subscribe_readiness();
-                let (runtime_event_tx, mut runtime_event_rx) = channel::<Event<AppEv>>(EVENT_BUFFER_SIZE);
-                let (supervision_tx, mut supervision_rx) = channel::<RuntimeSupervisionEvent>(EVENT_BUFFER_SIZE);
+                let (runtime_event_tx, mut runtime_event_rx) = channel::<Event<AppEv>>(dispatch_capacity);
+                let (supervision_tx, mut supervision_rx) = channel::<RuntimeSupervisionEvent>(supervision_capacity);
                 let mut runtime_tasks = RuntimeTaskRegistry::new();
                 if let Some(mut shutdown) = infrastructure_shutdown {
                     let shutdown_event_sender = runtime_event_tx.clone();
@@ -1404,6 +1499,7 @@ async fn exec_async_runner_inner<AppEv: Send + Sync + 'static, AppMetric: Debug 
                 if let Some(process_stats) = runtime_environment.initial_process_stats() {
                     let _ = metrics_sender.send(o11y_new_ev_processstats(&process_stats)).await;
                 }
+                drop(initial_provider_admission);
 
                 let status_tx = wora.o11y.sender().clone();
                 let cancelled = runtime_tasks.cancellation_token();
@@ -1442,6 +1538,7 @@ async fn exec_async_runner_inner<AppEv: Send + Sync + 'static, AppMetric: Debug 
                 let runtime_leadership = wora.leadership.clone();
                 let runtime_metrics_restart_counter = restart_counter.clone();
                 let runtime_environment = runtime_environment.clone();
+                let collector_resources = resources.clone();
                 let runtime_event_sender = wora.sender.clone();
                 let host_stats_tx = wora.o11y.sender().clone();
                 let memory_stats_tx = wora.memory_stats_tx.clone();
@@ -1465,10 +1562,18 @@ async fn exec_async_runner_inner<AppEv: Send + Sync + 'static, AppMetric: Debug 
                         let runtime_metrics_restart_counter = runtime_metrics_restart_counter.clone();
                         let runtime_environment = runtime_environment.clone();
                         let runtime_event_sender = runtime_event_sender.clone();
-                        let (host_stats, process_stats) =
-                            tokio::task::spawn_blocking(move || (runtime_environment.refresh_host_stats(), runtime_environment.refresh_process_stats()))
-                                .await
-                                .map_err(|err| format!("host and process sampler: {err}"))?;
+                        let admission = match &collector_resources {
+                            Some(resources) => tokio::select! {
+                                _ = cancelled.cancelled() => break,
+                                lease = resources.provider() => Some(lease.map_err(|error| error.to_string())?),
+                            },
+                            None => None,
+                        };
+                        let worker = tokio::task::spawn_blocking(move || {
+                            let _admission = admission;
+                            (runtime_environment.refresh_host_stats(), runtime_environment.refresh_process_stats())
+                        });
+                        let (host_stats, process_stats) = worker.await.map_err(|err| format!("host and process sampler: {err}"))?;
                         let host_stats = match host_stats {
                             Ok(stats) => stats,
                             Err(err) => {

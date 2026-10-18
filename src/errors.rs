@@ -82,6 +82,8 @@ pub enum SetupFailure {
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub enum MainEarlyReturn {
+    #[error("resources: {0}")]
+    Resources(#[from] crate::resources::ResourceError),
     #[error("io: {0}")]
     IO(#[from] std::io::Error),
     #[error("vfs: {0}")]

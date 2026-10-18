@@ -262,6 +262,36 @@ sinks, tasks, reloads, custom providers and writer buffers need separate budgets
 Visible cgroup limits are not allocation headroom: `memory.high` applies pressure;
 `memory.max` can trigger OOM and can be exceeded temporarily.
 
+### Runtime count admission
+
+```rust
+use wora::{RunnerOptions, RuntimeResourceLimits, RuntimeResources};
+
+let mut limits = RuntimeResourceLimits::default();
+limits.app_event_records = 64;
+let resources = RuntimeResources::new(limits)?;
+let options = RunnerOptions::<()>::new().with_resources(resources.clone());
+# Ok::<(), wora::ResourceError>(())
+```
+
+Counts must be 1..=65536. Defaults: application/dispatch/supervision queues 1024
+records each; observability events/commands 64/32; scheduled loops 64; provider
+jobs 1; sinks/services 16 each. Queue caps apply per runner. Task/provider/sink/
+service admission is shared across handle clones, including replacement runners.
+An oversized prebuilt pipeline or unavailable startup provider slot is refused
+before executor/provider startup. Existing channels retain their sender types.
+
+`Wora::try_schedule_task` refuses immediately; `schedule_task` waits for a slot.
+The caller owns the waiting future. Admitted loops hold their leases until the
+task future drops; dropping a join handle detaches it. Blocking provider jobs
+keep leases after their awaiting task is cancelled. Reuse the same resources
+handle when replacing a runner, and inspect `scheduled_tasks`/`provider_workers`.
+
+`RunnerOptions::resources = None` preserves legacy behavior. Struct literals need
+the new `resources` field; prefer runner builders and `Default` for limits.
+Payload bytes, pending public senders, custom buffers, future sizes, stacks and
+watcher/reload state remain outside these count budgets.
+
 ### WORA-owned memory contract
 
 The contract below defines admission/accounting rules. Runtime-wide enforcement
@@ -271,7 +301,7 @@ is incomplete; the current input/payload limits do not establish a heap ceiling.
 | --- | --- | --- |
 | Retained data | Allocated capacities of tables, strings, keys, errors, shared payloads and control blocks; count shared ownership once until its last owner releases it. | Linux generations account for encoded payload bytes, not heap capacity. |
 | Scratch | Concurrent input, conversion, parser and output buffers, including container growth and old/new overlap. | Source/line/work limits and capped memory-report JSON; no aggregate heap accounting. |
-| Runtime state | Queued payloads, waiting producers, futures, registries, sinks, exporters, watcher/reload state and their retained capacities. | Record-count queue caps; broader limits remain in the TODO. |
+| Runtime state | Queued payloads, waiting producers, futures, registries, sinks, exporters, watcher/reload state and their retained capacities. | Opt-in queue/task/provider/sink/service counts; heap/byte accounting remains incomplete. |
 | Reserve | Allocator rounding/metadata and bounded error/control/shutdown capacity, measured for the selected allocator/build. | No validated allocator reserve yet. |
 | Thread stacks | Thread-count × configured stack size for runner/runtime/blocking workers; account separately from heap. | Caller/runtime configuration, without a WORA-wide stack limit. |
 
