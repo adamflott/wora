@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Verify diagnostic sharing across provider clones, host samples and memory events, immutable retained snapshots across refreshes, release of old batches, and report JSON parity with public memory snapshots.
 - Add coverage for mixed KSM counter/boolean records, filesystem sysctl layouts, integer limits, malformed data, native bases and units, captured process files, structured-only serialization, and propagation through memory events.
 
+### Documentation
+
+- Evaluate `PROCMAP_QUERY` with a bounded read-only C probe and document the unsupported 6.8-kernel result, buffer/consistency constraints, and decision to retain maps/smaps with the current safe Rust dependencies.
+
 ## [0.0.18] - 2026-10-16
 
 ### Features

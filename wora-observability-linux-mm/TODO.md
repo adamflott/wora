@@ -5,8 +5,6 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 
 ## Collector coverage
 
-- [ ] **Mapping queries:** evaluate `PROCMAP_QUERY` (6.11) for bounded/filtered
-  mapping metadata; retain smaps for accounting. [UAPI][queries]
 - [ ] **Page queries:** evaluate read-only `PAGEMAP_SCAN` (6.7) with explicit ranges
   and result limits; exclude write-protection flags. [UAPI][queries]
 

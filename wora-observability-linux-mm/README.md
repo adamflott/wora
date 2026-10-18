@@ -117,3 +117,13 @@ cargo doc --locked -p wora-observability-linux-mm --all-features --no-deps
 
 Live-kernel tests are opt-in: `cargo test -p wora-observability-linux-mm --test live -- --ignored`.
 [Fixture provenance](https://github.com/adamflott/wora/blob/master/wora-observability-linux-mm/tests/fixtures/README.md).
+
+Read-only mapping-query evaluation (6.11+ headers; exit 77 means unsupported kernel):
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror tools/procmap-query.c -o /tmp/procmap-query
+/tmp/procmap-query
+```
+
+The probe caps calls/names and requests no build IDs. It is not a production
+backend; maps/smaps remain the supported mapping/accounting readers.
