@@ -4,6 +4,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Opt-in per-mapping process accounting. Reading `smaps` walks page tables.
+///
+/// Reads `/proc/self/{maps,numa_maps,smaps}` by default.
+/// [`Self::from_process_root`] substitutes an explicit `/proc/<pid>` or captured
+/// process directory; native `kB` quantities mean KiB and page counts remain pages.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct ProcessMemoryDetails {
@@ -16,6 +20,10 @@ pub struct ProcessMemoryDetails {
 }
 
 /// One smaps mapping, with parsed metadata, accounting, flags and native units.
+///
+/// Parsed from one `/proc/<pid>/smaps` section (or a `maps` header via the
+/// structured parser). `fields` comes from the lines following that header;
+/// quantities retain their source unit, normally `kB` meaning KiB.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct MemoryMapping {

@@ -11,6 +11,11 @@ use crate::{MemoryReadError, MemorySkipReason};
 /// Keys are relative source paths. Numeric scalars retain integer precision;
 /// tables use named fields. Missing, malformed and denied files
 /// remain distinguishable from zero. Reads are not atomic across files.
+///
+/// For each `parsed` key, the input path is the collector's root joined with
+/// that relative key. This container does not retain the root: its enclosing
+/// type documents whether that root is a process, sysfs node/device, or debugfs
+/// directory. Values keep the file's units; parser-only calls perform no reads.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct MemoryFiles {

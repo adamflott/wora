@@ -29,6 +29,11 @@ pub struct CgroupMemoryStats {
 }
 
 /// Memory files belonging to one explicitly identified cgroup directory.
+///
+/// Reads selected `memory.*`, `hugetlb.*`, `cpuset.mems` and
+/// `cpuset.mems.effective` files under [`Self::directory`]. Discovery normally
+/// selects a mounted cgroup v2 directory via [`CgroupMemoryStats`]; callers can
+/// supply a captured directory instead. `memory.reclaim` is never opened.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct CgroupMemory {
@@ -48,6 +53,11 @@ pub struct CgroupMemory {
 }
 
 /// Native cgroup memory file contents, without converting unlimited limits to zero.
+///
+/// Parsed from a file named by [`CgroupMemory::parsed`] under its cgroup
+/// directory. The filename/counter key determines scope and units: values may
+/// be byte sizes, event/page counts, node lists or pressure percentages and
+/// microseconds. There is no blanket conversion of numeric values to bytes.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde1", serde(untagged))]

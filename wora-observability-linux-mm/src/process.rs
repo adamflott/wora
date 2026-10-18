@@ -5,6 +5,12 @@ use std::path::Path;
 use crate::{FromBufRead, MemoryReadError, ProcError, ProcResult};
 
 /// Process-scoped memory accounting, separate from host and cgroup totals.
+///
+/// Reads `/proc/self/{status,limits,stat,oom_score,oom_score_adj,smaps_rollup}`
+/// by default. [`Self::from_process_root`] accepts another identified process
+/// directory or captured files. `status`/rollup `kB` values mean KiB; `stat`
+/// RSS remains base pages and `vsize` remains bytes. Limits keep their stated
+/// units and `unlimited` values; OOM scores remain unitless.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct ProcessMemoryStats {
@@ -68,6 +74,10 @@ pub struct SmapsRollup {
 }
 
 /// One rollup value with its original kernel unit.
+///
+/// Parsed from a named numeric line in `/proc/<pid>/smaps_rollup` by
+/// [`SmapsRollup`]. Its map key preserves the original accounting field name;
+/// no value is computed from host or cgroup totals.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct SmapsRollupValue {

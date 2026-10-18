@@ -9,6 +9,11 @@ use crate::{MemoryFiles, MemoryReadError};
 /// Node IDs can be sparse. Counters, distances, CPU/node lists and `kB` units
 /// remain exactly as exposed by sysfs; node totals must not be added to host
 /// totals. This view does not infer a process's allowed nodes or effective budget.
+///
+/// Reads inventory files under `/sys/devices/system/node`, per-node
+/// `node*/{meminfo,numastat,vmstat,cpulist,cpumap,distance}` and tier membership
+/// from `/sys/devices/virtual/memory_tiering/memory_tier*/nodelist`.
+/// [`Self::from_sys_root`] substitutes an explicit sysfs/captured root.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct NumaStats {

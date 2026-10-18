@@ -21,14 +21,17 @@ use crate::o11y::{Cpu, Disk, HostStats, LoadAvg, MemStats, NetIO, SwapStats};
 pub struct MemorySnapshot {
     /// Time the host sample was stored by the runtime.
     pub timestamp: chrono::DateTime<chrono::Utc>,
-    /// Physical memory totals and usage, in bytes.
+    /// Host physical-memory bytes copied from [`HostStats::memory`].
+    /// See [`MemStats`] for Linux/macOS sources and platform-specific formulas.
     pub memory: MemStats,
-    /// Swap totals and usage, in bytes.
+    /// Host swap bytes copied from [`HostStats::swap`]; see [`SwapStats`] for sources.
     pub swap: SwapStats,
-    /// Detailed procfs memory snapshots, including memory-related sysctls.
+    /// Shared procfs/sysfs snapshots from [`HostStats::linux_mm`].
     ///
     /// Procfs sources are independently optional. Sysctls, cgroup memory,
     /// hugepages and process data record individual failures and exclusions.
+    /// [`crate::o11y::LinuxMemoryData`] lists source paths; constructing this
+    /// snapshot shares the existing sample without reading the OS again.
     #[cfg(target_os = "linux")]
     pub linux_mm: crate::o11y::LinuxMemoryStats,
 }

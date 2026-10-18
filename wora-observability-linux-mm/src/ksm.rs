@@ -5,6 +5,10 @@ use std::path::Path;
 ///
 /// Native page counts, byte profit estimates and milliseconds remain distinct.
 /// Negative profit is retained. KSM statistics overlap other memory accounting.
+///
+/// Reads all regular, readable files directly under `/sys/kernel/mm/ksm` and
+/// `/proc/self/{ksm_stat,ksm_merging_pages}`. [`Self::from_roots`] accepts explicit
+/// sysfs/process roots; the `pid` is supplied metadata for those process files.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct KsmStats {

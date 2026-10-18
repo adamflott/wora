@@ -121,31 +121,43 @@ impl LinuxMemoryOptions {
 }
 
 /// Diagnostic data with its own timestamp; may be older than the host snapshot.
+///
+/// Paths below use default roots; [`LinuxMemoryOptions::with_roots`] substitutes
+/// captured/alternate procfs and sysfs trees. Process views use `<proc_root>/self`.
+/// Each selected collector reads independently and retains its native units.
 #[derive(Clone, Debug, Serialize)]
 pub struct LinuxMemoryDiagnostics {
     /// Aggregate source accounting; an exhausted limit marks this batch incomplete.
     pub collection: super::linux_mm::CollectionReport,
-    /// Memory blocks, hardware errors and reserved contiguous allocation areas.
+    /// Memory blocks from `/sys/devices/system/memory`, EDAC from
+    /// `/sys/devices/system/edac/mc`, node `memory_failure` counters and
+    /// `/sys/kernel/debug/cma` areas; see [`super::linux_mm::MemoryHardwareStats`].
     pub hardware: Option<Box<super::linux_mm::MemoryHardwareStats>>,
-    /// Existing page allocation provenance, without changing tracking/filter state.
+    /// Existing `/sys/kernel/debug/page_owner` and `page_owner_stacks/*` data,
+    /// without changing tracking/filter state. Unsupported dumps remain errors.
     pub page_owner: Option<Box<super::linux_mm::PageOwnerStats>>,
-    /// Existing kernel leak suspects; only present with explicit KernelLeaks selection.
+    /// `/sys/kernel/debug/kmemleak`; only present with explicit KernelLeaks
+    /// selection. Unsupported suspect dumps remain errors without retaining text.
     pub kernel_leaks: Option<Box<super::linux_mm::KernelLeakStats>>,
-    /// Exactly the requested PFN range, with independent kpage file errors.
+    /// Requested PFNs in `/proc/{kpageflags,kpagecount,kpagecgroup}`, with
+    /// independent file errors. Values are flags, mapping counts and cgroup inodes.
     pub physical_pages: Option<Box<super::linux_mm::PhysicalPageStats>>,
-    /// Exactly the requested process virtual-page range; PFNs may be redacted.
+    /// Requested virtual-page range from `/proc/self/pagemap`; PFNs may be redacted.
     pub page_map: Option<Box<super::linux_mm::ProcessPageMap>>,
-    /// MGLRU policy and page-age histograms, without active aging or reclaim.
+    /// MGLRU policy from `/sys/kernel/mm/lru_gen/{enabled,min_ttl_ms}` and
+    /// histograms from `/sys/kernel/debug/{lru_gen,lru_gen_full}`; no aging/reclaim.
     pub lru_generations: Option<Box<super::linux_mm::LruStats>>,
-    /// Exact per-order fragmentation indices, without floating-point conversion.
+    /// `/sys/kernel/debug/extfrag/{unusable_index,extfrag_index}` values in exact
+    /// thousandths by allocation order, without floating-point conversion.
     pub fragmentation: Option<Box<super::linux_mm::FragmentationStats>>,
-    /// Kernel allocation sites and vmalloc areas, requiring kernel support/access.
+    /// Call-site attribution from `/proc/allocinfo` and areas from `/proc/vmallocinfo`,
+    /// requiring kernel support/access. Byte totals and allocation counts stay distinct.
     pub kernel_allocations: Option<Box<super::linux_mm::KernelAllocationStats>>,
-    /// SLUB details, including explicit cache aliases.
+    /// Selected `/sys/kernel/slab/<cache>/*` state/counter files, including aliases.
     pub slub: Option<Box<super::linux_mm::SlubStats>>,
     /// Time this diagnostic batch was collected, independent of host sample time.
     pub sampled_at: chrono::DateTime<chrono::Utc>,
-    /// Full process mapping details, present only when explicitly selected.
+    /// `/proc/self/{maps,numa_maps,smaps}` mapping details, present only when selected.
     pub process_mappings: Option<Box<super::linux_mm::ProcessMemoryDetails>>,
 }
 

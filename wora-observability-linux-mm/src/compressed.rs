@@ -5,6 +5,10 @@ use crate::files::{entries, numbered, resolve_directory};
 use crate::{MemoryFiles, MemoryReadError};
 
 /// Host compressed-swap configuration and accounting, separate from swap usage.
+///
+/// Reads selected files in `/sys/module/zswap/parameters`,
+/// `/sys/kernel/debug/zswap` and `/sys/block/zram*` (resolving device links
+/// within the supplied sysfs root). Source byte/page/counter units are retained.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct CompressedMemoryStats {
@@ -19,6 +23,10 @@ pub struct CompressedMemoryStats {
 }
 
 /// One zram device's parsed configuration and I/O/statistics tables.
+///
+/// Files are relative to one resolved `/sys/block/zram<id>` device directory.
+/// `memory` comes from its `mm_stat`; `files` includes selected policy, size,
+/// `io_stat`, `bd_stat` and block `stat` files. This is per-device accounting.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct ZramDevice {
@@ -29,6 +37,10 @@ pub struct ZramDevice {
 }
 
 /// Zram `mm_stat` values. Sizes are bytes; `*_pages` and `pages_compacted` are counts.
+///
+/// Parsed from `/sys/block/zram<id>/mm_stat` by [`CompressedMemoryStats`].
+/// `fields` names the kernel's positional columns; `extra` retains unknown
+/// trailing columns without assigning units.
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct ZramMemoryStat {

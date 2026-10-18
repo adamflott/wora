@@ -92,16 +92,25 @@ impl From<LinuxMemoryData> for LinuxMemoryStats {
 }
 
 /// Routine Linux memory tables, shared by host samples, events and memory caches.
+///
+/// Paths below use the live `/proc` and `/sys` roots. [`LinuxMemoryStats::from_roots`]
+/// substitutes captured/alternate roots; process files are under `<proc_root>/self`.
+/// Reads are independent, not atomic across files or with `sysinfo` totals. Source
+/// units are retained unless a field explicitly documents conversion to bytes.
+/// Host, process, cgroup, NUMA and allocator views overlap and must not be summed.
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct LinuxMemoryData {
     /// Collection accounting; an exhausted limit explicitly marks incomplete data.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collection: Option<CollectionReport>,
-    /// KSM saved/shared pages, scanner policy and process-specific accounting.
+    /// KSM pages/policy from `/sys/kernel/mm/ksm/*` and process accounting from
+    /// `/proc/self/{ksm_stat,ksm_merging_pages}`. Native units are retained.
     pub ksm: Option<Box<super::linux_mm::KsmStats>>,
-    /// Zram device accounting and zswap policy/debugfs counters.
+    /// Zram accounting from `/sys/block/zram*`, zswap policy from
+    /// `/sys/module/zswap/parameters` and counters from `/sys/kernel/debug/zswap`.
     pub compressed: Option<Box<super::linux_mm::CompressedMemoryStats>>,
-    /// Host NUMA nodes, locality statistics and memory-tier membership.
+    /// NUMA inventory/statistics from `/sys/devices/system/node` and tier membership
+    /// from `/sys/devices/virtual/memory_tiering`; see [`super::linux_mm::NumaStats`].
     pub numa: Option<Box<super::linux_mm::NumaStats>>,
     /// Overall host memory inventory from `/proc/meminfo`, with sizes in bytes.
     pub meminfo: Option<Box<Meminfo>>,
@@ -113,29 +122,41 @@ pub struct LinuxMemoryData {
     pub shared_memory: Option<SharedMemorySegments>,
     /// Physical memory regions from `/proc/iomem`; addresses may be restricted.
     pub iomem: Option<Iomem>,
-    /// Free allocator blocks by NUMA node, zone, and allocation order.
+    /// Free blocks by node/zone/order from `/proc/buddyinfo`; counts are blocks,
+    /// with `2^order` base pages per block, not bytes.
     pub buddyinfo: Option<BuddyInfo>,
-    /// Zone inventory, watermarks, and node/zone/per-CPU statistics.
+    /// Inventory/watermarks and node/zone/per-CPU statistics from `/proc/zoneinfo`;
+    /// page fields and native counter units remain distinct.
     pub zoneinfo: Option<ZoneInfo>,
-    /// Swap devices and files, including sizes and usage in KiB.
+    /// Swap devices/files from `/proc/swaps`, including sizes and usage in KiB.
     pub swaps: Option<Swaps>,
-    /// Slab cache geometry and optional legacy allocator statistics.
+    /// Slab geometry and optional legacy statistics from `/proc/slabinfo`;
+    /// object sizes are bytes, slab geometry uses base pages.
     pub slabinfo: Option<SlabInfo>,
-    /// Free lists and pageblock counts by migration type.
+    /// Free blocks/pageblocks by migration type from `/proc/pagetypeinfo`;
+    /// capped counts retain lower bounds. Reading can drain per-CPU page lists
+    /// when the kernel's page-owner mixed-table reporting is active.
     pub pagetypeinfo: Option<PageTypeInfo>,
     /// Structured memory sysctl settings in native units, with per-key failures.
     ///
-    /// Includes VM, kernel shared-memory and NUMA, and selected filesystem
-    /// settings. Action controls and `vm.stat_refresh` are never opened.
+    /// Reads `/proc/sys/vm`, selected `/proc/sys/kernel` shared-memory/NUMA/perf
+    /// settings and `/proc/sys/fs` cache/descriptor inventories; see [`MemorySysctls`].
+    /// Action controls and `vm.stat_refresh` are never opened.
     pub sysctls: MemorySysctls,
-    /// Collecting process's cgroup v2 usage, events, pressure, and visible ancestor limits.
+    /// Cgroup v2 discovered via `/proc/self/{cgroup,mountinfo}`, then read from
+    /// `memory.*`, `hugetlb.*` and cpuset memory-node files in its mounted directory
+    /// and visible parents. See [`CgroupMemoryStats`] for scope and discovery limits.
     pub cgroup: Box<CgroupMemoryStats>,
-    /// THP policies/per-size statistics and global/per-node HugeTLB pools.
+    /// THP policies/counters from `/sys/kernel/mm/transparent_hugepage`, HugeTLB
+    /// pools from `/sys/kernel/mm/hugepages` and `node*/hugepages` under
+    /// `/sys/devices/system/node`. File units and page-size labels are retained.
     ///
     /// Present when a sysfs root was supplied. Individual access failures are
     /// recorded within the snapshot. Proc-only captures leave this as `None`.
     pub hugepages: Option<Box<HugePageStats>>,
-    /// Collecting process's PID and memory mapping rollup, in native source units.
+    /// Collecting PID and `/proc/self/{status,limits,stat,oom_score,oom_score_adj}`
+    /// information plus `/proc/self/smaps_rollup`. Rollup `kB` means KiB;
+    /// [`super::linux_mm::SmapsRollupValue::bytes`] converts with overflow checks.
     pub process: Box<ProcessMemoryStats>,
 }
 

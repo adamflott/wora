@@ -6,6 +6,11 @@ use std::path::Path;
 use crate::{MemoryReadError, MemorySkipReason};
 
 /// THP policy/per-size statistics and global/per-node HugeTLB pools from sysfs.
+///
+/// Reads `/sys/kernel/mm/transparent_hugepage` (including khugepaged and
+/// per-size statistics), `/sys/kernel/mm/hugepages` and
+/// `/sys/devices/system/node/node*/hugepages`. Explicit sysfs roots are supported;
+/// native policy choices, page-size directory labels and file units are retained.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct HugePageStats {
@@ -20,6 +25,10 @@ pub struct HugePageStats {
 }
 
 /// Files within one THP or HugeTLB sysfs hierarchy.
+///
+/// Keys in `parsed` are relative to the THP, global HugeTLB or per-node HugeTLB
+/// root selected by [`HugePageStats`], or to [`Self::from_directory`]'s supplied
+/// root. Thus `hugepages-<size>kB/nr_hugepages` counts that size's pages, not bytes.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct HugePageFiles {

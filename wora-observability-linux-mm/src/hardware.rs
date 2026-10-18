@@ -7,6 +7,14 @@ use std::path::Path;
 ///
 /// Controller/DIMM counters overlap; no totals are synthesized. Presence depends
 /// on the architecture, hardware/driver support, kernel configuration and mounts.
+///
+/// Sources are `/sys/devices/system/memory/{block_size_bytes,auto_online_blocks,
+/// crash_hotplug}`, per-block `memory*/{state,online,removable,phys_index,valid_zones}`,
+/// selected files under `/sys/devices/system/edac/mc/mc*` and its DIMM/rank/csrow
+/// children, node `memory_failure/*` counters and `/sys/kernel/debug/cma/*`.
+/// [`Self::from_sys_root`] substitutes an explicit sysfs root; no mount is created.
+/// Native sizes/counters/PFNs/bitmaps remain distinct. `block_size_bytes` is parsed
+/// from its hexadecimal source, not inferred from page size.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct MemoryHardwareStats {

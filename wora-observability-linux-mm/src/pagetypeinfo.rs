@@ -17,6 +17,10 @@ pub struct PageTypeInfo {
 }
 
 /// Free-list and pageblock inventories for one NUMA node.
+///
+/// Parsed from the geometry and tables for this node in `/proc/pagetypeinfo`
+/// by [`PageTypeInfo`]. Geometry is in base pages; free-list and pageblock
+/// counts remain separate units.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct PageTypeNode {
@@ -41,6 +45,9 @@ pub struct PageTypeNode {
 
 /// Free buddy blocks for one zone/migration type. Despite the kernel header's
 /// wording, these counts are blocks at each allocation order, not base pages.
+///
+/// One `/proc/pagetypeinfo` free-list row within [`PageTypeNode`]. Each
+/// column counts blocks of `2^order` base pages, retaining kernel scan caps.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct PageTypeFreeList {
@@ -53,6 +60,9 @@ pub struct PageTypeFreeList {
 }
 
 /// An exact free-block count or an observation limited by the kernel's scan cap.
+///
+/// Parsed from `/proc/pagetypeinfo` free-list columns by [`PageTypeInfo`].
+/// The kernel's `>N` spelling is retained as an inclusive lower bound.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde1", serde(rename_all = "snake_case"))]
@@ -66,6 +76,9 @@ pub enum FreeBlockCount {
 
 /// Exact pageblock counts for one zone. Mixed and ordinary pageblock tables
 /// use the same shape; values retain their migration-type header names.
+///
+/// One ordinary or mixed pageblock row of `/proc/pagetypeinfo`, associated
+/// with the geometry and migration-type header in [`PageTypeNode`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct PageTypeBlockCounts {

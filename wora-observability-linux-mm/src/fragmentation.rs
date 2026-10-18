@@ -3,6 +3,10 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 /// Explicit per-zone/per-order fragmentation indices from existing debugfs.
+///
+/// Reads `/sys/kernel/debug/extfrag/unusable_index` and `extfrag_index`,
+/// or the corresponding files beneath an explicit debugfs root. These are
+/// host allocator indices, not process or cgroup memory amounts.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct FragmentationStats {
@@ -15,6 +19,9 @@ pub struct FragmentationStats {
 }
 
 /// One node/zone's indices. No fixed zone set, page size or order count is assumed.
+///
+/// One row of `extfrag/{unusable_index,extfrag_index}` under debugfs, parsed
+/// by [`FragmentationStats`]. Each column is scaled to exact integer thousandths.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct FragmentationZone {

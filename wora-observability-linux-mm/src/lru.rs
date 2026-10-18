@@ -3,6 +3,10 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 /// Multi-Gen LRU runtime policy and existing generation statistics.
+///
+/// Reads `/sys/kernel/mm/lru_gen/{enabled,min_ttl_ms}` for policy and
+/// `/sys/kernel/debug/{lru_gen,lru_gen_full}` for existing statistics. Basic
+/// histograms come from `lru_gen`; unsupported full layouts remain errors.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct LruStats {
@@ -15,6 +19,10 @@ pub struct LruStats {
 }
 
 /// One memory cgroup and node's non-cumulative page-age histogram.
+///
+/// Parsed from a `memcg`/`node` section of `/sys/kernel/debug/lru_gen`.
+/// Its cgroup identity is the one printed by that file, not necessarily the
+/// collecting process's current cgroup or a `kpagecgroup` inode number.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct LruHistogram {
@@ -29,6 +37,9 @@ pub struct LruHistogram {
 }
 
 /// One generation; page counts remain pages, not bytes or cumulative counts.
+///
+/// One generation row of `/sys/kernel/debug/lru_gen`, within [`LruHistogram`];
+/// the four columns are sequence, age in milliseconds, anonymous pages and file pages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct LruGeneration {

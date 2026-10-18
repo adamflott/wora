@@ -1,5 +1,10 @@
 # wora-observability-linux-mm
 
+This is the standalone reader/parser reference. For WORA memory reporting,
+source inventories, resource budgets, R&D and measurements, see the repository's
+[memory guide](https://github.com/adamflott/wora/blob/master/docs/memory.md).
+Each public snapshot type documents its input file/root, scope and units in Rustdoc.
+
 Typed, read-only Linux memory-management readers extending `procfs` 0.18.
 Supported sources are `/proc/buddyinfo`, `/proc/zoneinfo`, `/proc/swaps`,
 `/proc/slabinfo`, `/proc/pagetypeinfo`, and memory-related sysctls under
@@ -298,11 +303,9 @@ opened. Other write-only or non-regular entries are also skipped. Exclusions
 apply even when the collector runs as root. See the kernel's
 [`stat_refresh` documentation](https://docs.kernel.org/admin-guide/sysctl/vm.html#stat-refresh).
 
-On `inanna` (Linux 6.18.55), the normal SSH user could read all selected settings
-except `vm.mmap_rnd_bits` and `vm.mmap_rnd_compat_bits`, both mode `0600`.
-`vm.stat_refresh` was also mode `0600` and deliberately not read. The two
-write-only action files were mode `0200`. Access and available names depend on
-the kernel configuration and host policy; no privilege escalation is attempted.
+Access and available names depend on the kernel configuration and host policy;
+no privilege escalation is attempted. A dated host observation is recorded in the
+[memory guide](https://github.com/adamflott/wora/blob/master/docs/memory.md#linux-snapshot-behavior).
 
 ```rust
 use wora_observability_linux_mm::{BuddyInfo, FromRead};

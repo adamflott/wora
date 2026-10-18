@@ -19,6 +19,9 @@ pub struct ZoneInfo {
 }
 
 /// Memory inventory, allocation thresholds and statistics for one zone.
+///
+/// Parsed from one node/zone section of `/proc/zoneinfo` by [`ZoneInfo`].
+/// All inventory and protection fields retain that section's base-page scope.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct ZoneInfoZone {
@@ -53,6 +56,9 @@ pub struct ZoneInfoZone {
 
 /// Allocation watermarks in base pages. These already include any boost as
 /// printed by the kernel; consumers should not add `boost_pages` again.
+///
+/// Parsed from `/proc/zoneinfo` zone fields `min`, `low`, `high` and optional
+/// `boost`/`promo` by [`ZoneInfo`]. All values are base-page counts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct ZoneWatermarks {
@@ -70,6 +76,10 @@ pub struct ZoneWatermarks {
 
 /// Raw per-CPU pageset fields. These are parsed for library consumers but the
 /// reporter does not export per-CPU series by default.
+///
+/// Parsed from a zone's `pagesets` / `cpu:` section in `/proc/zoneinfo`.
+/// These numeric values are retained in kernel units; they are not the zone
+/// watermarks or an independently sampled per-process view.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct ZonePageSet {

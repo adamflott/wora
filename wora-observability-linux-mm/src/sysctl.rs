@@ -20,6 +20,11 @@ use std::path::Path;
 /// No file is opened for writing. `vm.stat_refresh` is never opened because
 /// even reading it flushes per-CPU VM statistics. The write-only action files
 /// `vm.compact_memory` and `vm.drop_caches` are also never opened.
+///
+/// Kernel files are under `/proc/sys/kernel`; filesystem files are
+/// `/proc/sys/fs/{file-max,file-nr,nr_open,inode-nr,inode-state,dentry-state}`.
+/// A dotted key such as `vm.swappiness` maps to `/proc/sys/vm/swappiness`.
+/// [`Self::from_proc_root`] substitutes the proc root for captured inputs.
 #[derive(Clone, Default, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct MemorySysctls {

@@ -16,6 +16,9 @@ pub struct BuddyInfo {
 }
 
 /// Free blocks for one NUMA node and memory zone.
+///
+/// One row of `/proc/buddyinfo`, parsed within [`BuddyInfo`]. All free-block
+/// counts retain this node/zone scope; byte conversion requires base page size.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct BuddyZone {

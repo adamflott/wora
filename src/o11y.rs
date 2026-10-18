@@ -221,14 +221,27 @@ pub enum O11yMetricValue {
     Counter(u64),
 }
 
-/// Current process resource statistics.
+/// Process resource statistics copied from a refreshed [`sysinfo::Process`].
+///
+/// The built-in provider samples the collecting PID. [`Self::from_system`] can
+/// use another PID already present in the caller's `sysinfo::System` snapshot;
+/// that conversion does not perform I/O. Memory values describe the process,
+/// independently of host totals, cgroup charges, or proportional set size (PSS).
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct ProcessStats {
     /// Process identifier.
     pub pid: u32,
-    /// Resident memory usage in bytes.
+    /// Resident memory in bytes, from [`sysinfo::Process::memory`].
+    ///
+    /// Linux: `/proc/<pid>/statm` resident pages multiplied by base page size,
+    /// falling back to the RSS field in `/proc/<pid>/stat`. macOS:
+    /// `proc_pidinfo` task info's `pti_resident_size`.
     pub memory: u64,
-    /// Virtual memory usage in bytes.
+    /// Virtual address-space size in bytes, from [`sysinfo::Process::virtual_memory`].
+    ///
+    /// Linux: `/proc/<pid>/statm` size pages multiplied by base page size,
+    /// falling back to `/proc/<pid>/stat`'s `vsize` bytes. macOS:
+    /// `proc_pidinfo` task info's `pti_virtual_size`. Reserved space may be nonresident.
     pub virtual_memory: u64,
     /// CPU usage percentage reported by `sysinfo`.
     pub cpu_usage: f32,
@@ -1586,19 +1599,43 @@ pub struct Cpu {
     usage: f32,
 }
 
+/// Host physical-memory statistics, in bytes, copied from a refreshed
+/// [`sysinfo::System`] by [`HostStats::new`].
+///
+/// Linux values originate in `/proc/meminfo`; its `kB` sizes mean KiB and
+/// `sysinfo` converts them to bytes. macOS uses `sysctl(hw.memsize)` and Mach
+/// `host_statistics64(HOST_VM_INFO64)`, converting page counts with the host's
+/// base page size. These are host values, not the daemon's RSS or cgroup budget.
+/// The formulas below describe the resolved `sysinfo` 0.39.6 implementation.
+/// Custom [`RuntimeEnvironment`] implementations may supply different data.
 #[derive(Clone, Default, Debug, Serialize)]
-/// Memory statistics captured from `sysinfo`.
 pub struct MemStats {
+    /// [`sysinfo::System::total_memory`]: Linux `MemTotal`; macOS `hw.memsize`.
     pub total: u64,
+    /// [`sysinfo::System::free_memory`]: Linux `MemFree`; macOS free pages
+    /// minus speculative pages, multiplied by page size. Excludes reclaimable cache.
     pub free: u64,
+    /// [`sysinfo::System::used_memory`]: Linux `MemTotal - MemAvailable`.
+    /// If availability is absent, `sysinfo` estimates it from free, buffer,
+    /// cache and reclaimable slab memory minus shared memory.
+    /// macOS uses internal minus purgeable plus wired and compressor pages,
+    /// multiplied by page size. This need not equal `total - free`.
     pub used: u64,
 }
 
+/// Host swap statistics, in bytes, copied from a refreshed [`sysinfo::System`].
+///
+/// Linux reads `/proc/meminfo` and converts its KiB values to bytes. macOS reads
+/// `sysctl(vm.swapusage)`. These are host totals, separate from a process's
+/// swapped mappings and cgroup swap charges. Conversion by [`HostStats::new`]
+/// does not refresh the supplied sampler.
 #[derive(Clone, Default, Debug, Serialize)]
-/// Swap statistics captured from `sysinfo`.
 pub struct SwapStats {
+    /// [`sysinfo::System::total_swap`]: Linux `SwapTotal`; macOS `xsu_total`.
     pub total: u64,
+    /// [`sysinfo::System::used_swap`]: total swap minus free swap.
     pub used: u64,
+    /// [`sysinfo::System::free_swap`]: Linux `SwapFree`; macOS `xsu_avail`.
     pub free: u64,
 }
 
@@ -1700,12 +1737,17 @@ impl Host {
 #[derive(Clone, Default, Debug, Serialize, Getters)]
 pub struct HostStats {
     pub cpu: Vec<Cpu>,
+    /// Host physical-memory bytes from the supplied `sysinfo::System` snapshot.
+    /// See [`MemStats`] for platform sources and formulas.
     pub memory: MemStats,
     pub load: LoadAvg,
+    /// Host swap bytes from the supplied sampler; see [`SwapStats`] for sources.
     pub swap: SwapStats,
     pub fs: Vec<Disk>,
     pub net_io: HashMap<String, NetIO>,
-    /// Linux memory-management details and sysctls, refreshed with each host snapshot.
+    /// Independently read Linux procfs/sysfs details, refreshed with each host
+    /// snapshot. [`LinuxMemoryData`] documents each source; these reads are not
+    /// atomic with the portable totals above. Diagnostics have their own cadence.
     #[cfg(target_os = "linux")]
     pub linux_mm: LinuxMemoryStats,
 }

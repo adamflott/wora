@@ -43,8 +43,38 @@ pub use numa::NumaStats;
 pub use pages::{PageMapEntry, PageRange, PhysicalPageStats, ProcessPageMap, read_page_entries};
 pub use pagetypeinfo::{FreeBlockCount, PageTypeBlockCounts, PageTypeFreeList, PageTypeInfo, PageTypeNode};
 pub use process::{ProcessMemoryStats, SmapsRollup, SmapsRollupValue};
+/// `/proc/iomem` physical address ranges and labels, including nested regions.
+/// Addresses may be redacted by kernel policy; alternate files can be parsed.
+#[doc(inline)]
+pub use procfs_core::Iomem;
+/// `/proc/meminfo` host inventory. The procfs parser converts `kB` (KiB) sizes
+/// to bytes; count fields such as HugeTLB page counts retain their own meaning.
+#[doc(inline)]
+pub use procfs_core::Meminfo;
+/// `/proc/pressure/memory` host stall accounting; cgroup `memory.pressure` uses
+/// the same parser. Scope follows the file supplied to the reader.
+#[doc(inline)]
+pub use procfs_core::MemoryPressure;
+/// One inclusive physical address range and label from `/proc/iomem`, used in
+/// [`Iomem`]. These ranges are not resident-memory allocations.
+#[doc(inline)]
+pub use procfs_core::PhysicalMemoryMap;
+/// One `some` or `full` line from `/proc/pressure/memory` or cgroup
+/// `memory.pressure`: stall averages are percentages and total time is microseconds.
+#[doc(inline)]
+pub use procfs_core::PressureRecord;
+/// System V shared-memory inventory from `/proc/sysvipc/shm`; contains [`Shm`] rows.
+#[doc(inline)]
+pub use procfs_core::SharedMemorySegments;
+/// One `/proc/sysvipc/shm` row: size/resident/swap amounts are bytes; IDs,
+/// attachment counts, permissions and timestamps retain the kernel's units.
+#[doc(inline)]
+pub use procfs_core::Shm;
+/// `/proc/vmstat` named VM gauges and cumulative counters. Units depend on each
+/// kernel key; values are not uniformly byte sizes or page counts.
+#[doc(inline)]
+pub use procfs_core::VmStat;
 pub use procfs_core::{FromBufRead, FromRead, ProcError, ProcResult};
-pub use procfs_core::{Iomem, Meminfo, MemoryPressure, PhysicalMemoryMap, PressureRecord, SharedMemorySegments, Shm, VmStat};
 pub use provenance::{KernelLeakStats, PageOwnerStats};
 pub use slabinfo::{SlabCache, SlabCpuStats, SlabGlobalStats, SlabInfo};
 pub use slub::SlubStats;

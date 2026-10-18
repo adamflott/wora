@@ -2,6 +2,10 @@ use crate::{MemoryFiles, MemoryReadError};
 use std::path::Path;
 
 /// Opt-in kernel allocation attribution, retaining native vmalloc area details.
+///
+/// Reads `/proc/vmallocinfo` into `files` and `/proc/allocinfo` into
+/// `allocation_sites`. Alternate proc roots replace `/proc`; parsing supplied
+/// text performs no I/O. Attribution is kernel-wide, not process RSS.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct KernelAllocationStats {
@@ -22,6 +26,9 @@ pub struct AllocationSites {
 }
 
 /// One kernel allocation call site, including optional accuracy markers.
+///
+/// Each record comes from one `/proc/allocinfo` row in [`AllocationSites`];
+/// bytes and allocation counts retain that row's native accounting scope.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct AllocationSite {

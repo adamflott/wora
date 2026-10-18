@@ -3,6 +3,11 @@ use std::path::Path;
 
 /// Opt-in page allocation provenance from debugfs. Requires page-owner support
 /// and normally `page_owner=on` at boot, plus privileged debugfs access.
+///
+/// Reads `/sys/kernel/debug/page_owner` and
+/// `page_owner_stacks/{show_stacks,show_handles,show_stacks_handles,count_threshold}`,
+/// or those names below an explicit debugfs root. Numeric settings are parsed;
+/// unsupported page/stack dumps yield errors without retaining their text.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct PageOwnerStats {
@@ -40,6 +45,10 @@ impl PageOwnerStats {
 
 /// Opt-in kernel leak suspects, requiring `CONFIG_DEBUG_KMEMLEAK` and enablement.
 /// These are diagnostic findings, not proof of a leak or a complete leak census.
+///
+/// Reads `/sys/kernel/debug/kmemleak`, or `kmemleak` below an explicit
+/// debugfs root. Finding dumps currently have no structured parser and are
+/// reported as unsupported without retaining their text. No scan command is written.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct KernelLeakStats {

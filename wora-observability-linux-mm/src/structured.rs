@@ -8,6 +8,11 @@ use crate::MemoryReadError;
 /// Quantities are maps with `value` and `unit`. CPU/node lists are lists of
 /// inclusive `{start, end}` ranges; bitmap words retain most-significant-first
 /// order. Native strings and reserved/future fields remain representable.
+///
+/// The containing [`crate::MemoryFiles::parsed`],
+/// [`crate::MemorySysctls::parsed`] or other collector map identifies the source
+/// file/key; this value alone does not retain an absolute path or imply bytes.
+/// Parsing caller-supplied text performs no I/O.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde1", serde(untagged))]

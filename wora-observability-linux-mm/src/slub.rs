@@ -4,6 +4,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Opt-in modern SLUB cache details, without counting aliases as separate caches.
+///
+/// Reads selected state/counter files under `/sys/kernel/slab/<cache>`,
+/// including native object/slab/node counts, geometry, policies and enabled
+/// debugging counters. Aliases are directory links, not additional caches.
+/// [`Self::from_sys_root`] substitutes an explicit sysfs root.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct SlubStats {

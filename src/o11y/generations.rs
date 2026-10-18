@@ -1,6 +1,10 @@
 use std::sync::{Arc, Weak};
 
 /// Live shared memory generations and refreshes skipped because readers retained them.
+///
+/// Computed from WORA's provider-owned generation tracker, not procfs/sysfs.
+/// Encoded sizes count serialized JSON payload bytes; they exclude heap/allocator
+/// overhead and cannot be interpreted as process RSS or a whole-daemon memory bound.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MemorySamplingStatus {
     /// Live generations, not the number of handles referring to them.

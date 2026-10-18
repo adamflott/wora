@@ -5,6 +5,11 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// Explicit bounded range of PFNs or virtual page indices (not byte addresses).
+///
+/// This is caller-supplied selection, not a sampled memory total. Physical
+/// readers seek to `start * 8` in `/proc/kpage*`; process pagemap readers seek
+/// to that offset in `/proc/<pid>/pagemap`. Byte addresses must first be
+/// converted to page indices using the relevant base page size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct PageRange {
@@ -28,6 +33,10 @@ impl PageRange {
 }
 
 /// Physical-page accounting for exactly the requested PFN range.
+///
+/// Reads `/proc/kpageflags`, `/proc/kpagecount` and `/proc/kpagecgroup` over
+/// the supplied range, or the same files under an explicit proc root. Each
+/// entry is a native-endian `u64`; index `i` describes PFN `range.start + i`.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct PhysicalPageStats {
@@ -73,6 +82,10 @@ impl PhysicalPageStats {
 }
 
 /// Bounded process pagemap snapshot, separate from physical-page arrays.
+///
+/// Reads `/proc/self/pagemap` by default, or `pagemap` below an explicit
+/// process root. Each native-endian 64-bit entry describes one virtual page
+/// in `range`; [`PageMapEntry`] decodes flags and PFN/swap information.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct ProcessPageMap {
@@ -111,6 +124,10 @@ impl ProcessPageMap {
 }
 
 /// Modern pagemap entry, retaining unknown bits in `raw`.
+///
+/// Decoded from one native-endian 64-bit `/proc/<pid>/pagemap` entry, normally
+/// by [`ProcessPageMap`]. Flags and payload fields all come from `raw`;
+/// [`Self::decode`] itself performs no I/O or privilege checks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct PageMapEntry {

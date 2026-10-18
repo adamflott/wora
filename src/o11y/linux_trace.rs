@@ -16,6 +16,9 @@ use tokio::sync::mpsc::Sender;
 /// events there, and removes the instance on normal shutdown or task cancellation.
 /// No tracefs mount or global tracing settings are changed. SIGKILL/crashes can
 /// leave a named instance behind; its path is emitted in the startup record.
+/// Records are read from `<tracefs_root>/instances/<owned-instance>/trace_pipe`;
+/// [`MemoryTracepoint::events`] lists the kernel event paths. Trace payloads
+/// retain native units and timestamps use monotonic trace-clock nanoseconds.
 #[derive(Clone, Debug)]
 pub struct LinuxMemoryTraceOptions {
     /// Existing tracefs mount, default `/sys/kernel/tracing`.

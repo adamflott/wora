@@ -20,6 +20,10 @@ pub struct SlabInfo {
 
 /// Inventory and configuration of one slab cache. Values are preserved as
 /// reported; observations of different fields need not form an atomic view.
+///
+/// One cache row in `/proc/slabinfo`, parsed by [`SlabInfo`]. Object sizes
+/// are bytes, geometry uses objects/slabs/base pages, and optional statistics
+/// retain their allocator-specific meanings.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct SlabCache {
@@ -58,6 +62,10 @@ pub struct SlabCache {
 
 /// Optional `globalstat` values from the legacy SLAB allocator. All are
 /// cumulative events except the two maximum-value gauges.
+///
+/// Parsed from a cache row's `globalstat` section in `/proc/slabinfo` when
+/// legacy allocator statistics are present. Maxima are gauges; other fields
+/// are cumulative counters for that cache.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct SlabGlobalStats {
@@ -82,6 +90,9 @@ pub struct SlabGlobalStats {
 }
 
 /// Optional `cpustat` counters from the legacy SLAB allocator.
+///
+/// Parsed from a cache row's `cpustat` section in `/proc/slabinfo`. These are
+/// cache-wide aggregated CPU hit/miss counters, not individual CPU memory totals.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
 pub struct SlabCpuStats {
