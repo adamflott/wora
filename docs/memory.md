@@ -119,7 +119,7 @@ nested values and conversions.
 | `sysctls`: VM/kernel policy | VM settings; shared-memory, NUMA and perf settings; selected descriptor/inode/dentry counters. | `/proc/sys/vm/*`, selected `/proc/sys/{kernel,fs}` files |
 | `cgroup`: memcg/DMEM/cpuset/HugeTLB | v2 usage, limits, stats, pressure, events, swap/zswap, device-region byte usage/capacity/limits, HugeTLB and allowed memory nodes; selected ancestor usage/limits. | Membership/mount discovery in `/proc/self/{cgroup,mountinfo}`, then `memory.*`, selected `dmem.*`, `hugetlb.*`, `cpuset.mems{,.effective}` |
 | `hugepages`: THP/mTHP/HugeTLB | Policies, khugepaged/per-size counters and global/node pools. Counts remain size-specific. | `/sys/kernel/mm/{transparent_hugepage,hugepages}`, `/sys/devices/system/node/node*/hugepages` |
-| `numa`: locality/balancing/tiers/policy | Node memory/VM/locality tables, CPU lists/maps, distances, tier membership and global weighted-interleave weights/auto mode. | `/sys/devices/system/node`, `/sys/devices/virtual/memory_tiering`, `/sys/kernel/mm/mempolicy/weighted_interleave` |
+| `numa`: locality/balancing/tiers/policy | Node memory/VM/locality tables, CPU lists/maps, distances, rated access-class latency (ns)/bandwidth (MiB/s), tier membership and global weighted-interleave weights/auto mode. | `/sys/devices/system/node` (including `node*/access*/initiators`), `/sys/devices/virtual/memory_tiering`, `/sys/kernel/mm/mempolicy/weighted_interleave` |
 | `compressed`: zswap/zram | Zswap policy, failure counters, stored/incompressible pages and zram device memory/I/O/backing-device statistics. | `/sys/module/zswap/parameters`, `/sys/kernel/debug/zswap`, `/sys/block/zram*` |
 | `ksm`: identical-page sharing | Global/process counters, scanner policy, signed profit and flags. | `/sys/kernel/mm/ksm/*`, `/proc/self/{ksm_stat,ksm_merging_pages}` |
 | `process`: process VM/accounting | Status/peaks, limits, faults, OOM preferences and RSS/PSS/private/shared/swap rollup. | `/proc/self/{status,limits,stat,oom_score,oom_score_adj,smaps_rollup}` |
@@ -151,6 +151,9 @@ complete latency census. `MemoryTraceParser` itself performs no privileged I/O.
   other collectors retain per-file `unavailable`/`skipped` entries. Zero remains distinct.
 - Preserve native units: Linux `kB` means KiB; rollups offer checked `bytes()`
   conversion. Base-page counts require the actual page size. Do not sum overlapping scopes.
+- NUMA access-class quantities describe rated topology for linked initiators;
+  class 1 is CPU-only. Discovery caps at 64 classes per node, with 4 KiB per
+  attribute, plus shared entry/file/byte limits. [Kernel ABI](https://docs.kernel.org/admin-guide/mm/numaperf.html).
 - Slab/page-type/debugfs/PFN reads may require privileges. smaps/rollups/page-type
   reads can be expensive; page-owner mixed-table reads can drain CPU page lists,
   and kmemleak reads may incur scans.

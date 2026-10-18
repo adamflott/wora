@@ -3,6 +3,94 @@ use std::{fs, os::unix::fs::symlink};
 use wora_observability_linux_mm::{MemoryFiles, MemoryReadError, MemorySkipReason, NumaStats, ParsedMemoryValue};
 
 #[test]
+fn access_class_topology_preserves_node_scope_units_and_independent_failures() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let node = root.path().join("devices/system/node/node9");
+    for (class, name, value) in [
+        (0, "read_latency", "112\n"),
+        (0, "write_latency", "130\n"),
+        (0, "read_bandwidth", "18446744073709551615\n"),
+        (0, "write_bandwidth", "0\n"),
+        (1, "read_latency", "23\n"),
+    ] {
+        let directory = node.join(format!("access{class}/initiators"));
+        fs::create_dir_all(&directory)?;
+        fs::write(directory.join(name), value)?;
+    }
+    symlink("access0", node.join("access5"))?;
+    let snapshot = NumaStats::from_sys_root(root.path());
+    let files = &snapshot.nodes[&9];
+    let latency = &files.parsed["access0/initiators/read_latency"];
+    assert_eq!(latency.get("value").and_then(ParsedMemoryValue::as_u64), Some(112));
+    assert_eq!(latency.get("unit"), Some(&ParsedMemoryValue::Text("ns".into())));
+    let bandwidth = &files.parsed["access0/initiators/read_bandwidth"];
+    assert_eq!(bandwidth.get("value").and_then(ParsedMemoryValue::as_u64), Some(u64::MAX));
+    assert_eq!(bandwidth.get("unit"), Some(&ParsedMemoryValue::Text("MiB/s".into())));
+    assert_eq!(
+        files.parsed["access0/initiators/write_bandwidth"]
+            .get("value")
+            .and_then(ParsedMemoryValue::as_u64),
+        Some(0)
+    );
+    assert!(matches!(
+        files.unavailable.get("access1/initiators/write_latency"),
+        Some(MemoryReadError::NotFound)
+    ));
+    assert_eq!(files.skipped["access5"], MemorySkipReason::NotRegularFile);
+    #[cfg(feature = "serde1")]
+    assert_eq!(
+        serde_json::to_value(&snapshot)?["nodes"]["9"]["parsed"]["access0/initiators/read_latency"]["unit"],
+        "ns"
+    );
+    for bad in ["-1", "112 ns", "NaN", "18446744073709551616", "1\n2"] {
+        fs::write(node.join("access0/initiators/read_latency"), bad)?;
+        let snapshot = NumaStats::from_sys_root(root.path());
+        assert!(!snapshot.nodes[&9].parsed.contains_key("access0/initiators/read_latency"));
+        assert!(snapshot.nodes[&9].unavailable.contains_key("access0/initiators/read_latency"));
+        assert!(snapshot.nodes[&9].parsed.contains_key("access0/initiators/read_bandwidth"));
+    }
+    Ok(())
+}
+
+#[test]
+fn access_class_traversal_and_attribute_reads_are_bounded() -> Result<(), Box<dyn std::error::Error>> {
+    use wora_observability_linux_mm::{CollectionLimit, CollectionLimits, collect_with_limits};
+    let root = tempfile::tempdir()?;
+    let node = root.path().join("devices/system/node/node0");
+    for class in 0..65 {
+        fs::create_dir_all(node.join(format!("access{class}/initiators")))?;
+    }
+    fs::write(node.join("access0/initiators/read_latency"), "1000\n")?;
+    fs::write(node.join("access0/initiators/scan"), [0xff])?;
+    symlink("scan", node.join("access0/initiators/write_latency"))?;
+    let stats = NumaStats::from_sys_root(root.path());
+    let files = &stats.nodes[&0];
+    assert!(files.unavailable.contains_key("."));
+    assert_eq!(files.parsed.len() + files.unavailable.len() + files.skipped.len(), 6 + 64 * 4 + 1);
+    assert_eq!(files.skipped["access0/initiators/write_latency"], MemorySkipReason::NotRegularFile);
+    assert!(!files.unavailable.contains_key("access0/initiators/scan"));
+    let (stats, report) = collect_with_limits(
+        CollectionLimits {
+            file_bytes: 4,
+            line_bytes: 4,
+            ..Default::default()
+        },
+        || NumaStats::from_sys_root(root.path()),
+    )?;
+    assert!(!stats.nodes[&0].parsed.contains_key("access0/initiators/read_latency"));
+    assert_eq!(report.limit_exceeded, Some(CollectionLimit::FileBytes));
+    let (_, report) = collect_with_limits(
+        CollectionLimits {
+            entries: 1,
+            ..Default::default()
+        },
+        || NumaStats::from_sys_root(root.path()),
+    )?;
+    assert_eq!(report.limit_exceeded, Some(CollectionLimit::Entries));
+    Ok(())
+}
+
+#[test]
 fn weighted_interleave_supports_sparse_69_weights_and_616_auto_mode_without_writes() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let directory = root.path().join("kernel/mm/mempolicy/weighted_interleave");

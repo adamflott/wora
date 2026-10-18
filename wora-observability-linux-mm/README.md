@@ -65,6 +65,7 @@ Captured cgroup mount paths are used as written.
 | AllocationSites | Versions 1.0/2.0; byte/count attribution and accuracy markers. |
 | DamonStats | Existing monitor state, estimated bytes/s, signed idle-time percentiles in ms, aggregation interval in us and worker PID; never enables monitoring. |
 | CgroupMemory | DMEM region tables retain byte usage/capacity/limits and literal `max`; optional `dmem.peak` follows the 7.3-rc7 development ABI. |
+| NumaStats | Access-class topology quantities retain nanoseconds and MiB/s under per-node source paths; they describe rated performance. |
 | MemoryFiles / sysctls | Structured integers, flags, units, ranges and policies; relative path/dotted keys. |
 
 Unknown supported numeric keys are retained. Fixed typed fields, filename

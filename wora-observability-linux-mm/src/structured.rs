@@ -93,6 +93,25 @@ pub fn parse_memory_file(path: impl AsRef<Path>, text: &str) -> Result<Option<Pa
     let name = path.file_name().and_then(|v| v.to_str()).unwrap_or_default();
     let parent = path.parent().and_then(Path::file_name).and_then(|v| v.to_str()).unwrap_or_default();
     let value = match name {
+        "read_latency" | "write_latency" | "read_bandwidth" | "write_bandwidth"
+            if parent == "initiators"
+                && path
+                    .parent()
+                    .and_then(Path::parent)
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| crate::files::numbered(name, "access"))
+                    .is_some() =>
+        {
+            let text = text.trim();
+            if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(invalid("invalid NUMA topology attribute"));
+            }
+            map([
+                ("value", number(text)?),
+                ("unit", ParsedMemoryValue::Text(if name.ends_with("latency") { "ns" } else { "MiB/s" }.into())),
+            ])
+        }
         "auto" if parent == "weighted_interleave" => match text.trim() {
             "true" => ParsedMemoryValue::Bool(true),
             "false" => ParsedMemoryValue::Bool(false),

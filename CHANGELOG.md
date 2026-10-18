@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Features
 
+- Collect bounded NUMA access-class topology attributes under each node's source paths, retaining latency in ns and rated bandwidth in MiB/s with independent errors.
 - Add `NumaStats::weighted_interleave` for global node weights and optional auto mode, preserving unknown mode on older kernels and never writing policy.
 - Collect DMEM device-region byte usage, root capacity and limits through existing cgroup v2 discovery, preserving `max` and separately detecting optional development-kernel `dmem.peak`.
 - Add opt-in `DamonStats` / `LinuxMemoryCollector::Damon` diagnostics for existing DAMON_STAT state, signed idle percentiles, estimated bytes/s, interval and PID; never enable monitoring. Diagnostic struct literals now need the optional `damon` field.

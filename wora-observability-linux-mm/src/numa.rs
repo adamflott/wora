@@ -22,6 +22,10 @@ pub struct NumaStats {
     /// Online/possible nodes and nodes with CPU or memory resources.
     pub inventory: MemoryFiles,
     /// `meminfo`, `numastat`, `vmstat`, `cpulist`, `cpumap` and `distance` per node.
+    /// Also `accessN/initiators/{read,write}_{latency,bandwidth}` quantities:
+    /// nanoseconds and MiB/s, respectively. These are rated topology attributes
+    /// for the class's linked initiators, not sampled throughput. Class 0 covers
+    /// local initiators; class 1 restricts them to CPUs. No conversion is applied.
     pub nodes: BTreeMap<u32, MemoryFiles>,
     /// Tier ID to native `nodelist`; a lower ID represents a faster tier.
     pub tiers: BTreeMap<u32, MemoryFiles>,
@@ -42,6 +46,9 @@ impl NumaStats {
     }
 
     /// Read an explicit sysfs mount or captured tree; never falls back to `/sys`.
+    /// Node discovery is limited to 4096 directory entries, with at most 64
+    /// access classes per node and 4 KiB per topology attribute. Scoped collection
+    /// limits further bound aggregate entries, file attempts and source bytes.
     pub fn from_sys_root(root: impl AsRef<Path>) -> Self {
         let root = root.as_ref();
         let mut result = Self {
@@ -58,8 +65,8 @@ impl NumaStats {
                         if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
                             continue;
                         }
-                        let files = MemoryFiles::from_names(
-                            path,
+                        let mut files = MemoryFiles::from_names(
+                            &path,
                             if nodes {
                                 &["meminfo", "numastat", "vmstat", "cpulist", "cpumap", "distance"]
                             } else {
@@ -67,6 +74,7 @@ impl NumaStats {
                             },
                         );
                         if nodes {
+                            collect_access_classes(&path, &mut files);
                             result.nodes.insert(id, files);
                         } else {
                             result.tiers.insert(id, files);
@@ -82,5 +90,37 @@ impl NumaStats {
             name == "auto" || numbered(name, "node").is_some()
         });
         result
+    }
+}
+
+fn collect_access_classes(node: &Path, files: &mut MemoryFiles) {
+    let classes = match entries(node) {
+        Ok(classes) => classes,
+        Err(error) => {
+            files.unavailable.insert(".".into(), error.into());
+            return;
+        }
+    };
+    for (index, (name, path)) in classes.into_iter().filter(|(name, _)| numbered(name, "access").is_some()).enumerate() {
+        if index == 64 {
+            files
+                .unavailable
+                .insert(".".into(), crate::budget::exceeded(crate::CollectionLimit::Entries).into());
+            break;
+        }
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                files.skipped.insert(name, crate::MemorySkipReason::NotRegularFile);
+                continue;
+            }
+            Err(error) => {
+                files.unavailable.insert(name, error.into());
+                continue;
+            }
+        }
+        for attribute in ["read_latency", "write_latency", "read_bandwidth", "write_bandwidth"] {
+            files.read(node, &format!("{name}/initiators/{attribute}"), 4096);
+        }
     }
 }
