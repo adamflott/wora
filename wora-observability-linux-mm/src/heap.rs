@@ -178,6 +178,11 @@ pub struct HeapReservation {
 }
 
 impl HeapReservation {
+    /// Shared budget that owns this reservation, not an OS memory source.
+    pub fn budget(&self) -> &HeapBudget {
+        &self.budget
+    }
+
     /// Charged bytes, including the configured overhead reserve.
     pub fn bytes(&self) -> usize {
         self.bytes

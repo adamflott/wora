@@ -491,60 +491,62 @@ mod tests {
         };
 
         let stats = HostStats {
-            linux_mm: LinuxMemoryData {
-                buddyinfo: Some(BuddyInfo::from_read(
-                    include_bytes!("../wora-observability-linux-mm/tests/fixtures/arm64-buddyinfo").as_slice(),
-                )?),
-                zoneinfo: Some(ZoneInfo::from_read(
-                    include_bytes!("../wora-observability-linux-mm/tests/fixtures/synthetic-zoneinfo").as_slice(),
-                )?),
-                swaps: Some(Swaps::from_read(
-                    include_bytes!("../wora-observability-linux-mm/tests/fixtures/synthetic-swaps").as_slice(),
-                )?),
-                slabinfo: Some(SlabInfo::from_read(
-                    include_bytes!("../wora-observability-linux-mm/tests/fixtures/synthetic-slabinfo").as_slice(),
-                )?),
-                pagetypeinfo: Some(PageTypeInfo::from_read(
-                    include_bytes!("../wora-observability-linux-mm/tests/fixtures/synthetic-pagetypeinfo").as_slice(),
-                )?),
-                vmstat: Some(VmStat(std::collections::HashMap::from([("nr_anomalous".into(), -2)]))),
-                sysctls: MemorySysctls {
-                    parsed: std::collections::BTreeMap::from([
-                        ("vm.swappiness".into(), ParsedMemoryValue::Unsigned(60)),
-                        (
-                            "vm.lowmem_reserve_ratio".into(),
-                            ParsedMemoryValue::try_list([256, 256, 32, 0, 0].map(ParsedMemoryValue::Unsigned))?,
-                        ),
-                        ("kernel.shmall".into(), ParsedMemoryValue::Unsigned(18_446_744_073_692_774_399)),
-                    ]),
-                    unavailable: std::collections::BTreeMap::from([("vm.mmap_rnd_bits".into(), SysctlReadError::PermissionDenied)]),
-                    skipped: std::collections::BTreeMap::from([("vm.stat_refresh".into(), SysctlSkipReason::ReadSideEffect)]),
-                },
-                cgroup: Box::new(CgroupMemoryStats {
-                    current: Some(CgroupMemory {
-                        directory: "/captured/cgroup/workload".into(),
-                        parsed: std::collections::BTreeMap::from([("memory.max".into(), CgroupMemoryValue::Text("max".into()))]),
-                        ..CgroupMemory::default()
-                    }),
-                    ..CgroupMemoryStats::default()
-                }),
-                hugepages: Some(Box::new(HugePageStats {
-                    hugetlb: HugePageFiles {
-                        parsed: std::collections::BTreeMap::from([("hugepages-2048kB/free_hugepages".into(), ParsedMemoryValue::Unsigned(7))]),
-                        ..HugePageFiles::default()
-                    },
-                    ..HugePageStats::default()
-                })),
-                process: Box::new(ProcessMemoryStats {
-                    pid: 123,
-                    smaps_rollup: Some(SmapsRollup::from_read(
-                        "1000-9000 ---p 00000000 00:00 0 [rollup]\nRss: 100 kB\nPss: 60 kB\n".as_bytes(),
+            linux_mm: crate::o11y::LinuxMemoryStats::try_from_data(
+                LinuxMemoryData {
+                    buddyinfo: Some(BuddyInfo::from_read(
+                        include_bytes!("../wora-observability-linux-mm/tests/fixtures/arm64-buddyinfo").as_slice(),
                     )?),
-                    ..ProcessMemoryStats::default()
-                }),
-                ..LinuxMemoryData::default()
-            }
-            .into(),
+                    zoneinfo: Some(ZoneInfo::from_read(
+                        include_bytes!("../wora-observability-linux-mm/tests/fixtures/synthetic-zoneinfo").as_slice(),
+                    )?),
+                    swaps: Some(Swaps::from_read(
+                        include_bytes!("../wora-observability-linux-mm/tests/fixtures/synthetic-swaps").as_slice(),
+                    )?),
+                    slabinfo: Some(SlabInfo::from_read(
+                        include_bytes!("../wora-observability-linux-mm/tests/fixtures/synthetic-slabinfo").as_slice(),
+                    )?),
+                    pagetypeinfo: Some(PageTypeInfo::from_read(
+                        include_bytes!("../wora-observability-linux-mm/tests/fixtures/synthetic-pagetypeinfo").as_slice(),
+                    )?),
+                    vmstat: Some(VmStat(std::collections::HashMap::from([("nr_anomalous".into(), -2)]))),
+                    sysctls: MemorySysctls {
+                        parsed: std::collections::BTreeMap::from([
+                            ("vm.swappiness".into(), ParsedMemoryValue::Unsigned(60)),
+                            (
+                                "vm.lowmem_reserve_ratio".into(),
+                                ParsedMemoryValue::try_list([256, 256, 32, 0, 0].map(ParsedMemoryValue::Unsigned))?,
+                            ),
+                            ("kernel.shmall".into(), ParsedMemoryValue::Unsigned(18_446_744_073_692_774_399)),
+                        ]),
+                        unavailable: std::collections::BTreeMap::from([("vm.mmap_rnd_bits".into(), SysctlReadError::PermissionDenied)]),
+                        skipped: std::collections::BTreeMap::from([("vm.stat_refresh".into(), SysctlSkipReason::ReadSideEffect)]),
+                    },
+                    cgroup: Box::new(CgroupMemoryStats {
+                        current: Some(CgroupMemory {
+                            directory: "/captured/cgroup/workload".into(),
+                            parsed: std::collections::BTreeMap::from([("memory.max".into(), CgroupMemoryValue::Text("max".into()))]),
+                            ..CgroupMemory::default()
+                        }),
+                        ..CgroupMemoryStats::default()
+                    }),
+                    hugepages: Some(Box::new(HugePageStats {
+                        hugetlb: HugePageFiles {
+                            parsed: std::collections::BTreeMap::from([("hugepages-2048kB/free_hugepages".into(), ParsedMemoryValue::Unsigned(7))]),
+                            ..HugePageFiles::default()
+                        },
+                        ..HugePageStats::default()
+                    })),
+                    process: Box::new(ProcessMemoryStats {
+                        pid: 123,
+                        smaps_rollup: Some(SmapsRollup::from_read(
+                            "1000-9000 ---p 00000000 00:00 0 [rollup]\nRss: 100 kB\nPss: 60 kB\n".as_bytes(),
+                        )?),
+                        ..ProcessMemoryStats::default()
+                    }),
+                    ..LinuxMemoryData::default()
+                },
+                &crate::o11y::linux_mm::HeapBudget::default(),
+            )?,
             ..HostStats::default()
         };
         let mut sink = MemoryReportSink::new(Vec::new(), 8 * 1024 * 1024);

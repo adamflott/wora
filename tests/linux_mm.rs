@@ -4,16 +4,17 @@ use wora::o11y::linux_mm::{BuddyInfo, Current, FreeBlockCount, Swaps};
 use wora::o11y::{HostStats, LinuxMemoryStats, O11yChannelSink, O11yEventKind, O11ySink, o11y_new_ev_hoststats};
 
 #[test]
-fn routine_tables_are_shared_and_edits_preserve_retained_snapshots() -> Result<(), Box<dyn std::error::Error>> {
-    use std::sync::Arc;
+fn routine_tables_are_shared_and_replacements_preserve_retained_snapshots() -> Result<(), Box<dyn std::error::Error>> {
     use wora::events::MemorySnapshot;
     use wora::o11y::{LinuxMemoryData, o11y_new_ev_hoststats_owned};
+    let budget = wora::o11y::linux_mm::HeapBudget::default();
     let mut stats = HostStats {
-        linux_mm: LinuxMemoryData {
-            vmstat: Some(wora::o11y::linux_mm::VmStat(std::collections::HashMap::from([("test".into(), 1)]))),
-            ..Default::default()
-        }
-        .into(),
+        linux_mm: LinuxMemoryStats::try_new(&budget, || {
+            Ok(LinuxMemoryData {
+                vmstat: Some(wora::o11y::linux_mm::VmStat(std::collections::HashMap::from([("test".into(), 1)]))),
+                ..Default::default()
+            })
+        })?,
         ..Default::default()
     };
     let snapshot = MemorySnapshot::from_host_stats(&stats);
@@ -21,12 +22,21 @@ fn routine_tables_are_shared_and_edits_preserve_retained_snapshots() -> Result<(
     let O11yEventKind::HostStats(event_stats) = event.kind else {
         return Err("wrong event".into());
     };
-    assert!(Arc::ptr_eq(&stats.linux_mm.data, &snapshot.linux_mm.data));
-    assert!(Arc::ptr_eq(&stats.linux_mm.data, &event_stats.linux_mm.data));
-    stats.linux_mm.vmstat.as_mut().ok_or("missing table")?.0.insert("test".into(), 2);
-    assert!(!Arc::ptr_eq(&stats.linux_mm.data, &snapshot.linux_mm.data));
+    assert!(stats.linux_mm.shares_data_with(&snapshot.linux_mm));
+    assert!(stats.linux_mm.shares_data_with(&event_stats.linux_mm));
+    stats.linux_mm = stats.linux_mm.try_rebuild(&budget, |_| {
+        Ok(LinuxMemoryData {
+            vmstat: Some(wora::o11y::linux_mm::VmStat(std::collections::HashMap::from([("test".into(), 2)]))),
+            ..Default::default()
+        })
+    })?;
+    assert!(!stats.linux_mm.shares_data_with(&snapshot.linux_mm));
+    assert_eq!(stats.linux_mm.vmstat.as_ref().ok_or("missing table")?.0["test"], 2);
     assert_eq!(snapshot.linux_mm.vmstat.as_ref().ok_or("missing table")?.0["test"], 1);
     assert_eq!(event_stats.linux_mm.vmstat.as_ref().ok_or("missing table")?.0["test"], 1);
+    assert!(budget.usage().retained_bytes > 0);
+    drop((stats, snapshot, event_stats));
+    assert_eq!(budget.usage().retained_bytes, 0);
     Ok(())
 }
 
@@ -51,7 +61,6 @@ fn routine_generation_admission_skips_and_recovers_after_readers_release_data() 
 
 #[test]
 fn diagnostic_generation_admission_reuses_stale_data_until_a_slot_is_released() -> Result<(), Box<dyn std::error::Error>> {
-    use std::sync::Arc;
     use wora::o11y::{LinuxMemoryCollector, LinuxMemoryEnvironment, LinuxMemoryLimits, LinuxMemoryOptions, RuntimeEnvironment};
     let root = tempfile::tempdir()?;
     std::fs::create_dir(root.path().join("self"))?;
@@ -71,23 +80,22 @@ fn diagnostic_generation_admission_reuses_stale_data_until_a_slot_is_released() 
     let second = provider.refresh_host_stats()?.ok_or("missing second sample")?;
     std::fs::write(&smaps, "malformed")?;
     let stale = provider.clone().refresh_host_stats()?.ok_or("missing stale sample")?;
-    assert!(Arc::ptr_eq(
-        second.linux_mm.diagnostics.as_ref().ok_or("missing batch")?,
-        stale.linux_mm.diagnostics.as_ref().ok_or("missing batch")?
+    assert!(std::ptr::eq(
+        second.linux_mm.diagnostics().ok_or("missing batch")?,
+        stale.linux_mm.diagnostics().ok_or("missing batch")?
     ));
     assert_eq!(provider.diagnostic_sampling_status()?.live_snapshots, 3);
     assert_eq!(provider.diagnostic_sampling_status()?.skipped_samples, 1);
     drop(first);
     let fresh = provider.refresh_host_stats()?.ok_or("missing recovered sample")?;
-    assert!(!Arc::ptr_eq(
-        stale.linux_mm.diagnostics.as_ref().ok_or("missing batch")?,
-        fresh.linux_mm.diagnostics.as_ref().ok_or("missing batch")?
+    assert!(!std::ptr::eq(
+        stale.linux_mm.diagnostics().ok_or("missing batch")?,
+        fresh.linux_mm.diagnostics().ok_or("missing batch")?
     ));
     assert!(
         fresh
             .linux_mm
-            .diagnostics
-            .as_ref()
+            .diagnostics()
             .ok_or("missing batch")?
             .process_mappings
             .as_ref()
@@ -191,14 +199,14 @@ fn damon_diagnostics_are_opt_in_cached_and_serialized() -> Result<(), Box<dyn st
     std::fs::write(parameters.join("memory_idle_ms_percentiles"), vec!["-17"; 101].join(","))?;
     let options = LinuxMemoryOptions::new().with_roots(root.path(), root.path());
     let disabled = LinuxMemoryEnvironment::new(CapturedEnvironment, options.clone())?.initial_host()?;
-    assert!(disabled.stats.linux_mm.diagnostics.is_none());
+    assert!(disabled.stats.linux_mm.diagnostics().is_none());
     let provider = LinuxMemoryEnvironment::new(CapturedEnvironment, options.enable(LinuxMemoryCollector::Damon))?;
     let first = provider.initial_host()?.stats;
     std::fs::write(parameters.join("enabled"), "Y\n")?;
     let cached = provider.clone().refresh_host_stats()?.ok_or("no stats")?;
-    assert!(std::sync::Arc::ptr_eq(
-        first.linux_mm.diagnostics.as_ref().ok_or("no diagnostics")?,
-        cached.linux_mm.diagnostics.as_ref().ok_or("no diagnostics")?,
+    assert!(std::ptr::eq(
+        first.linux_mm.diagnostics().ok_or("no diagnostics")?,
+        cached.linux_mm.diagnostics().ok_or("no diagnostics")?,
     ));
     let json = serde_json::to_value(wora::events::MemorySnapshot::from_host_stats(&cached))?;
     let damon = &json["linux_mm"]["diagnostics"]["damon"];
@@ -273,17 +281,13 @@ fn diagnostic_selection_caching_and_independent_timestamps() -> Result<(), Box<d
         .enable(LinuxMemoryCollector::ProcessMappings)
         .with_roots(root.path(), root.path());
     let provider = LinuxMemoryEnvironment::new(CapturedEnvironment, options.clone())?;
-    let initial = provider.initial_host()?.stats.linux_mm.diagnostics.ok_or("no diagnostics")?;
+    let initial_sample = provider.initial_host()?.stats;
+    let initial = initial_sample.linux_mm.diagnostics().ok_or("no diagnostics")?;
     std::fs::write(root.path().join("self/smaps"), "malformed")?;
-    let cached = provider
-        .clone()
-        .refresh_host_stats()?
-        .ok_or("no stats")?
-        .linux_mm
-        .diagnostics
-        .ok_or("no diagnostics")?;
+    let cached_sample = provider.clone().refresh_host_stats()?.ok_or("no stats")?;
+    let cached = cached_sample.linux_mm.diagnostics().ok_or("no diagnostics")?;
     assert_eq!(initial.sampled_at, cached.sampled_at);
-    assert!(std::sync::Arc::ptr_eq(&initial, &cached));
+    assert!(std::ptr::eq(initial, cached));
     assert_eq!(
         cached.process_mappings.as_ref().ok_or("no mappings")?.mappings.as_ref().ok_or("bad mappings")?[0].fields["Rss"]
             .get("value")
@@ -296,7 +300,7 @@ fn diagnostic_selection_caching_and_independent_timestamps() -> Result<(), Box<d
             .initial_host()?
             .stats
             .linux_mm
-            .diagnostics
+            .diagnostics()
             .ok_or("no diagnostics")?
             .process_mappings
             .as_ref()
@@ -309,7 +313,7 @@ fn diagnostic_selection_caching_and_independent_timestamps() -> Result<(), Box<d
             .initial_host()?
             .stats
             .linux_mm
-            .diagnostics
+            .diagnostics()
             .is_none()
     );
     assert!(LinuxMemoryEnvironment::new(CapturedEnvironment, LinuxMemoryOptions::new().with_interval(std::time::Duration::ZERO)).is_err());
@@ -318,7 +322,6 @@ fn diagnostic_selection_caching_and_independent_timestamps() -> Result<(), Box<d
 
 #[test]
 fn diagnostic_batches_are_shared_and_retained_snapshots_survive_refresh() -> Result<(), Box<dyn std::error::Error>> {
-    use std::sync::Arc;
     use wora::events::MemorySnapshot;
     use wora::o11y::{LinuxMemoryCollector, LinuxMemoryDiagnostics, LinuxMemoryEnvironment, LinuxMemoryOptions, RuntimeEnvironment};
 
@@ -343,9 +346,9 @@ fn diagnostic_batches_are_shared_and_retained_snapshots_survive_refresh() -> Res
             .ok_or("missing mapping RSS")
     };
 
-    let previous = {
+    let retained_with_old = {
         let stats = provider.initial_host()?.stats;
-        let initial = stats.linux_mm.diagnostics.as_ref().ok_or("no diagnostics")?;
+        let initial = stats.linux_mm.diagnostics().ok_or("no diagnostics")?;
         let cloned_stats = stats.clone();
         let snapshot = MemorySnapshot::from_host_stats(&stats);
         let cloned_snapshot = snapshot.clone();
@@ -353,31 +356,25 @@ fn diagnostic_batches_are_shared_and_retained_snapshots_survive_refresh() -> Res
             return Err("expected host stats event".into());
         };
         for diagnostics in [
-            &cloned_stats.linux_mm.diagnostics,
-            &snapshot.linux_mm.diagnostics,
-            &cloned_snapshot.linux_mm.diagnostics,
-            &event_stats.linux_mm.diagnostics,
+            &cloned_stats.linux_mm.diagnostics(),
+            &snapshot.linux_mm.diagnostics(),
+            &cloned_snapshot.linux_mm.diagnostics(),
+            &event_stats.linux_mm.diagnostics(),
         ] {
-            assert!(Arc::ptr_eq(initial, diagnostics.as_ref().ok_or("no cloned diagnostics")?));
+            assert!(std::ptr::eq(initial, diagnostics.ok_or("no cloned diagnostics")?));
         }
-
-        // Explicit mutation makes a private copy, preserving published samples.
-        let mut edited = Arc::clone(initial);
-        Arc::make_mut(&mut edited).sampled_at = chrono::DateTime::UNIX_EPOCH;
-        assert!(!Arc::ptr_eq(initial, &edited));
-        assert_ne!(initial.sampled_at, edited.sampled_at);
 
         std::fs::write(&smaps, "1000-3000 rw-p 0 00:00 0\nRss: 24 kB\n")?;
         let refreshed = provider.refresh_host_stats()?.ok_or("no refreshed stats")?;
-        let next = refreshed.linux_mm.diagnostics.as_ref().ok_or("no refreshed diagnostics")?;
-        assert!(!Arc::ptr_eq(initial, next));
+        let next = refreshed.linux_mm.diagnostics().ok_or("no refreshed diagnostics")?;
+        assert!(!std::ptr::eq(initial, next));
         assert_eq!(rss(initial)?, 12);
-        assert_eq!(rss(snapshot.linux_mm.diagnostics.as_ref().ok_or("no snapshot diagnostics")?)?, 12);
+        assert_eq!(rss(snapshot.linux_mm.diagnostics().ok_or("no snapshot diagnostics")?)?, 12);
         assert_eq!(rss(next)?, 24);
-        Arc::downgrade(initial)
+        provider.diagnostic_heap_usage()?.retained_bytes
     };
-    // The cache retains only its newest batch, not diagnostic history.
-    assert!(previous.upgrade().is_none());
+    assert_eq!(provider.diagnostic_sampling_status()?.live_snapshots, 1);
+    assert!(provider.diagnostic_heap_usage()?.retained_bytes < retained_with_old);
     Ok(())
 }
 
@@ -558,4 +555,77 @@ fn host_stats_collect_and_refresh_linux_memory_sources() {
     if Swaps::current().is_ok() {
         assert!(stats.linux_mm.swaps.is_some());
     }
+}
+
+#[test]
+fn replacement_admission_precedes_build_and_credit_follows_the_last_handle() -> Result<(), Box<dyn std::error::Error>> {
+    use wora::o11y::LinuxMemoryData;
+    use wora::o11y::linux_mm::{HeapBudget, HeapLimits};
+    let probe = HeapBudget::default();
+    let sample = LinuxMemoryStats::try_new(&probe, || Ok(LinuxMemoryData::default()))?;
+    let required = probe.usage().retained_bytes;
+    drop(sample);
+    assert_eq!(probe.usage().retained_bytes, 0);
+    let budget = HeapBudget::new(HeapLimits {
+        retained_bytes: required,
+        ..Default::default()
+    })?;
+    let original = LinuxMemoryStats::try_new(&budget, || Ok(LinuxMemoryData::default()))?;
+    let retained = original.clone();
+    assert_eq!(budget.usage().retained_bytes, required);
+    let mut invoked = false;
+    let refused = original.try_rebuild(&budget, |_| {
+        invoked = true;
+        Ok(LinuxMemoryData::default())
+    });
+    assert!(refused.is_err());
+    assert!(!invoked);
+    assert!(original.shares_data_with(&retained));
+    assert_eq!(budget.usage().retained_peak_bytes, required);
+    drop(original);
+    assert_eq!(budget.usage().retained_bytes, required);
+    drop(retained);
+    assert_eq!(budget.usage().retained_bytes, 0);
+
+    assert!(LinuxMemoryStats::try_new(&budget, || Err(std::io::Error::other("failed builder"))).is_err());
+    assert_eq!(budget.usage().retained_bytes, 0);
+    assert_eq!(budget.usage().scratch_bytes, 0);
+    Ok(())
+}
+
+#[test]
+fn provider_heap_budgets_are_shared_and_rejected_samples_release_credit() -> Result<(), Box<dyn std::error::Error>> {
+    use wora::o11y::linux_mm::HeapLimits;
+    use wora::o11y::{LinuxMemoryLimits, RuntimeEnvironment, SystemRuntimeEnvironment};
+    assert!(
+        SystemRuntimeEnvironment::with_linux_memory_limits(LinuxMemoryLimits {
+            heap: HeapLimits {
+                scratch_bytes: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .is_err()
+    );
+    let provider = SystemRuntimeEnvironment::with_linux_memory_limits(LinuxMemoryLimits {
+        heap: HeapLimits {
+            retained_bytes: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    })?;
+    assert!(provider.initial_host().is_err());
+    assert_eq!(provider.memory_heap_usage().retained_bytes, 0);
+    assert_eq!(provider.memory_sampling_status()?.live_snapshots, 0);
+
+    let provider = SystemRuntimeEnvironment::with_linux_memory_limits(LinuxMemoryLimits::default())?;
+    let first = provider.initial_host()?.stats;
+    let before = provider.memory_heap_usage().retained_bytes;
+    let cached = provider.clone().initial_host()?.stats;
+    assert!(first.linux_mm.shares_data_with(&cached.linux_mm));
+    assert_eq!(provider.memory_heap_usage().retained_bytes, before);
+    let next = provider.refresh_host_stats()?.ok_or("missing refresh")?;
+    assert!(provider.memory_heap_usage().retained_bytes > before);
+    assert_eq!(next.linux_mm.heap_usage(), Some(provider.memory_heap_usage()));
+    Ok(())
 }

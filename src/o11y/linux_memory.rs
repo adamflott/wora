@@ -1,6 +1,6 @@
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use serde::Serialize;
 
@@ -62,37 +62,41 @@ impl LinuxMemoryLimits {
 
 /// Linux memory-management sample with independently shared routine/diagnostic data.
 ///
-/// Field reads use `Deref` to the routine data. Mutation uses copy-on-write and
-/// preserves retained snapshots. JSON keeps routine fields at their original
-/// paths. Construct routine fields with `LinuxMemoryData::into()`.
-#[derive(Clone, Default, Debug, Serialize)]
+/// Field reads use `Deref`. Build a replacement with [`Self::try_rebuild`]; there
+/// is no mutable dereference or public owning Arc. JSON field paths are unchanged.
+/// Clones share both data and its allocation lease until the last handle drops.
+/// `Default` is a shared empty sentinel, not a collected sample; its fixed
+/// initialization/control allocations are outside provider heap counters.
+///
+/// ```compile_fail
+/// let mut sample = wora::o11y::LinuxMemoryStats::default();
+/// sample.vmstat = None; // Published routine tables are immutable.
+/// ```
+#[derive(Clone, Debug, Serialize)]
 pub struct LinuxMemoryStats {
     /// Explicitly enabled diagnostics, shared until the next diagnostic batch.
-    pub diagnostics: Option<Arc<super::LinuxMemoryDiagnostics>>,
-    /// Shared immutable routine tables. Use `Arc::make_mut` for an independent edit.
+    pub(super) diagnostics: Option<Arc<super::LinuxMemoryDiagnostics>>,
     #[serde(flatten)]
-    pub data: Arc<LinuxMemoryData>,
+    pub(super) data: Arc<LinuxMemoryData>,
+    #[serde(skip)]
+    pub(super) allocation: Option<Arc<super::linux_mm::HeapReservation>>,
+}
+
+impl Default for LinuxMemoryStats {
+    fn default() -> Self {
+        static EMPTY: LazyLock<Arc<LinuxMemoryData>> = LazyLock::new(|| Arc::new(LinuxMemoryData::default()));
+        Self {
+            data: Arc::clone(&EMPTY),
+            diagnostics: None,
+            allocation: None,
+        }
+    }
 }
 
 impl Deref for LinuxMemoryStats {
     type Target = LinuxMemoryData;
     fn deref(&self) -> &Self::Target {
         &self.data
-    }
-}
-
-impl DerefMut for LinuxMemoryStats {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        Arc::make_mut(&mut self.data)
-    }
-}
-
-impl From<LinuxMemoryData> for LinuxMemoryStats {
-    fn from(data: LinuxMemoryData) -> Self {
-        Self {
-            diagnostics: None,
-            data: Arc::new(data),
-        }
     }
 }
 
@@ -103,7 +107,7 @@ impl From<LinuxMemoryData> for LinuxMemoryStats {
 /// Reads are independent, not atomic across files or with `sysinfo` totals. Source
 /// units are retained unless a field explicitly documents conversion to bytes.
 /// Host, process, cgroup, NUMA and allocator views overlap and must not be summed.
-#[derive(Clone, Default, Debug, Serialize)]
+#[derive(Default, Debug, Serialize)]
 pub struct LinuxMemoryData {
     /// Collection accounting; an exhausted limit explicitly marks incomplete data.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -166,6 +170,65 @@ pub struct LinuxMemoryData {
 }
 
 impl LinuxMemoryStats {
+    /// Reserve shared snapshot storage before invoking a caller-supplied builder.
+    ///
+    /// Instrumented builders use `budget`; prebuilt caller values and remaining
+    /// uninstrumented typed tables are not retroactively charged. The closure
+    /// performs no implicit OS reads. Failed construction releases its lease.
+    pub fn try_new(budget: &super::linux_mm::HeapBudget, build: impl FnOnce() -> std::io::Result<LinuxMemoryData>) -> std::io::Result<Self> {
+        use super::linux_mm::{HeapKind, HeapReservation, with_heap_budget};
+        let bytes = std::mem::size_of::<LinuxMemoryData>() + std::mem::size_of::<HeapReservation>() + 4 * std::mem::size_of::<usize>();
+        let allocation = budget.try_reserve(HeapKind::Retained, bytes, 2)?;
+        let data = with_heap_budget(budget, build)?;
+        Ok(Self {
+            data: Arc::new(data),
+            diagnostics: None,
+            allocation: Some(Arc::new(allocation)),
+        })
+    }
+
+    /// Admit shared storage for already-built caller data, without collecting.
+    /// Existing child allocations retain their original ownership/budgets.
+    pub fn try_from_data(data: LinuxMemoryData, budget: &super::linux_mm::HeapBudget) -> std::io::Result<Self> {
+        Self::try_new(budget, || Ok(data))
+    }
+
+    /// Build an independently admitted replacement while preserving this sample.
+    /// Reuse the same budget to account for old/new overlap. Diagnostics remain
+    /// shared. The builder receives borrowed data and must explicitly construct
+    /// its replacement; there is no unmetered deep clone of the entire sample.
+    pub fn try_rebuild(
+        &self,
+        budget: &super::linux_mm::HeapBudget,
+        build: impl FnOnce(&LinuxMemoryData) -> std::io::Result<LinuxMemoryData>,
+    ) -> std::io::Result<Self> {
+        let mut replacement = Self::try_new(budget, || build(&self.data))?;
+        replacement.diagnostics = self.diagnostics.clone();
+        Ok(replacement)
+    }
+
+    /// Borrow the routine tables without acquiring an owning Arc.
+    pub fn data(&self) -> &LinuxMemoryData {
+        &self.data
+    }
+
+    /// Borrow selected diagnostic tables and their independent sampling timestamp.
+    pub fn diagnostics(&self) -> Option<&super::LinuxMemoryDiagnostics> {
+        self.diagnostics.as_deref()
+    }
+
+    /// Whether two handles retain the same routine allocation; performs no I/O.
+    pub fn shares_data_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.data, &other.data)
+    }
+
+    /// Inspect the aggregate budget owning this sample's shared storage.
+    /// `None` denotes the empty default sentinel. These counters also include
+    /// other live samples/builders using that budget, not process RSS.
+    pub fn heap_usage(&self) -> Option<super::linux_mm::HeapUsage> {
+        self.allocation.as_ref().map(|allocation| allocation.budget().usage())
+    }
+
     /// Collect `/proc` and `/sys` with default shared input/work limits.
     pub fn current() -> Self {
         Self::from_roots("/proc", "/sys")
@@ -173,7 +236,13 @@ impl LinuxMemoryStats {
 
     /// Collect explicit procfs/sysfs trees with default shared limits.
     pub fn from_roots(proc_root: impl AsRef<Path>, sys_root: impl AsRef<Path>) -> Self {
-        Self::collect(proc_root.as_ref(), Some(sys_root.as_ref()), CollectionLimits::default()).unwrap_or_else(|error| {
+        Self::collect(
+            proc_root.as_ref(),
+            Some(sys_root.as_ref()),
+            CollectionLimits::default(),
+            &super::linux_mm::HeapBudget::current(),
+        )
+        .unwrap_or_else(|error| {
             tracing::debug!(%error, "memory collection failed");
             Self::default()
         })
@@ -182,47 +251,66 @@ impl LinuxMemoryStats {
     /// Collect explicit trees using one shared budget for all routine sources.
     /// Invalid limits fail before I/O. Source failures remain in their snapshots;
     /// exhausted limits also appear in `data.collection` as incomplete accounting.
-    pub fn from_roots_with_limits(proc_root: impl AsRef<Path>, sys_root: impl AsRef<Path>, limits: CollectionLimits) -> std::io::Result<Self> {
-        Self::collect(proc_root.as_ref(), Some(sys_root.as_ref()), limits)
+    pub fn from_roots_with_limits(proc_root: impl AsRef<Path>, sys_root: impl AsRef<Path>, limits: LinuxMemoryLimits) -> std::io::Result<Self> {
+        limits.validate()?;
+        let budget = super::linux_mm::HeapBudget::new(limits.heap)?;
+        let sample = Self::collect(proc_root.as_ref(), Some(sys_root.as_ref()), limits.collection, &budget)?;
+        super::generations::snapshot_size(sample.data(), limits.snapshot_bytes).map_err(std::io::Error::other)?;
+        Ok(sample)
+    }
+
+    /// Collect captured/live roots with shared allocation admission across calls.
+    /// Source limits apply to this batch; the supplied heap budget also includes
+    /// retained older generations. Individual source errors remain explicit.
+    pub fn from_roots_with_budget(
+        proc_root: impl AsRef<Path>,
+        sys_root: impl AsRef<Path>,
+        limits: CollectionLimits,
+        budget: &super::linux_mm::HeapBudget,
+    ) -> std::io::Result<Self> {
+        Self::collect(proc_root.as_ref(), Some(sys_root.as_ref()), limits, budget)
     }
 
     /// Collect a procfs tree with default shared limits and no host-sysfs fallback.
     pub fn from_proc_root(root: impl AsRef<Path>) -> Self {
-        Self::collect(root.as_ref(), None, CollectionLimits::default()).unwrap_or_else(|error| {
+        Self::collect(root.as_ref(), None, CollectionLimits::default(), &super::linux_mm::HeapBudget::current()).unwrap_or_else(|error| {
             tracing::debug!(%error, "memory collection failed");
             Self::default()
         })
     }
 
-    fn collect(root: &Path, sys: Option<&Path>, limits: CollectionLimits) -> std::io::Result<Self> {
+    fn collect(root: &Path, sys: Option<&Path>, limits: CollectionLimits, budget: &super::linux_mm::HeapBudget) -> std::io::Result<Self> {
+        limits.validate()?;
         if root.as_os_str().len() > limits.path_bytes || sys.is_some_and(|sys| sys.as_os_str().len() > limits.path_bytes) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "memory source roots exceed path byte limit",
             ));
         }
-        let (mut data, report) = collect_with_limits(limits, || LinuxMemoryData {
-            meminfo: read(root.join("meminfo")).map(Box::new),
-            vmstat: read(root.join("vmstat")),
-            pressure: read(root.join("pressure/memory")),
-            shared_memory: read(root.join("sysvipc/shm")),
-            iomem: read(root.join("iomem")),
-            buddyinfo: read(root.join("buddyinfo")),
-            zoneinfo: read(root.join("zoneinfo")),
-            swaps: read(root.join("swaps")),
-            slabinfo: read(root.join("slabinfo")),
-            pagetypeinfo: read(root.join("pagetypeinfo")),
-            sysctls: MemorySysctls::from_proc_root(root),
-            cgroup: Box::new(CgroupMemoryStats::from_proc_root(root)),
-            hugepages: sys.map(|sys| Box::new(HugePageStats::from_sys_root(sys))),
-            numa: sys.map(|sys| Box::new(super::linux_mm::NumaStats::from_sys_root(sys))),
-            compressed: sys.map(|sys| Box::new(super::linux_mm::CompressedMemoryStats::from_sys_root(sys))),
-            ksm: sys.map(|sys| Box::new(super::linux_mm::KsmStats::from_roots(sys, root.join("self"), std::process::id()))),
-            process: Box::new(ProcessMemoryStats::from_process_root(std::process::id(), root.join("self"))),
-            collection: None,
-        })?;
-        data.collection = Some(report);
-        Ok(data.into())
+        Self::try_new(budget, || {
+            let (mut data, report) = collect_with_limits(limits, || LinuxMemoryData {
+                meminfo: read(root.join("meminfo")).map(Box::new),
+                vmstat: read(root.join("vmstat")),
+                pressure: read(root.join("pressure/memory")),
+                shared_memory: read(root.join("sysvipc/shm")),
+                iomem: read(root.join("iomem")),
+                buddyinfo: read(root.join("buddyinfo")),
+                zoneinfo: read(root.join("zoneinfo")),
+                swaps: read(root.join("swaps")),
+                slabinfo: read(root.join("slabinfo")),
+                pagetypeinfo: read(root.join("pagetypeinfo")),
+                sysctls: MemorySysctls::from_proc_root(root),
+                cgroup: Box::new(CgroupMemoryStats::from_proc_root(root)),
+                hugepages: sys.map(|sys| Box::new(HugePageStats::from_sys_root(sys))),
+                numa: sys.map(|sys| Box::new(super::linux_mm::NumaStats::from_sys_root(sys))),
+                compressed: sys.map(|sys| Box::new(super::linux_mm::CompressedMemoryStats::from_sys_root(sys))),
+                ksm: sys.map(|sys| Box::new(super::linux_mm::KsmStats::from_roots(sys, root.join("self"), std::process::id()))),
+                process: Box::new(ProcessMemoryStats::from_process_root(std::process::id(), root.join("self"))),
+                collection: None,
+            })?;
+            data.collection = Some(report);
+            Ok(data)
+        })
     }
 }
 

@@ -135,8 +135,12 @@ impl LinuxMemoryOptions {
 /// Paths below use default roots; [`LinuxMemoryOptions::with_roots`] substitutes
 /// captured/alternate procfs and sysfs trees. Process views use `<proc_root>/self`.
 /// Each selected collector reads independently and retains its native units.
-#[derive(Clone, Debug, Serialize)]
+/// Published batches are borrowed through [`super::LinuxMemoryStats::diagnostics`];
+/// they cannot be deep-cloned or mutated through a snapshot handle.
+#[derive(Debug, Serialize)]
 pub struct LinuxMemoryDiagnostics {
+    #[serde(skip)]
+    allocation: Arc<super::linux_mm::HeapReservation>,
     /// Aggregate source accounting; an exhausted limit marks this batch incomplete.
     pub collection: super::linux_mm::CollectionReport,
     /// `/sys/module/damon_stat/parameters`: host access-intensity estimate in
@@ -195,6 +199,7 @@ pub struct LinuxMemoryEnvironment<R> {
 
 #[derive(Debug, Default)]
 struct DiagnosticCache {
+    heap: super::linux_mm::HeapBudget,
     sample: Option<(Instant, Arc<LinuxMemoryDiagnostics>)>,
     generations: super::generations::Generations<LinuxMemoryDiagnostics>,
 }
@@ -227,10 +232,14 @@ impl<R> LinuxMemoryEnvironment<R> {
         if options.interval.is_zero() {
             return Err(O11yError::RuntimeEnvironment("Linux memory diagnostic interval must be nonzero".into()));
         }
+        let heap = super::linux_mm::HeapBudget::new(options.limits.heap).map_err(|error| O11yError::RuntimeEnvironment(error.to_string()))?;
         Ok(Self {
             inner,
             options,
-            cache: Arc::new(Mutex::new(DiagnosticCache::default())),
+            cache: Arc::new(Mutex::new(DiagnosticCache {
+                heap,
+                ..DiagnosticCache::default()
+            })),
         })
     }
 
@@ -240,6 +249,16 @@ impl<R> LinuxMemoryEnvironment<R> {
         self.cache
             .lock()
             .map(|cache| cache.generations.status())
+            .map_err(|_| O11yError::RuntimeEnvironment("Linux memory diagnostic cache poisoned".into()))
+    }
+
+    /// Inspect live/peak diagnostic allocation reservations, shared across this
+    /// provider's clones and old/new batches. Excludes routine sampling and any
+    /// uninstrumented allocations; values are not OS memory measurements.
+    pub fn diagnostic_heap_usage(&self) -> Result<super::linux_mm::HeapUsage, O11yError> {
+        self.cache
+            .lock()
+            .map(|cache| cache.heap.usage())
             .map_err(|_| O11yError::RuntimeEnvironment("Linux memory diagnostic cache poisoned".into()))
     }
 
@@ -253,63 +272,74 @@ impl<R> LinuxMemoryEnvironment<R> {
             .map_err(|_| O11yError::RuntimeEnvironment("Linux memory diagnostic cache poisoned".into()))?;
         if cache.sample.as_ref().is_none_or(|(time, _)| time.elapsed() >= self.options.interval) && cache.generations.admit(self.options.limits) {
             let selected = |kind| self.options.collectors.contains(&kind);
-            let (mut data, report) = super::linux_mm::collect_with_limits(self.options.limits.collection, || LinuxMemoryDiagnostics {
-                collection: super::linux_mm::CollectionReport::default(),
-                damon: selected(LinuxMemoryCollector::Damon).then(|| Box::new(super::linux_mm::DamonStats::from_sys_root(&self.options.sys_root))),
-                shrinkers: selected(LinuxMemoryCollector::Shrinkers).then(|| {
-                    Box::new(super::linux_mm::ShrinkerStats::from_debug_root_with_read_limit(
-                        self.options.sys_root.join("kernel/debug"),
-                        self.options.shrinker_count_reads,
-                    ))
-                }),
-                hardware: selected(LinuxMemoryCollector::MemoryHardware)
-                    .then(|| Box::new(super::linux_mm::MemoryHardwareStats::from_sys_root(&self.options.sys_root))),
-                page_owner: selected(LinuxMemoryCollector::PageOwner).then(|| {
-                    Box::new(super::linux_mm::PageOwnerStats::from_debug_root_with_limit(
-                        self.options.sys_root.join("kernel/debug"),
-                        self.options.provenance_byte_limit,
-                    ))
-                }),
-                kernel_leaks: selected(LinuxMemoryCollector::KernelLeaks).then(|| {
-                    Box::new(super::linux_mm::KernelLeakStats::from_debug_root_with_limit(
-                        self.options.sys_root.join("kernel/debug"),
-                        self.options.provenance_byte_limit,
-                    ))
-                }),
-                physical_pages: selected(LinuxMemoryCollector::PhysicalPages)
-                    .then_some(self.options.physical_pages)
-                    .flatten()
-                    .map(|range| Box::new(super::linux_mm::PhysicalPageStats::from_proc_root(&self.options.proc_root, range))),
-                page_map: selected(LinuxMemoryCollector::PhysicalPages)
-                    .then_some(self.options.virtual_pages)
-                    .flatten()
-                    .map(|range| {
-                        Box::new(super::linux_mm::ProcessPageMap::from_process_root(
-                            std::process::id(),
-                            self.options.proc_root.join("self"),
-                            range,
+            let heap = cache.heap.clone();
+            let allocation = heap
+                .try_reserve(
+                    super::linux_mm::HeapKind::Retained,
+                    std::mem::size_of::<LinuxMemoryDiagnostics>() + std::mem::size_of::<super::linux_mm::HeapReservation>() + 4 * std::mem::size_of::<usize>(),
+                    2,
+                )
+                .map_err(|error| O11yError::RuntimeEnvironment(error.to_string()))?;
+            let (mut data, report) = super::linux_mm::with_heap_budget(&heap, || {
+                super::linux_mm::collect_with_limits(self.options.limits.collection, || LinuxMemoryDiagnostics {
+                    allocation: Arc::new(allocation),
+                    collection: super::linux_mm::CollectionReport::default(),
+                    damon: selected(LinuxMemoryCollector::Damon).then(|| Box::new(super::linux_mm::DamonStats::from_sys_root(&self.options.sys_root))),
+                    shrinkers: selected(LinuxMemoryCollector::Shrinkers).then(|| {
+                        Box::new(super::linux_mm::ShrinkerStats::from_debug_root_with_read_limit(
+                            self.options.sys_root.join("kernel/debug"),
+                            self.options.shrinker_count_reads,
                         ))
                     }),
-                lru_generations: selected(LinuxMemoryCollector::LruGenerations)
-                    .then(|| Box::new(super::linux_mm::LruStats::from_sys_root(&self.options.sys_root))),
-                fragmentation: selected(LinuxMemoryCollector::Fragmentation)
-                    .then(|| Box::new(super::linux_mm::FragmentationStats::from_debug_root(self.options.sys_root.join("kernel/debug")))),
-                kernel_allocations: selected(LinuxMemoryCollector::KernelAllocations)
-                    .then(|| Box::new(super::linux_mm::KernelAllocationStats::from_proc_root(&self.options.proc_root))),
-                slub: selected(LinuxMemoryCollector::Slub).then(|| Box::new(super::linux_mm::SlubStats::from_sys_root(&self.options.sys_root))),
-                sampled_at: chrono::Utc::now(),
-                process_mappings: selected(LinuxMemoryCollector::ProcessMappings).then(|| {
-                    Box::new(super::linux_mm::ProcessMemoryDetails::from_process_root(
-                        std::process::id(),
-                        self.options.proc_root.join("self"),
-                    ))
-                }),
+                    hardware: selected(LinuxMemoryCollector::MemoryHardware)
+                        .then(|| Box::new(super::linux_mm::MemoryHardwareStats::from_sys_root(&self.options.sys_root))),
+                    page_owner: selected(LinuxMemoryCollector::PageOwner).then(|| {
+                        Box::new(super::linux_mm::PageOwnerStats::from_debug_root_with_limit(
+                            self.options.sys_root.join("kernel/debug"),
+                            self.options.provenance_byte_limit,
+                        ))
+                    }),
+                    kernel_leaks: selected(LinuxMemoryCollector::KernelLeaks).then(|| {
+                        Box::new(super::linux_mm::KernelLeakStats::from_debug_root_with_limit(
+                            self.options.sys_root.join("kernel/debug"),
+                            self.options.provenance_byte_limit,
+                        ))
+                    }),
+                    physical_pages: selected(LinuxMemoryCollector::PhysicalPages)
+                        .then_some(self.options.physical_pages)
+                        .flatten()
+                        .map(|range| Box::new(super::linux_mm::PhysicalPageStats::from_proc_root(&self.options.proc_root, range))),
+                    page_map: selected(LinuxMemoryCollector::PhysicalPages)
+                        .then_some(self.options.virtual_pages)
+                        .flatten()
+                        .map(|range| {
+                            Box::new(super::linux_mm::ProcessPageMap::from_process_root(
+                                std::process::id(),
+                                self.options.proc_root.join("self"),
+                                range,
+                            ))
+                        }),
+                    lru_generations: selected(LinuxMemoryCollector::LruGenerations)
+                        .then(|| Box::new(super::linux_mm::LruStats::from_sys_root(&self.options.sys_root))),
+                    fragmentation: selected(LinuxMemoryCollector::Fragmentation)
+                        .then(|| Box::new(super::linux_mm::FragmentationStats::from_debug_root(self.options.sys_root.join("kernel/debug")))),
+                    kernel_allocations: selected(LinuxMemoryCollector::KernelAllocations)
+                        .then(|| Box::new(super::linux_mm::KernelAllocationStats::from_proc_root(&self.options.proc_root))),
+                    slub: selected(LinuxMemoryCollector::Slub).then(|| Box::new(super::linux_mm::SlubStats::from_sys_root(&self.options.sys_root))),
+                    sampled_at: chrono::Utc::now(),
+                    process_mappings: selected(LinuxMemoryCollector::ProcessMappings).then(|| {
+                        Box::new(super::linux_mm::ProcessMemoryDetails::from_process_root(
+                            std::process::id(),
+                            self.options.proc_root.join("self"),
+                        ))
+                    }),
+                })
             })
             .map_err(|error| O11yError::RuntimeEnvironment(error.to_string()))?;
             data.collection = report;
             let bytes = super::generations::snapshot_size(&data, self.options.limits.snapshot_bytes)?;
             let data = Arc::new(data);
-            cache.generations.track(&data, bytes);
+            cache.generations.track(&data, bytes, Some(data.allocation.clone()));
             cache.sample = Some((Instant::now(), data));
         }
         stats.linux_mm.diagnostics = cache.sample.as_ref().map(|(_, data)| Arc::clone(data));

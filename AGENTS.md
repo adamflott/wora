@@ -18,7 +18,7 @@ Key modules and workspace crates:
 - `src/o11y.rs`: host information, host stats, tracing layer, and observability event types.
 - `src/o11y/linux_memory.rs`: routine Linux memory sources, shared tables and limits.
 - `src/o11y/linux_diagnostics.rs`: opt-in diagnostics, cadence and cached batches.
-- `src/o11y/generations.rs`: live-generation admission and encoded-payload accounting.
+- `src/o11y/generations.rs`: live-generation admission, encoded-payload accounting and header leases.
 - `src/o11y/linux_trace.rs`: managed private tracefs instance and memory events.
 - `src/profiles.rs`: memory reporter profile and bounded JSON output.
 - `src/events.rs`: application/runtime event model.
@@ -79,6 +79,8 @@ ignored by default; ordinary fixture tests should not require root.
   distinctions. Missing/denied/malformed data must remain distinguishable from zero.
 - Keep routine snapshots shared through `Arc<LinuxMemoryData>` and diagnostics
   through `Arc<LinuxMemoryDiagnostics>`; account for old/new generation overlap.
+- Keep snapshot owning Arcs private and published tables immutable. Use fallible
+  budgeted builders/replacements; retain header credit while generation weak refs exist.
 - Apply shared collection limits before allocation/read growth. Source bytes,
   encoded JSON bytes, heap capacity and RSS are different measurements.
 - Keep expensive diagnostics explicitly selected. Snapshot collectors must not
@@ -91,8 +93,9 @@ ignored by default; ordinary fixture tests should not require root.
 
 - Typed reload events exist; deletion-aware payloads, reload coalescing and atomic
   initial snapshots remain roadmap items in `TODO.md`.
-- Linux memory input/payload limits do not account for exact heap overhead, other
-  inventories, general sinks, queue payloads, scheduled tasks or reloads. Extended
+- Heap admission covers structured storage, source/token buffers and snapshot
+  headers; other typed tables, inventories, sinks, queue payloads, tasks and reloads
+  remain incomplete. The allocator reserve still needs measurement. Extended
   release-process soak measurements and runtime-wide contract enforcement remain open
   in `TODO.md`; reader allocation limits remain in `wora-observability-linux-mm/TODO.md`.
 

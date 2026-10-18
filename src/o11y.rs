@@ -343,6 +343,8 @@ pub struct SystemRuntimeEnvironment {
     #[cfg(target_os = "linux")]
     memory_limits: LinuxMemoryLimits,
     #[cfg(target_os = "linux")]
+    memory_heap: linux_mm::HeapBudget,
+    #[cfg(target_os = "linux")]
     memory_generations: Arc<Mutex<generations::Generations<LinuxMemoryData>>>,
 }
 
@@ -353,6 +355,8 @@ impl Default for SystemRuntimeEnvironment {
             process_sampler: Arc::new(std::sync::Mutex::new(new_process_sampler())),
             #[cfg(target_os = "linux")]
             memory_limits: LinuxMemoryLimits::default(),
+            #[cfg(target_os = "linux")]
+            memory_heap: linux_mm::HeapBudget::default(),
             #[cfg(target_os = "linux")]
             memory_generations: Arc::new(Mutex::new(generations::Generations::default())),
         }
@@ -367,6 +371,7 @@ impl SystemRuntimeEnvironment {
     pub fn with_linux_memory_limits(limits: LinuxMemoryLimits) -> Result<Self, O11yError> {
         limits.validate().map_err(|error| O11yError::RuntimeEnvironment(error.to_string()))?;
         Ok(Self {
+            memory_heap: linux_mm::HeapBudget::new(limits.heap).map_err(|error| O11yError::RuntimeEnvironment(error.to_string()))?,
             memory_limits: limits,
             ..Self::default()
         })
@@ -378,6 +383,13 @@ impl SystemRuntimeEnvironment {
             .lock()
             .map(|generations| generations.status())
             .map_err(|_| O11yError::RuntimeEnvironment("memory generation tracker poisoned".into()))
+    }
+
+    /// Live/peak instrumented allocation reservations shared by provider clones
+    /// and all retained routine generations. Values are WORA byte reservations,
+    /// not kernel memory usage or RSS; other runtime allocations remain unmetered.
+    pub fn memory_heap_usage(&self) -> linux_mm::HeapUsage {
+        self.memory_heap.usage()
     }
 }
 
@@ -392,7 +404,7 @@ impl RuntimeEnvironment for SystemRuntimeEnvironment {
         }
 
         #[cfg(target_os = "linux")]
-        let host = Host::new_with_linux_memory_limits(self.memory_limits)?;
+        let host = Host::new_with_linux_memory_limits(self.memory_limits, &self.memory_heap)?;
         #[cfg(not(target_os = "linux"))]
         let host = Host::new()?;
         #[cfg(target_os = "linux")]
@@ -402,6 +414,7 @@ impl RuntimeEnvironment for SystemRuntimeEnvironment {
             .track(
                 &host.stats.linux_mm.data,
                 generations::snapshot_size(&host.stats.linux_mm.data, self.memory_limits.snapshot_bytes)?,
+                host.stats.linux_mm.allocation.clone(),
             );
         let snapshot = Host::from_parts(host.info.clone(), host.stats.clone());
         *guard = Some(host);
@@ -429,14 +442,14 @@ impl RuntimeEnvironment for SystemRuntimeEnvironment {
         let stats = match guard.as_mut() {
             Some(host) => {
                 #[cfg(target_os = "linux")]
-                host.update_with_linux_memory_limits(self.memory_limits)?;
+                host.update_with_linux_memory_limits(self.memory_limits, &self.memory_heap)?;
                 #[cfg(not(target_os = "linux"))]
                 host.update()?;
                 host.stats().clone()
             }
             None => {
                 #[cfg(target_os = "linux")]
-                let host = Host::new_with_linux_memory_limits(self.memory_limits)?;
+                let host = Host::new_with_linux_memory_limits(self.memory_limits, &self.memory_heap)?;
                 #[cfg(not(target_os = "linux"))]
                 let host = Host::new()?;
                 let stats = host.stats().clone();
@@ -448,6 +461,7 @@ impl RuntimeEnvironment for SystemRuntimeEnvironment {
         generations.track(
             &stats.linux_mm.data,
             generations::snapshot_size(&stats.linux_mm.data, self.memory_limits.snapshot_bytes)?,
+            stats.linux_mm.allocation.clone(),
         );
         Ok(Some(stats))
     }
@@ -1690,18 +1704,18 @@ pub struct Host {
 
 impl Host {
     #[cfg(target_os = "linux")]
-    fn new_with_linux_memory_limits(limits: LinuxMemoryLimits) -> Result<Self, O11yError> {
+    fn new_with_linux_memory_limits(limits: LinuxMemoryLimits, budget: &linux_mm::HeapBudget) -> Result<Self, O11yError> {
         let sys = System::new_with_specifics(host_refresh_kind());
         let info = HostInfo::new(&sys)?;
-        let stats = HostStats::new_with_linux_memory_limits(&sys, limits)?;
+        let stats = HostStats::new_with_linux_memory_limits(&sys, limits, budget)?;
         Ok(Self { sys, info, stats })
     }
 
     #[cfg(target_os = "linux")]
-    fn update_with_linux_memory_limits(&mut self, limits: LinuxMemoryLimits) -> Result<(), O11yError> {
+    fn update_with_linux_memory_limits(&mut self, limits: LinuxMemoryLimits, budget: &linux_mm::HeapBudget) -> Result<(), O11yError> {
         self.sys.refresh_specifics(host_refresh_kind());
         self.info.update(&self.sys)?;
-        self.stats = HostStats::new_with_linux_memory_limits(&self.sys, limits)?;
+        self.stats = HostStats::new_with_linux_memory_limits(&self.sys, limits, budget)?;
         Ok(())
     }
 
@@ -1769,9 +1783,9 @@ impl HostStats {
     }
 
     #[cfg(target_os = "linux")]
-    fn new_with_linux_memory_limits(sys: &System, limits: LinuxMemoryLimits) -> Result<Self, O11yError> {
-        let linux_mm =
-            LinuxMemoryStats::from_roots_with_limits("/proc", "/sys", limits.collection).map_err(|error| O11yError::RuntimeEnvironment(error.to_string()))?;
+    fn new_with_linux_memory_limits(sys: &System, limits: LinuxMemoryLimits, budget: &linux_mm::HeapBudget) -> Result<Self, O11yError> {
+        let linux_mm = LinuxMemoryStats::from_roots_with_budget("/proc", "/sys", limits.collection, budget)
+            .map_err(|error| O11yError::RuntimeEnvironment(error.to_string()))?;
         generations::snapshot_size(&linux_mm.data, limits.snapshot_bytes)?;
         let mut stats = Self::collect_portable(sys);
         stats.linux_mm = linux_mm;

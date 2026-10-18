@@ -17,7 +17,9 @@ pub struct MemorySamplingStatus {
 
 #[derive(Debug)]
 pub(super) struct Generations<T> {
-    live: Vec<(Weak<T>, usize)>,
+    // Drop the Weak before releasing header credit: a Weak keeps the Arc's
+    // backing allocation alive even after its payload has been destroyed.
+    live: Vec<(Weak<T>, usize, Option<Arc<super::linux_mm::HeapReservation>>)>,
     skipped: u64,
 }
 
@@ -29,8 +31,8 @@ impl<T> Default for Generations<T> {
 
 impl<T> Generations<T> {
     pub(super) fn admit(&mut self, limits: super::LinuxMemoryLimits) -> bool {
-        self.live.retain(|(weak, _)| weak.strong_count() != 0);
-        let used: usize = self.live.iter().map(|(_, bytes)| bytes).sum();
+        self.live.retain(|(weak, _, _)| weak.strong_count() != 0);
+        let used: usize = self.live.iter().map(|(_, bytes, _)| bytes).sum();
         if self.live.len() < limits.live_snapshots && limits.snapshot_bytes <= limits.retained_snapshot_bytes.saturating_sub(used) {
             return true;
         }
@@ -38,15 +40,20 @@ impl<T> Generations<T> {
         false
     }
 
-    pub(super) fn track(&mut self, data: &Arc<T>, bytes: usize) {
-        self.live.push((Arc::downgrade(data), bytes));
+    pub(super) fn track(&mut self, data: &Arc<T>, bytes: usize, allocation: Option<Arc<super::linux_mm::HeapReservation>>) {
+        self.live.push((Arc::downgrade(data), bytes, allocation));
     }
 
     pub(super) fn status(&self) -> MemorySamplingStatus {
         MemorySamplingStatus {
-            live_snapshots: self.live.iter().filter(|(weak, _)| weak.strong_count() != 0).count(),
+            live_snapshots: self.live.iter().filter(|(weak, _, _)| weak.strong_count() != 0).count(),
             skipped_samples: self.skipped,
-            retained_snapshot_bytes: self.live.iter().filter(|(weak, _)| weak.strong_count() != 0).map(|(_, bytes)| bytes).sum(),
+            retained_snapshot_bytes: self
+                .live
+                .iter()
+                .filter(|(weak, _, _)| weak.strong_count() != 0)
+                .map(|(_, bytes, _)| bytes)
+                .sum(),
         }
     }
 }
@@ -90,7 +97,7 @@ mod tests {
         };
         let first = Arc::new(1);
         assert!(generations.admit(limits));
-        generations.track(&first, 7);
+        generations.track(&first, 7, None);
         assert!(!generations.admit(limits));
         assert_eq!(generations.status().retained_snapshot_bytes, 7);
         assert_eq!(generations.status().skipped_samples, 1);
@@ -98,5 +105,21 @@ mod tests {
         assert!(generations.admit(limits));
         assert_eq!(generations.status().live_snapshots, 0);
         assert_eq!(generations.status().retained_snapshot_bytes, 0);
+    }
+
+    #[test]
+    fn weak_generation_headers_keep_credit_until_pruned() -> Result<(), super::super::linux_mm::HeapError> {
+        use super::super::linux_mm::{HeapBudget, HeapKind};
+        let budget = HeapBudget::default();
+        let allocation = Arc::new(budget.try_reserve(HeapKind::Retained, 128, 1)?);
+        let mut generations = Generations::default();
+        let data = Arc::new(1);
+        generations.track(&data, 1, Some(allocation.clone()));
+        drop((data, allocation));
+        assert!(budget.usage().retained_bytes > 0);
+        assert_eq!(generations.status().live_snapshots, 0);
+        assert!(generations.admit(super::super::LinuxMemoryLimits::default()));
+        assert_eq!(budget.usage().retained_bytes, 0);
+        Ok(())
     }
 }

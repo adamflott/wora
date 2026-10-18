@@ -389,10 +389,16 @@ mod memory_events {
             stats.memory.used = (refresh as u64 + 1) * 100;
             #[cfg(target_os = "linux")]
             {
-                stats.linux_mm.vmstat = Some(linux_mm::VmStat(std::collections::HashMap::from([(
-                    "nr_free_pages".into(),
-                    stats.memory.used as i64,
-                )])));
+                stats.linux_mm = wora::o11y::LinuxMemoryStats::try_new(&linux_mm::HeapBudget::default(), || {
+                    Ok(wora::o11y::LinuxMemoryData {
+                        vmstat: Some(linux_mm::VmStat(std::collections::HashMap::from([(
+                            "nr_free_pages".into(),
+                            stats.memory.used as i64,
+                        )]))),
+                        ..Default::default()
+                    })
+                })
+                .map_err(|error| O11yError::RuntimeEnvironment(error.to_string()))?;
             }
             Ok(Some(stats))
         }

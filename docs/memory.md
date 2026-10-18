@@ -92,9 +92,14 @@ Custom `RuntimeEnvironment` providers and captured roots can supply different da
 Host, process, cgroup and node views overlap; do not sum them.
 
 `MemorySnapshot` copies portable totals and shares Linux data without another OS
-read. Routine tables use `Arc<LinuxMemoryData>`; diagnostics use a separate
-`Arc<LinuxMemoryDiagnostics>`. Mutation is copy-on-write. For struct literals,
-construct `LinuxMemoryData { .. }.into()`; borrow fields when reading shared data.
+read. Routine and diagnostic tables remain shared internally through separate
+Arcs. Read routine fields directly or through `data()`; use `diagnostics()` for
+borrowed diagnostic data. Published data has no mutable dereference or owning Arc
+accessor, and the data types no longer implement deep `Clone`.
+Use `LinuxMemoryStats::try_new(&budget, || Ok(LinuxMemoryData { .. }))` to reserve
+snapshot storage before construction. `try_rebuild` admits a replacement while
+the old sample lives; `try_from_data` accepts already-built caller data without
+retroactively charging it. The default handle is a shared empty sentinel, not a sample.
 JSON routine fields stay directly under `linux_mm`, with `collection` accounting.
 
 ## Linux mm subsystems
@@ -259,13 +264,23 @@ Configure with `LinuxMemoryLimits`,
 Standalone readers need `collect_with_limits` plus `read_source` to share a budget;
 calling procfs parsers/`Current` directly does not acquire that budget.
 
-`LinuxMemoryLimits::heap` configures independent retained/scratch allowances.
+`LinuxMemoryLimits::heap` configures independent retained/scratch allowances,
+shared across provider clones and retained generations. Routine and diagnostic
+providers have separate budgets. Inspect `memory_heap_usage()` or
+`diagnostic_heap_usage()` for live/peak reservation bytes.
 `HeapBudget::try_reserve` admits requested layouts plus the configured overhead;
 leases release credit on drop, and `usage()` exposes live/peak reservations.
 `with_heap_budget` supplies that shared budget to synchronous builders. Only
 instrumented allocations are charged; the overhead reserve is a policy, not a
 measurement of allocator metadata. Budget control state has a fixed allocation
 outside its counters.
+
+Snapshot header/lease storage is reserved before building routine or diagnostic
+data. Generation trackers retain header credit until their weak entries are
+pruned; a weak Arc still keeps its backing allocation alive. Empty-sentinel
+initialization and budget/generation bookkeeping remain outside these counters.
+`from_roots_with_limits` now accepts `LinuxMemoryLimits`; repeated captured-root
+collections can share a budget through `from_roots_with_budget`.
 
 Structured lists/maps/text, `MemoryFiles` entries/errors and smaps storage now
 reserve retained capacity; source buffers and borrowed-token lists reserve scratch.

@@ -5,8 +5,8 @@ Current memory APIs and measurements: [memory guide](docs/memory.md).
 
 ## Memory and resource limits
 
-- [ ] Account for runtime container capacities and allocator overhead; reserve
-  old/new memory snapshot, reload and serialization overlap before allocation.
+- [ ] Complete runtime container/allocator accounting beyond budgeted Linux
+  storage/headers; reserve reload and serialization overlap before allocation.
 - [ ] Add a minimal selectable routine profile in `src/o11y/linux_memory.rs`;
   make large slab/page-type/zone-CPU inventories optional within that profile.
 - [ ] Bound CPU/disk/network inventories before collection in `src/o11y.rs`.

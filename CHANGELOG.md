@@ -28,20 +28,22 @@ and [Semantic Versioning](https://semver.org/) starts at 1.0.0. Earlier releases
 
 ### Changes
 
+- Make Linux snapshots immutable with private owning Arcs and fallible `try_new`/`try_from_data`/`try_rebuild` builders; borrow tables through `data()`/`diagnostics()`. Provider clones/generations share heap budgets and retain header leases until weak tracker entries are pruned. `from_roots_with_limits` accepts `LinuxMemoryLimits`; add shared-budget collection and heap-usage accessors.
 - Use fallible shared `MemoryList`/`MemoryMap`/`MemoryText` storage for parsed values, `MemoryFiles` and smaps. Replace direct value literals with `try_list`/`try_map`/`try_text` builders and error strings with `SysctlReadError::read_failed`. Reserve capacity before growth/copying; expose allocation failures separately, including an inline `MemoryFiles::allocation_error`. JSON value shapes stay unchanged.
 - `RunnerOptions` struct literals gain `resources: None`; builders preserve the handle through provider/lock type changes. Existing sender types and `schedule_task` return types stay compatible; non-exhaustive resource limits use `Default` plus field assignment.
-- Share routine Linux memory tables through `LinuxMemoryStats::data: Arc<LinuxMemoryData>` and move owned host statistics into periodic observability events. Construct routine struct literals with `LinuxMemoryData { .. }.into()`; field reads remain available through `Deref`, and mutations use copy-on-write. Collected snapshots add `collection` accounting to JSON.
+- Move owned host statistics into periodic observability events; collected Linux snapshots add `collection` accounting to JSON.
 - Route routine and diagnostic procfs/sysfs reads through shared input/work budgets, including cgroup, sysctl, hugepage, process rollup, and binary page readers. Keep only the best cgroup mount candidate and bound ancestor traversal.
 - Limit default `sysinfo` collection to host CPU/memory and the current process's CPU, memory, and disk counters, with task enumeration disabled. Reuse samplers across refreshes and environment clones, and avoid collecting telemetry in `Host::from_parts`.
 - Build refreshed host statistics from the retained CPU sampler so interval CPU values are preserved. Keep standalone `HostStats::update` as a host-only collection and document using `Host::update` for repeated CPU measurements.
-- Share cached Linux diagnostic batches across host samples, memory events, and cloned snapshots using `Arc`. `LinuxMemoryStats::diagnostics` changes from `Option<Box<LinuxMemoryDiagnostics>>` to `Option<Arc<LinuxMemoryDiagnostics>>`; construct with `Arc::new` or convert with `Arc::from`, and use `Arc::make_mut` for an independent writable copy. JSON output retains its existing shape.
 - Serialize memory-report and memory-trace JSON from borrowed fields, avoiding report-only snapshot clones and intermediate trace JSON values.
 - Store only structured data in memory-file, sysctl, cgroup, and hugepage `parsed` maps; remove their former `values` maps and raw-value types. Parse specialized diagnostics during their bounded read without retaining source text.
 - Structure smaps headers and accounting into mapping metadata, quantities, and flag lists. Report malformed or unsupported layouts under their source names in `unavailable`, without retaining raw contents or partial records. Raw-only serialized snapshots require migration.
 
 ### Tests
 
-- Cover shared routine data, copy-on-write isolation, generation/byte admission and recovery after reader release, invalid/oversized limits, exact JSON/newline boundaries, escaping, buffer reuse, aggregate reads, and incomplete cgroup visibility.
+- Verify heap/scratch admission, refusal before builders run, shared-credit lifetimes, replacement/weak-header overlap, error-map exhaustion and unchanged serialized values.
+
+- Cover shared routine data, immutable replacement isolation, generation/byte admission and recovery after reader release, invalid/oversized limits, exact JSON/newline boundaries, escaping, buffer reuse, aggregate reads, and incomplete cgroup visibility.
 - Verify that host samplers retain no process tables, process sampling retains only the current PID without command/environment/task inventories, supplied host snapshots cause no telemetry collection, and CPU/disk counter history survives refreshes through cloned environments.
 - Verify diagnostic sharing across provider clones, host samples and memory events, immutable retained snapshots across refreshes, release of old batches, and report JSON parity with public memory snapshots.
 - Add coverage for mixed KSM counter/boolean records, filesystem sysctl layouts, integer limits, malformed data, native bases and units, captured process files, structured-only serialization, and propagation through memory events.
