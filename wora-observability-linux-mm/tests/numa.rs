@@ -3,6 +3,66 @@ use std::{fs, os::unix::fs::symlink};
 use wora_observability_linux_mm::{MemoryFiles, MemoryReadError, MemorySkipReason, NumaStats, ParsedMemoryValue};
 
 #[test]
+fn weighted_interleave_supports_sparse_69_weights_and_616_auto_mode_without_writes() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let directory = root.path().join("kernel/mm/mempolicy/weighted_interleave");
+    fs::create_dir_all(&directory)?;
+    fs::write(directory.join("node0"), "1\n")?;
+    fs::write(directory.join("node99"), "255\n")?;
+    let legacy = NumaStats::from_sys_root(root.path()).weighted_interleave;
+    assert_eq!(legacy.parsed["node0"], ParsedMemoryValue::Unsigned(1));
+    assert_eq!(legacy.parsed["node99"], ParsedMemoryValue::Unsigned(255));
+    assert!(!legacy.parsed.contains_key("auto"));
+    for mode in [true, false] {
+        let text = format!("{mode}\n");
+        fs::write(directory.join("auto"), &text)?;
+        let policy = NumaStats::from_sys_root(root.path()).weighted_interleave;
+        assert_eq!(policy.parsed["auto"], ParsedMemoryValue::Bool(mode));
+        assert_eq!(fs::read_to_string(directory.join("auto"))?, text);
+        assert_eq!(fs::read_to_string(directory.join("node99"))?, "255\n");
+        #[cfg(feature = "serde1")]
+        assert_eq!(serde_json::to_value(&policy)?["parsed"]["auto"], mode);
+    }
+    fs::remove_file(directory.join("node99"))?;
+    assert!(!NumaStats::from_sys_root(root.path()).weighted_interleave.parsed.contains_key("node99"));
+    Ok(())
+}
+
+#[test]
+fn weighted_interleave_isolates_bad_values_excludes_links_and_shares_limits() -> Result<(), Box<dyn std::error::Error>> {
+    use wora_observability_linux_mm::{CollectionLimit, CollectionLimits, collect_with_limits, parse_memory_file};
+    let root = tempfile::tempdir()?;
+    let directory = root.path().join("kernel/mm/mempolicy/weighted_interleave");
+    fs::create_dir_all(&directory)?;
+    fs::write(directory.join("node9"), "2\n")?;
+    fs::write(directory.join("auto"), "true\n")?;
+    fs::write(directory.join("future_control"), [0xff])?;
+    symlink("future_control", directory.join("node3"))?;
+    for bad in ["0", "256", "-1", "+1", "1 2", "1\n2", "new"] {
+        fs::write(directory.join("node0"), bad)?;
+        let policy = NumaStats::from_sys_root(root.path()).weighted_interleave;
+        assert!(!policy.parsed.contains_key("node0"));
+        assert!(policy.unavailable.contains_key("node0"));
+        assert_eq!(policy.parsed["node9"], ParsedMemoryValue::Unsigned(2));
+        assert_eq!(policy.skipped["node3"], MemorySkipReason::NotRegularFile);
+        assert!(!policy.unavailable.contains_key("future_control"));
+    }
+    assert!(parse_memory_file(directory.join("auto"), "unknown").is_err());
+    let (_, report) = collect_with_limits(
+        CollectionLimits {
+            entries: 1,
+            ..Default::default()
+        },
+        || NumaStats::from_sys_root(root.path()),
+    )?;
+    assert_eq!(report.limit_exceeded, Some(CollectionLimit::Entries));
+    fs::remove_dir_all(&directory)?;
+    let policy = NumaStats::from_sys_root(root.path()).weighted_interleave;
+    assert!(matches!(policy.unavailable.get("."), Some(MemoryReadError::NotFound)));
+    Ok(())
+}
+
+#[test]
 fn sparse_nodes_tiers_and_native_units_survive_capture() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     for (name, value) in [

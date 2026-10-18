@@ -93,6 +93,19 @@ pub fn parse_memory_file(path: impl AsRef<Path>, text: &str) -> Result<Option<Pa
     let name = path.file_name().and_then(|v| v.to_str()).unwrap_or_default();
     let parent = path.parent().and_then(Path::file_name).and_then(|v| v.to_str()).unwrap_or_default();
     let value = match name {
+        "auto" if parent == "weighted_interleave" => match text.trim() {
+            "true" => ParsedMemoryValue::Bool(true),
+            "false" => ParsedMemoryValue::Bool(false),
+            _ => return Err(invalid("invalid weighted-interleave mode")),
+        },
+        name if parent == "weighted_interleave" && crate::files::numbered(name, "node").is_some() => {
+            let text = text.trim();
+            let weight = text.parse::<u8>().map_err(|_| invalid("invalid weighted-interleave weight"))?;
+            if weight == 0 || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(invalid("weighted-interleave weight must be 1..=255"));
+            }
+            ParsedMemoryValue::Unsigned(u64::from(weight))
+        }
         "ksm_stat" => counter_table(text, true)?,
         "numastat" | "vmstat" => counter_table(text, false)?,
         "meminfo" => node_meminfo(text)?,

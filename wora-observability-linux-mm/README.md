@@ -11,7 +11,7 @@ Typed Linux memory readers extending `procfs` 0.18. Linux-only; requires Rust
 | Area | Reported subsystems |
 | --- | --- |
 | Host allocation/reclaim | RAM/address maps, VM/cache/writeback counters, buddy blocks, zones/CPU pagesets, migration-type pageblocks, fragmentation, PSI and sysctls. |
-| Accounting/placement | Memory/DMEM cgroups, OOM events, cpuset nodes, NUMA locality/tiers, THP/mTHP/khugepaged and HugeTLB pools. |
+| Accounting/placement | Memory/DMEM cgroups, OOM events, cpuset nodes, NUMA locality/tiers/weighted-interleave policy, THP/mTHP/khugepaged and HugeTLB pools. |
 | Backing/sharing | Swap, zswap, zram, KSM and System V shared memory. |
 | Process/pages | Status/limits/faults/OOM preferences, RSS/PSS rollups, mappings/NUMA policy, physical-frame metadata and pagemap flags. |
 | Kernel/hardware diagnostics | SLAB/SLUB, vmalloc/allocation sites, DAMON_STAT, MGLRU, page owner, kmemleak, hotplug blocks, EDAC, poisoned-page recovery and CMA. |

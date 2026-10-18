@@ -119,7 +119,7 @@ nested values and conversions.
 | `sysctls`: VM/kernel policy | VM settings; shared-memory, NUMA and perf settings; selected descriptor/inode/dentry counters. | `/proc/sys/vm/*`, selected `/proc/sys/{kernel,fs}` files |
 | `cgroup`: memcg/DMEM/cpuset/HugeTLB | v2 usage, limits, stats, pressure, events, swap/zswap, device-region byte usage/capacity/limits, HugeTLB and allowed memory nodes; selected ancestor usage/limits. | Membership/mount discovery in `/proc/self/{cgroup,mountinfo}`, then `memory.*`, selected `dmem.*`, `hugetlb.*`, `cpuset.mems{,.effective}` |
 | `hugepages`: THP/mTHP/HugeTLB | Policies, khugepaged/per-size counters and global/node pools. Counts remain size-specific. | `/sys/kernel/mm/{transparent_hugepage,hugepages}`, `/sys/devices/system/node/node*/hugepages` |
-| `numa`: locality/balancing/tiers | Node memory/VM/locality tables, CPU lists/maps, distances and tier membership. | `/sys/devices/system/node`, `/sys/devices/virtual/memory_tiering` |
+| `numa`: locality/balancing/tiers/policy | Node memory/VM/locality tables, CPU lists/maps, distances, tier membership and global weighted-interleave weights/auto mode. | `/sys/devices/system/node`, `/sys/devices/virtual/memory_tiering`, `/sys/kernel/mm/mempolicy/weighted_interleave` |
 | `compressed`: zswap/zram | Zswap policy, failure counters, stored/incompressible pages and zram device memory/I/O/backing-device statistics. | `/sys/module/zswap/parameters`, `/sys/kernel/debug/zswap`, `/sys/block/zram*` |
 | `ksm`: identical-page sharing | Global/process counters, scanner policy, signed profit and flags. | `/sys/kernel/mm/ksm/*`, `/proc/self/{ksm_stat,ksm_merging_pages}` |
 | `process`: process VM/accounting | Status/peaks, limits, faults, OOM preferences and RSS/PSS/private/shared/swap rollup. | `/proc/self/{status,limits,stat,oom_score,oom_score_adj,smaps_rollup}` |
@@ -188,6 +188,7 @@ CI follows runner images, not a fixed booted-kernel matrix. Containers use the h
 | --- | --- |
 | cgroup v2 memory / cpuset / HugeTLB | 4.5 / 5.0 / 5.6; enabled controllers required; no v1 fallback. [manual][cgroups] |
 | DMEM cgroups | 6.14; controller/device support required. Root capacity and child usage stay separate; limits preserve `max`. `dmem.peak` is presence-gated against the 7.3-rc7 development ABI. [ABI][dmem] |
+| Weighted interleave | 6.9 node weights (1..=255); 6.16 `auto` mode. Read-only global policy observation; absent mode stays unknown. [ABI][weights] |
 | `smaps_rollup` | 4.14; no implicit full-smaps fallback. [source][rollup] |
 | Memory PSI | 4.20; PSI must be enabled. [source][psi] |
 | MGLRU | 6.1; requires `CONFIG_LRU_GEN`, with optional debug statistics. [source][mglru] |
@@ -203,6 +204,7 @@ make page-owner, kmemleak, EDAC or CMA universally available.
 
 [cgroups]: https://man7.org/linux/man-pages/man7/cgroups.7.html
 [dmem]: https://github.com/torvalds/linux/blob/v7.3-rc7/Documentation/admin-guide/cgroup-v2.rst
+[weights]: https://github.com/torvalds/linux/blob/v6.16/Documentation/ABI/testing/sysfs-kernel-mm-mempolicy-weighted-interleave
 [rollup]: https://github.com/torvalds/linux/blob/v4.14/fs/proc/task_mmu.c
 [psi]: https://github.com/torvalds/linux/blob/v4.20/Documentation/accounting/psi.txt
 [mglru]: https://github.com/torvalds/linux/blob/v6.1/Documentation/admin-guide/mm/multigen_lru.rst

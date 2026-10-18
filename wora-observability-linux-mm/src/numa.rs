@@ -13,6 +13,8 @@ use crate::{MemoryFiles, MemoryReadError};
 /// Reads inventory files under `/sys/devices/system/node`, per-node
 /// `node*/{meminfo,numastat,vmstat,cpulist,cpumap,distance}` and tier membership
 /// from `/sys/devices/virtual/memory_tiering/memory_tier*/nodelist`.
+/// Global weighted-interleave policy comes from
+/// `/sys/kernel/mm/mempolicy/weighted_interleave/{nodeN,auto}`.
 /// [`Self::from_sys_root`] substitutes an explicit sysfs/captured root.
 #[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde1", derive(serde::Serialize, serde::Deserialize))]
@@ -23,6 +25,12 @@ pub struct NumaStats {
     pub nodes: BTreeMap<u32, MemoryFiles>,
     /// Tier ID to native `nodelist`; a lower ID represents a faster tier.
     pub tiers: BTreeMap<u32, MemoryFiles>,
+    /// Global relative node weights (integers 1..=255, Linux 6.9+) and optional
+    /// `auto` boolean (6.16+), keyed by `nodeN`/`auto` below
+    /// `/sys/kernel/mm/mempolicy/weighted_interleave`. These affect new
+    /// MPOL_WEIGHTED_INTERLEAVE allocations, not existing placement or the
+    /// collecting process's policy. An absent `auto` key means unknown mode.
+    pub weighted_interleave: MemoryFiles,
     /// Directory discovery failures, keyed by relative sysfs path.
     pub unavailable: BTreeMap<String, MemoryReadError>,
 }
@@ -70,6 +78,9 @@ impl NumaStats {
                 }
             }
         }
+        result.weighted_interleave = MemoryFiles::directory(&root.join("kernel/mm/mempolicy/weighted_interleave"), |name| {
+            name == "auto" || numbered(name, "node").is_some()
+        });
         result
     }
 }
