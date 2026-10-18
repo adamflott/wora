@@ -163,6 +163,7 @@ fn all_selected_diagnostics_reach_serialized_memory_events() -> Result<(), Box<d
         "page_owner",
         "kernel_leaks",
         "hardware",
+        "damon",
     ] {
         assert!(!diagnostics[field].is_null(), "missing {field}");
     }
@@ -175,6 +176,35 @@ fn all_selected_diagnostics_reach_serialized_memory_events() -> Result<(), Box<d
         )
         .is_err()
     );
+    Ok(())
+}
+
+#[test]
+fn damon_diagnostics_are_opt_in_cached_and_serialized() -> Result<(), Box<dyn std::error::Error>> {
+    use wora::o11y::{LinuxMemoryCollector, LinuxMemoryEnvironment, LinuxMemoryOptions, RuntimeEnvironment};
+    let root = tempfile::tempdir()?;
+    let parameters = root.path().join("module/damon_stat/parameters");
+    std::fs::create_dir_all(&parameters)?;
+    std::fs::write(parameters.join("enabled"), "N\n")?;
+    std::fs::write(parameters.join("kdamond_pid"), "-1\n")?;
+    std::fs::write(parameters.join("memory_idle_ms_percentiles"), vec!["-17"; 101].join(","))?;
+    let options = LinuxMemoryOptions::new().with_roots(root.path(), root.path());
+    let disabled = LinuxMemoryEnvironment::new(CapturedEnvironment, options.clone())?.initial_host()?;
+    assert!(disabled.stats.linux_mm.diagnostics.is_none());
+    let provider = LinuxMemoryEnvironment::new(CapturedEnvironment, options.enable(LinuxMemoryCollector::Damon))?;
+    let first = provider.initial_host()?.stats;
+    std::fs::write(parameters.join("enabled"), "Y\n")?;
+    let cached = provider.clone().refresh_host_stats()?.ok_or("no stats")?;
+    assert!(std::sync::Arc::ptr_eq(
+        first.linux_mm.diagnostics.as_ref().ok_or("no diagnostics")?,
+        cached.linux_mm.diagnostics.as_ref().ok_or("no diagnostics")?,
+    ));
+    let json = serde_json::to_value(wora::events::MemorySnapshot::from_host_stats(&cached))?;
+    let damon = &json["linux_mm"]["diagnostics"]["damon"];
+    assert_eq!(damon["enabled"], false);
+    assert_eq!(damon["kdamond_pid"], -1);
+    assert_eq!(damon["memory_idle_ms_percentiles"][100], -17);
+    assert_eq!(std::fs::read_to_string(parameters.join("enabled"))?, "Y\n");
     Ok(())
 }
 

@@ -129,6 +129,7 @@ nested values and conversions.
 | Field / subsystem | Reported data | Source |
 | --- | --- | --- |
 | `diagnostics.process_mappings`: mappings/NUMA | Address ranges, backing metadata, native quantities and VM flags. | `/proc/self/{maps,numa_maps,smaps}` |
+| `diagnostics.damon`: DAMON_STAT | Existing monitor state, estimated bytes/s, signed idle-time percentiles in ms, aggregation interval in us and worker PID. Disabled monitoring can leave stale results. | `/sys/module/damon_stat/parameters/*`; select `LinuxMemoryCollector::Damon` |
 | `diagnostics.slub`: object caches | Per-cache/node occupancy, policy/debug counters and canonical aliases. | Selected `/sys/kernel/slab/<cache>/*` |
 | `diagnostics.kernel_allocations`: vmalloc/call sites | Area metadata and allocinfo bytes/counts/source locations/accuracy markers. | `/proc/{vmallocinfo,allocinfo}` |
 | `diagnostics.fragmentation`: contiguous allocation | Per-node/zone/order indices in thousandths, including the `-1.000` sentinel. | `/sys/kernel/debug/extfrag/{unusable_index,extfrag_index}` |
@@ -191,6 +192,7 @@ CI follows runner images, not a fixed booted-kernel matrix. Containers use the h
 | MGLRU | 6.1; requires `CONFIG_LRU_GEN`, with optional debug statistics. [source][mglru] |
 | Anonymous mTHP | 6.8; per-size files are optional/discovered. [source][mthp] |
 | `allocinfo` | 6.10; accepts text formats 1.0/2.0. [source][allocinfo] |
+| DAMON_STAT | 6.17; signed active-time percentiles/aggregation interval since 6.19, worker PID since 7.2. Requires `CONFIG_DAMON_STAT`; synthetic layout tests, no monitor enablement. [ABI][damon] |
 | Pagemap flags | Modern 4.2+ layout; userfaultfd bit 57 since 5.13, guard bit 58 since 6.15. [ABI][pagemap] |
 
 The reviewed 7.3-rc7 ABI reuses bit 57 for WP or RWP depending on the VMA.
@@ -204,6 +206,7 @@ make page-owner, kmemleak, EDAC or CMA universally available.
 [mglru]: https://github.com/torvalds/linux/blob/v6.1/Documentation/admin-guide/mm/multigen_lru.rst
 [mthp]: https://github.com/torvalds/linux/blob/v6.8/Documentation/admin-guide/mm/transhuge.rst
 [allocinfo]: https://github.com/torvalds/linux/blob/v6.10/Documentation/mm/allocation-profiling.rst
+[damon]: https://github.com/torvalds/linux/blob/v7.2/Documentation/admin-guide/mm/damon/stat.rst
 [pagemap]: https://github.com/torvalds/linux/blob/v7.3-rc7/Documentation/admin-guide/mm/pagemap.rst
 
 ## Collection and retention limits

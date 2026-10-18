@@ -14,7 +14,7 @@ Typed Linux memory readers extending `procfs` 0.18. Linux-only; requires Rust
 | Accounting/placement | Memory cgroups, OOM events, cpuset nodes, NUMA locality/tiers, THP/mTHP/khugepaged and HugeTLB pools. |
 | Backing/sharing | Swap, zswap, zram, KSM and System V shared memory. |
 | Process/pages | Status/limits/faults/OOM preferences, RSS/PSS rollups, mappings/NUMA policy, physical-frame metadata and pagemap flags. |
-| Kernel/hardware diagnostics | SLAB/SLUB, vmalloc/allocation sites, MGLRU, page owner, kmemleak, hotplug blocks, EDAC, poisoned-page recovery and CMA. |
+| Kernel/hardware diagnostics | SLAB/SLUB, vmalloc/allocation sites, DAMON_STAT, MGLRU, page owner, kmemleak, hotplug blocks, EDAC, poisoned-page recovery and CMA. |
 | Trace parsing | OOM victims, direct reclaim, compaction and migration; WORA supplies the optional live tracefs service. |
 
 The [subsystem/source tables](https://github.com/adamflott/wora/blob/master/docs/memory.md#linux-mm-subsystems)
@@ -63,6 +63,7 @@ Captured cgroup mount paths are used as written.
 | PageTypeInfo | Block/pageblock counts; `>N` is `FreeBlockCount::AtLeast(N)`, an inclusive bound. |
 | SmapsRollup / mappings | Native numeric units; `kB` means KiB. Rollup `bytes()` checks overflow. |
 | AllocationSites | Versions 1.0/2.0; byte/count attribution and accuracy markers. |
+| DamonStats | Existing monitor state, estimated bytes/s, signed idle-time percentiles in ms, aggregation interval in us and worker PID; never enables monitoring. |
 | MemoryFiles / sysctls | Structured integers, flags, units, ranges and policies; relative path/dotted keys. |
 
 Unknown supported numeric keys are retained. Fixed typed fields, filename

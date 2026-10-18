@@ -26,6 +26,8 @@ pub enum LinuxMemoryCollector {
     KernelLeaks,
     /// Memory hotplug inventory, EDAC/DIMM errors, poison recovery and CMA areas.
     MemoryHardware,
+    /// Existing host-wide DAMON_STAT results and monitor state; never enables it.
+    Damon,
 }
 
 /// Explicit selection and cadence for potentially costly memory diagnostics.
@@ -82,6 +84,7 @@ impl LinuxMemoryOptions {
             LinuxMemoryCollector::PageOwner,
             LinuxMemoryCollector::KernelLeaks,
             LinuxMemoryCollector::MemoryHardware,
+            LinuxMemoryCollector::Damon,
         ]
         .into_iter()
         .fold(Self::new(), Self::enable)
@@ -129,6 +132,10 @@ impl LinuxMemoryOptions {
 pub struct LinuxMemoryDiagnostics {
     /// Aggregate source accounting; an exhausted limit marks this batch incomplete.
     pub collection: super::linux_mm::CollectionReport,
+    /// `/sys/module/damon_stat/parameters`: host access-intensity estimate in
+    /// bytes/s, signed idle-time percentiles in ms, interval in us and monitor
+    /// state. Results can be stale when disabled; reads are non-atomic.
+    pub damon: Option<Box<super::linux_mm::DamonStats>>,
     /// Memory blocks from `/sys/devices/system/memory`, EDAC from
     /// `/sys/devices/system/edac/mc`, node `memory_failure` counters and
     /// `/sys/kernel/debug/cma` areas; see [`super::linux_mm::MemoryHardwareStats`].
@@ -233,6 +240,7 @@ impl<R> LinuxMemoryEnvironment<R> {
             let selected = |kind| self.options.collectors.contains(&kind);
             let (mut data, report) = super::linux_mm::collect_with_limits(self.options.limits.collection, || LinuxMemoryDiagnostics {
                 collection: super::linux_mm::CollectionReport::default(),
+                damon: selected(LinuxMemoryCollector::Damon).then(|| Box::new(super::linux_mm::DamonStats::from_sys_root(&self.options.sys_root))),
                 hardware: selected(LinuxMemoryCollector::MemoryHardware)
                     .then(|| Box::new(super::linux_mm::MemoryHardwareStats::from_sys_root(&self.options.sys_root))),
                 page_owner: selected(LinuxMemoryCollector::PageOwner).then(|| {

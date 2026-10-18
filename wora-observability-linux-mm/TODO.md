@@ -5,9 +5,6 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 
 ## Collector coverage
 
-- [ ] **DAMON_STAT:** add a reader and WORA diagnostic selection for existing
-  `damon_stat` module statistics; preserve signed percentiles, intervals and monitor
-  state. Cover 6.17, 6.19 and 7.2 layouts; never enable monitoring. [ABI][damon]
 - [ ] **DMEM:** reuse `src/cgroup.rs` discovery for region-keyed `dmem.*` byte
   usage/capacity/limits; preserve `max`. Gate 7.3-rc7 `dmem.peak` separately. [ABI][dmem]
 - [ ] **NUMA policy:** extend `src/numa.rs` with weighted-interleave node weights
@@ -86,7 +83,6 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 
 Version research checked 2026-10-18. 7.3-rc7 is a development kernel.
 
-[damon]: https://github.com/torvalds/linux/blob/v7.2/Documentation/admin-guide/mm/damon/stat.rst
 [dmem]: https://github.com/torvalds/linux/blob/v7.3-rc7/Documentation/admin-guide/cgroup-v2.rst
 [weights]: https://github.com/torvalds/linux/blob/v6.16/Documentation/ABI/testing/sysfs-kernel-mm-mempolicy-weighted-interleave
 [numaperf]: https://docs.kernel.org/admin-guide/mm/numaperf.html
