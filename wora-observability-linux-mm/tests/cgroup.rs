@@ -11,6 +11,114 @@ fn mount_line(root: &str, directory: &Path) -> String {
 }
 
 #[test]
+fn dmem_uses_existing_discovery_and_keeps_region_scope_bytes_and_unlimited_limits() -> Result<(), Box<dyn std::error::Error>> {
+    use wora_observability_linux_mm::ParsedMemoryValue;
+    let root = tempfile::tempdir()?;
+    let proc = root.path().join("proc");
+    let mount = root.path().join("device memory mount");
+    let current = mount.join("worker");
+    fs::create_dir_all(proc.join("self"))?;
+    fs::create_dir_all(&current)?;
+    fs::write(proc.join("self/cgroup"), "0::/tenant/worker\n")?;
+    fs::write(proc.join("self/mountinfo"), mount_line("/tenant", &mount))?;
+    for (directory, name, text) in [
+        (&current, "dmem.current", "drm/0000:03:00.0/vram0 9007199254740993\ndrm/0000:03:00.0/stolen 0\n"),
+        (&current, "dmem.min", "drm/0000:03:00.0/vram0 4096\n"),
+        (&current, "dmem.low", "drm/0000:03:00.0/vram0 8192\n"),
+        (&current, "dmem.max", "drm/0000:03:00.0/vram0 max\ndrm/0000:03:00.0/stolen 65536\n"),
+        (&mount, "dmem.capacity", "drm/0000:03:00.0/vram0 18446744073709551615\n"),
+        (&mount, "dmem.max", "drm/0000:03:00.0/vram0 1073741824\n"),
+    ] {
+        fs::write(directory.join(name), text)?;
+    }
+    let snapshot = CgroupMemoryStats::from_proc_root(&proc);
+    let group = snapshot.current.as_ref().ok_or("no cgroup")?;
+    assert!(group.unavailable.is_empty());
+    let CgroupMemoryValue::Structured(regions) = &group.parsed["dmem.current"] else {
+        return Err("not a region table".into());
+    };
+    assert_eq!(
+        regions.get("drm/0000:03:00.0/vram0").and_then(ParsedMemoryValue::as_u64),
+        Some(9_007_199_254_740_993)
+    );
+    let CgroupMemoryValue::Structured(regions) = &group.parsed["dmem.max"] else {
+        return Err("not a limit table".into());
+    };
+    assert_eq!(regions.get("drm/0000:03:00.0/vram0"), Some(&ParsedMemoryValue::Text("max".into())));
+    assert!(!group.parsed.contains_key("dmem.capacity"));
+    assert!(!group.parsed.contains_key("dmem.peak"));
+    assert_eq!(snapshot.ancestors.len(), 1);
+    let CgroupMemoryValue::Structured(capacity) = &snapshot.ancestors[0].parsed["dmem.capacity"] else {
+        return Err("no capacity".into());
+    };
+    assert_eq!(capacity.get("drm/0000:03:00.0/vram0").and_then(ParsedMemoryValue::as_u64), Some(u64::MAX));
+    #[cfg(feature = "serde1")]
+    {
+        let json = serde_json::to_value(&snapshot)?;
+        assert_eq!(json["current"]["parsed"]["dmem.max"]["drm/0000:03:00.0/vram0"], "max");
+        assert_eq!(json["ancestors"][0]["parsed"]["dmem.capacity"]["drm/0000:03:00.0/vram0"], u64::MAX);
+    }
+    // Synthetic development ABI: presence is independent of stable DMEM files.
+    fs::write(current.join("dmem.peak"), "drm/0000:03:00.0/vram0 18014398509481985\n")?;
+    let peak = CgroupMemory::from_directory(&current);
+    let CgroupMemoryValue::Structured(regions) = &peak.parsed["dmem.peak"] else {
+        return Err("no peak".into());
+    };
+    assert_eq!(
+        regions.get("drm/0000:03:00.0/vram0").and_then(ParsedMemoryValue::as_u64),
+        Some(18_014_398_509_481_985)
+    );
+    Ok(())
+}
+
+#[test]
+fn dmem_rejects_partial_tables_respects_budgets_and_never_reads_controls() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    use wora_observability_linux_mm::{CollectionLimits, collect_with_limits};
+    let root = tempfile::tempdir()?;
+    fs::write(root.path().join("memory.current"), "123\n")?;
+    for malformed in [
+        "region 1\nregion 2\n",
+        "region -1\n",
+        "region 18446744073709551616\n",
+        "region\n",
+        "region 1 extra\n",
+        "region max\n",
+    ] {
+        fs::write(root.path().join("dmem.current"), malformed)?;
+        let stats = CgroupMemory::from_directory(root.path());
+        assert!(!stats.parsed.contains_key("dmem.current"));
+        assert!(matches!(stats.unavailable.get("dmem.current"), Some(MemoryReadError::ReadFailed(_))));
+        assert!(matches!(stats.parsed["memory.current"], CgroupMemoryValue::Number(123)));
+    }
+    fs::write(root.path().join("dmem.current"), "region 123456789\n")?;
+    let (stats, report) = collect_with_limits(
+        CollectionLimits {
+            input_bytes: 8,
+            file_bytes: 8,
+            line_bytes: 8,
+            ..Default::default()
+        },
+        || CgroupMemory::from_directory(root.path()),
+    )?;
+    assert!(!stats.parsed.contains_key("dmem.current"));
+    assert!(report.limit_exceeded.is_some());
+    fs::write(root.path().join("dmem.reclaim"), [0xff])?;
+    fs::write(root.path().join("dmem.future_control"), [0xff])?;
+    symlink("memory.current", root.path().join("dmem.capacity"))?;
+    fs::write(root.path().join("dmem.min"), "region 0")?;
+    fs::set_permissions(root.path().join("dmem.min"), fs::Permissions::from_mode(0o200))?;
+    let stats = CgroupMemory::from_directory(root.path());
+    assert!(!stats.unavailable.contains_key("dmem.reclaim"));
+    assert!(!stats.unavailable.contains_key("dmem.future_control"));
+    assert_eq!(stats.skipped["dmem.capacity"], MemorySkipReason::NotRegularFile);
+    assert_eq!(stats.skipped["dmem.min"], MemorySkipReason::WriteOnly);
+    fs::write(root.path().join("dmem.current"), "")?;
+    assert!(CgroupMemory::from_directory(root.path()).parsed.contains_key("dmem.current"));
+    Ok(())
+}
+
+#[test]
 fn captures_hugetlb_limits_local_events_and_effective_memory_nodes() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     for (name, value) in [

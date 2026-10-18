@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Features
 
+- Collect DMEM device-region byte usage, root capacity and limits through existing cgroup v2 discovery, preserving `max` and separately detecting optional development-kernel `dmem.peak`.
 - Add opt-in `DamonStats` / `LinuxMemoryCollector::Damon` diagnostics for existing DAMON_STAT state, signed idle percentiles, estimated bytes/s, interval and PID; never enable monitoring. Diagnostic struct literals now need the optional `damon` field.
 - Read zswap compression/decompression failure counters and stored-incompressible page counts; preserve missing-counter errors on older kernels.
 - Add shared Linux collection limits, per-batch and aggregate retained snapshot payload limits, generation admission, and skipped-sample status. Mark budget-exhausted collections explicitly incomplete.

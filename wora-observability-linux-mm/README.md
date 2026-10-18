@@ -11,7 +11,7 @@ Typed Linux memory readers extending `procfs` 0.18. Linux-only; requires Rust
 | Area | Reported subsystems |
 | --- | --- |
 | Host allocation/reclaim | RAM/address maps, VM/cache/writeback counters, buddy blocks, zones/CPU pagesets, migration-type pageblocks, fragmentation, PSI and sysctls. |
-| Accounting/placement | Memory cgroups, OOM events, cpuset nodes, NUMA locality/tiers, THP/mTHP/khugepaged and HugeTLB pools. |
+| Accounting/placement | Memory/DMEM cgroups, OOM events, cpuset nodes, NUMA locality/tiers, THP/mTHP/khugepaged and HugeTLB pools. |
 | Backing/sharing | Swap, zswap, zram, KSM and System V shared memory. |
 | Process/pages | Status/limits/faults/OOM preferences, RSS/PSS rollups, mappings/NUMA policy, physical-frame metadata and pagemap flags. |
 | Kernel/hardware diagnostics | SLAB/SLUB, vmalloc/allocation sites, DAMON_STAT, MGLRU, page owner, kmemleak, hotplug blocks, EDAC, poisoned-page recovery and CMA. |
@@ -64,6 +64,7 @@ Captured cgroup mount paths are used as written.
 | SmapsRollup / mappings | Native numeric units; `kB` means KiB. Rollup `bytes()` checks overflow. |
 | AllocationSites | Versions 1.0/2.0; byte/count attribution and accuracy markers. |
 | DamonStats | Existing monitor state, estimated bytes/s, signed idle-time percentiles in ms, aggregation interval in us and worker PID; never enables monitoring. |
+| CgroupMemory | DMEM region tables retain byte usage/capacity/limits and literal `max`; optional `dmem.peak` follows the 7.3-rc7 development ABI. |
 | MemoryFiles / sysctls | Structured integers, flags, units, ranges and policies; relative path/dotted keys. |
 
 Unknown supported numeric keys are retained. Fixed typed fields, filename

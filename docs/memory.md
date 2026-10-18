@@ -117,7 +117,7 @@ nested values and conversions.
 | `swaps`: swap backing | Device/file inventory, KiB size/usage and signed priorities. | `/proc/swaps` |
 | `slabinfo`: SLAB/SLUB objects | Object/slab counts, byte sizes, page geometry and optional legacy counters. | `/proc/slabinfo` format 2.1 |
 | `sysctls`: VM/kernel policy | VM settings; shared-memory, NUMA and perf settings; selected descriptor/inode/dentry counters. | `/proc/sys/vm/*`, selected `/proc/sys/{kernel,fs}` files |
-| `cgroup`: memcg/cpuset/HugeTLB | v2 usage, limits, stats, pressure, events, swap/zswap, HugeTLB and allowed memory nodes; selected ancestor usage/limits. | Membership/mount discovery in `/proc/self/{cgroup,mountinfo}`, then `memory.*`, `hugetlb.*`, `cpuset.mems{,.effective}` |
+| `cgroup`: memcg/DMEM/cpuset/HugeTLB | v2 usage, limits, stats, pressure, events, swap/zswap, device-region byte usage/capacity/limits, HugeTLB and allowed memory nodes; selected ancestor usage/limits. | Membership/mount discovery in `/proc/self/{cgroup,mountinfo}`, then `memory.*`, selected `dmem.*`, `hugetlb.*`, `cpuset.mems{,.effective}` |
 | `hugepages`: THP/mTHP/HugeTLB | Policies, khugepaged/per-size counters and global/node pools. Counts remain size-specific. | `/sys/kernel/mm/{transparent_hugepage,hugepages}`, `/sys/devices/system/node/node*/hugepages` |
 | `numa`: locality/balancing/tiers | Node memory/VM/locality tables, CPU lists/maps, distances and tier membership. | `/sys/devices/system/node`, `/sys/devices/virtual/memory_tiering` |
 | `compressed`: zswap/zram | Zswap policy, failure counters, stored/incompressible pages and zram device memory/I/O/backing-device statistics. | `/sys/module/zswap/parameters`, `/sys/kernel/debug/zswap`, `/sys/block/zram*` |
@@ -187,6 +187,7 @@ CI follows runner images, not a fixed booted-kernel matrix. Containers use the h
 | Interface | Upstream availability / current parser limit |
 | --- | --- |
 | cgroup v2 memory / cpuset / HugeTLB | 4.5 / 5.0 / 5.6; enabled controllers required; no v1 fallback. [manual][cgroups] |
+| DMEM cgroups | 6.14; controller/device support required. Root capacity and child usage stay separate; limits preserve `max`. `dmem.peak` is presence-gated against the 7.3-rc7 development ABI. [ABI][dmem] |
 | `smaps_rollup` | 4.14; no implicit full-smaps fallback. [source][rollup] |
 | Memory PSI | 4.20; PSI must be enabled. [source][psi] |
 | MGLRU | 6.1; requires `CONFIG_LRU_GEN`, with optional debug statistics. [source][mglru] |
@@ -201,6 +202,7 @@ Other supported layouts still depend on configuration; recent kernels do not
 make page-owner, kmemleak, EDAC or CMA universally available.
 
 [cgroups]: https://man7.org/linux/man-pages/man7/cgroups.7.html
+[dmem]: https://github.com/torvalds/linux/blob/v7.3-rc7/Documentation/admin-guide/cgroup-v2.rst
 [rollup]: https://github.com/torvalds/linux/blob/v4.14/fs/proc/task_mmu.c
 [psi]: https://github.com/torvalds/linux/blob/v4.20/Documentation/accounting/psi.txt
 [mglru]: https://github.com/torvalds/linux/blob/v6.1/Documentation/admin-guide/mm/multigen_lru.rst

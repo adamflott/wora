@@ -30,7 +30,7 @@ pub struct CgroupMemoryStats {
 
 /// Memory files belonging to one explicitly identified cgroup directory.
 ///
-/// Reads selected `memory.*`, `hugetlb.*`, `cpuset.mems` and
+/// Reads selected `memory.*`, `hugetlb.*`, `dmem.*`, `cpuset.mems` and
 /// `cpuset.mems.effective` files under [`Self::directory`]. Discovery normally
 /// selects a mounted cgroup v2 directory via [`CgroupMemoryStats`]; callers can
 /// supply a captured directory instead. `memory.reclaim` is never opened.
@@ -44,6 +44,9 @@ pub struct CgroupMemory {
     /// Sizes retain bytes, counters retain counts, and pressure retains kernel
     /// percentages/microseconds. `memory.events` and `memory.events.local` stay
     /// separate: the former normally includes descendants, the latter does not.
+    /// DMEM tables map opaque device-region names to bytes or literal `max`:
+    /// `current`/`peak` include descendants, `min`/`low`/`max` are local settings,
+    /// and root-only `capacity` is device capacity, not an allocation allowance.
     /// Raw file contents are not retained.
     pub parsed: BTreeMap<String, CgroupMemoryValue>,
     /// Per-file read/parse failures; directory failures use `.`.
@@ -72,7 +75,8 @@ pub enum CgroupMemoryValue {
     Pressure(MemoryPressure),
     /// Literal `max` or a textual setting with no numeric meaning.
     Text(String),
-    /// Structured CPU/node ranges, HugeTLB NUMA counters or future layouts.
+    /// Structured CPU/node ranges, HugeTLB NUMA counters, or DMEM region tables.
+    /// DMEM values are bytes (even with non-system page sizes) or literal `max`.
     Structured(crate::ParsedMemoryValue),
 }
 
@@ -155,7 +159,10 @@ impl CgroupMemoryStats {
 impl CgroupMemory {
     /// Read a specific cgroup directory without discovery or ancestor traversal.
     ///
-    /// Reads regular `memory.*`, `hugetlb.*` and cpuset memory-node files. `memory.reclaim` is never opened.
+    /// Reads regular `memory.*`, `hugetlb.*`, known `dmem.*` and cpuset memory-node files.
+    /// DMEM requires Linux 6.14+ and an enabled controller/device provider;
+    /// development-kernel `dmem.peak` (7.3-rc7 ABI) is read only when present.
+    /// `memory.reclaim` and unknown DMEM files are never opened.
     /// Absent kernel-dependent files are omitted. Each failed read is independent.
     pub fn from_directory(directory: impl AsRef<Path>) -> Self {
         Self::collect(directory.as_ref(), false)
@@ -193,7 +200,7 @@ impl CgroupMemory {
             };
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            if !(name.starts_with("memory.") || name.starts_with("hugetlb.") || matches!(name, "cpuset.mems" | "cpuset.mems.effective"))
+            if !(name.starts_with("memory.") || name.starts_with("hugetlb.") || dmem_file(name) || matches!(name, "cpuset.mems" | "cpuset.mems.effective"))
                 || (limits_only && !ancestor_file(name))
             {
                 continue;
@@ -231,6 +238,9 @@ impl CgroupMemory {
 }
 
 fn ancestor_file(name: &str) -> bool {
+    if dmem_file(name) {
+        return name != "dmem.peak";
+    }
     if matches!(name, "cpuset.mems" | "cpuset.mems.effective") || (name.starts_with("hugetlb.") && (name.ends_with(".max") || name.ends_with(".current"))) {
         return true;
     }
@@ -249,8 +259,29 @@ fn ancestor_file(name: &str) -> bool {
     )
 }
 
+fn dmem_file(name: &str) -> bool {
+    matches!(name, "dmem.current" | "dmem.capacity" | "dmem.min" | "dmem.low" | "dmem.max" | "dmem.peak")
+}
+
 fn parse_value(name: &str, text: &str) -> Result<CgroupMemoryValue, MemoryReadError> {
     match name {
+        name if dmem_file(name) => {
+            let mut regions = BTreeMap::new();
+            for line in text.lines().filter(|line| !line.trim().is_empty()) {
+                let mut fields = line.split_ascii_whitespace();
+                let region = fields.next().ok_or_else(|| invalid("missing DMEM region"))?;
+                let value = fields.next().ok_or_else(|| invalid("missing DMEM byte value"))?;
+                let value = if value == "max" && matches!(name, "dmem.min" | "dmem.low" | "dmem.max") {
+                    crate::ParsedMemoryValue::Text("max".into())
+                } else {
+                    crate::ParsedMemoryValue::Unsigned(unsigned(value)?)
+                };
+                if fields.next().is_some() || regions.insert(region.into(), value).is_some() {
+                    return Err(invalid("malformed or duplicate DMEM region"));
+                }
+            }
+            Ok(CgroupMemoryValue::Structured(crate::ParsedMemoryValue::Map(regions)))
+        }
         "cpuset.mems" | "cpuset.mems.effective" => crate::structured::ranges(text).map(CgroupMemoryValue::Structured),
         name if matches!(
             name,

@@ -5,8 +5,6 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 
 ## Collector coverage
 
-- [ ] **DMEM:** reuse `src/cgroup.rs` discovery for region-keyed `dmem.*` byte
-  usage/capacity/limits; preserve `max`. Gate 7.3-rc7 `dmem.peak` separately. [ABI][dmem]
 - [ ] **NUMA policy:** extend `src/numa.rs` with weighted-interleave node weights
   (6.9) and `auto` mode (6.16), without writing policy. [ABI][weights]
 - [ ] **NUMA topology:** collect access-class latency/bandwidth attributes with
