@@ -3,6 +3,120 @@
 use wora::o11y::linux_mm::{BuddyInfo, Current, FreeBlockCount, Swaps};
 use wora::o11y::{HostStats, LinuxMemoryStats, O11yChannelSink, O11yEventKind, O11ySink, o11y_new_ev_hoststats};
 
+#[test]
+fn routine_tables_are_shared_and_edits_preserve_retained_snapshots() -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::Arc;
+    use wora::events::MemorySnapshot;
+    use wora::o11y::{LinuxMemoryData, o11y_new_ev_hoststats_owned};
+    let mut stats = HostStats {
+        linux_mm: LinuxMemoryData {
+            vmstat: Some(wora::o11y::linux_mm::VmStat(std::collections::HashMap::from([("test".into(), 1)]))),
+            ..Default::default()
+        }
+        .into(),
+        ..Default::default()
+    };
+    let snapshot = MemorySnapshot::from_host_stats(&stats);
+    let event = o11y_new_ev_hoststats_owned::<()>(stats.clone());
+    let O11yEventKind::HostStats(event_stats) = event.kind else {
+        return Err("wrong event".into());
+    };
+    assert!(Arc::ptr_eq(&stats.linux_mm.data, &snapshot.linux_mm.data));
+    assert!(Arc::ptr_eq(&stats.linux_mm.data, &event_stats.linux_mm.data));
+    stats.linux_mm.vmstat.as_mut().ok_or("missing table")?.0.insert("test".into(), 2);
+    assert!(!Arc::ptr_eq(&stats.linux_mm.data, &snapshot.linux_mm.data));
+    assert_eq!(snapshot.linux_mm.vmstat.as_ref().ok_or("missing table")?.0["test"], 1);
+    assert_eq!(event_stats.linux_mm.vmstat.as_ref().ok_or("missing table")?.0["test"], 1);
+    Ok(())
+}
+
+#[test]
+fn routine_generation_admission_skips_and_recovers_after_readers_release_data() -> Result<(), Box<dyn std::error::Error>> {
+    use wora::o11y::{LinuxMemoryLimits, RuntimeEnvironment, SystemRuntimeEnvironment};
+    let provider = SystemRuntimeEnvironment::with_linux_memory_limits(LinuxMemoryLimits {
+        live_snapshots: 3,
+        ..Default::default()
+    })?;
+    let _startup = provider.initial_host()?;
+    let first = provider.refresh_host_stats()?.ok_or("missing first sample")?;
+    let _second = provider.refresh_host_stats()?.ok_or("missing second sample")?;
+    assert!(provider.clone().refresh_host_stats()?.is_none());
+    assert_eq!(provider.memory_sampling_status()?.live_snapshots, 3);
+    assert_eq!(provider.memory_sampling_status()?.skipped_samples, 1);
+    drop(first);
+    assert!(provider.refresh_host_stats()?.is_some());
+    assert!(provider.memory_sampling_status()?.live_snapshots <= 3);
+    Ok(())
+}
+
+#[test]
+fn diagnostic_generation_admission_reuses_stale_data_until_a_slot_is_released() -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::Arc;
+    use wora::o11y::{LinuxMemoryCollector, LinuxMemoryEnvironment, LinuxMemoryLimits, LinuxMemoryOptions, RuntimeEnvironment};
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("self"))?;
+    let smaps = root.path().join("self/smaps");
+    std::fs::write(&smaps, "1000-3000 rw-p 0 00:00 0\nRss: 12 kB\n")?;
+    let options = LinuxMemoryOptions::new()
+        .enable(LinuxMemoryCollector::ProcessMappings)
+        .with_roots(root.path(), root.path())
+        .with_interval(std::time::Duration::from_nanos(1))
+        .with_memory_limits(LinuxMemoryLimits {
+            live_snapshots: 3,
+            ..Default::default()
+        });
+    let provider = LinuxMemoryEnvironment::new(CapturedEnvironment, options)?;
+    let _startup = provider.initial_host()?;
+    let first = provider.refresh_host_stats()?.ok_or("missing first sample")?;
+    let second = provider.refresh_host_stats()?.ok_or("missing second sample")?;
+    std::fs::write(&smaps, "malformed")?;
+    let stale = provider.clone().refresh_host_stats()?.ok_or("missing stale sample")?;
+    assert!(Arc::ptr_eq(
+        second.linux_mm.diagnostics.as_ref().ok_or("missing batch")?,
+        stale.linux_mm.diagnostics.as_ref().ok_or("missing batch")?
+    ));
+    assert_eq!(provider.diagnostic_sampling_status()?.live_snapshots, 3);
+    assert_eq!(provider.diagnostic_sampling_status()?.skipped_samples, 1);
+    drop(first);
+    let fresh = provider.refresh_host_stats()?.ok_or("missing recovered sample")?;
+    assert!(!Arc::ptr_eq(
+        stale.linux_mm.diagnostics.as_ref().ok_or("missing batch")?,
+        fresh.linux_mm.diagnostics.as_ref().ok_or("missing batch")?
+    ));
+    assert!(
+        fresh
+            .linux_mm
+            .diagnostics
+            .as_ref()
+            .ok_or("missing batch")?
+            .process_mappings
+            .as_ref()
+            .ok_or("missing mappings")?
+            .mappings
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
+fn invalid_and_oversized_snapshot_budgets_fail_explicitly() -> Result<(), Box<dyn std::error::Error>> {
+    use wora::o11y::{LinuxMemoryLimits, RuntimeEnvironment, SystemRuntimeEnvironment};
+    assert!(
+        SystemRuntimeEnvironment::with_linux_memory_limits(LinuxMemoryLimits {
+            snapshot_bytes: 0,
+            ..Default::default()
+        })
+        .is_err()
+    );
+    let provider = SystemRuntimeEnvironment::with_linux_memory_limits(LinuxMemoryLimits {
+        snapshot_bytes: 1,
+        ..Default::default()
+    })?;
+    assert!(provider.initial_host().is_err());
+    assert_eq!(provider.memory_sampling_status()?.live_snapshots, 0);
+    Ok(())
+}
+
 #[derive(Clone)]
 struct CapturedEnvironment;
 
@@ -333,7 +447,7 @@ fn missing_or_malformed_sources_do_not_discard_other_metrics() -> Result<(), Box
     assert!(snapshot.zoneinfo.is_none());
     assert!(snapshot.slabinfo.is_none());
     assert!(snapshot.pagetypeinfo.is_none());
-    assert!(snapshot.swaps.ok_or("valid empty swap table missing")?.entries.is_empty());
+    assert!(snapshot.swaps.as_ref().ok_or("valid empty swap table missing")?.entries.is_empty());
 
     // A later failed read must not retain an earlier successful snapshot.
     std::fs::remove_file(root.path().join("swaps"))?;

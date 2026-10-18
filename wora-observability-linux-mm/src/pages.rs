@@ -166,12 +166,19 @@ impl PageMapEntry {
 pub fn read_page_entries(path: impl AsRef<Path>, range: PageRange) -> io::Result<Vec<u64>> {
     range.validate()?;
     let path = path.as_ref();
+    crate::budget::charge_file()?;
+    crate::budget::check_path(path)?;
+    let byte_count = range.count as usize * 8;
+    if byte_count > crate::budget::file_limit(byte_count) {
+        return Err(crate::budget::exceeded(crate::CollectionLimit::FileBytes));
+    }
+    crate::budget::charge_bytes(byte_count)?;
     if !std::fs::symlink_metadata(path)?.is_file() {
         return Err(io::Error::other("expected a regular page information file"));
     }
     let mut file = File::open(path)?;
     file.seek(SeekFrom::Start(range.start * 8))?;
-    let mut bytes = vec![0; range.count as usize * 8];
+    let mut bytes = vec![0; byte_count];
     file.read_exact(&mut bytes)?;
     Ok(bytes
         .chunks_exact(8)

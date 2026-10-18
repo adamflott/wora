@@ -36,8 +36,8 @@ pub struct MemorySnapshot {
 impl MemorySnapshot {
     /// Build a timestamped memory snapshot from a host statistics sample.
     ///
-    /// Linux diagnostic batches are shared with the host sample; other memory
-    /// statistics are copied into the new snapshot.
+    /// Linux routine tables and diagnostic batches are shared with the host
+    /// sample. Portable memory/swap values are copied into the new snapshot.
     pub fn from_host_stats(stats: &HostStats) -> Self {
         Self {
             timestamp: chrono::Utc::now(),

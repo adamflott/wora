@@ -19,6 +19,24 @@ and its dependencies are enabled only on Linux. Single-file parsers use
 `procfs-core`, and their live readers implement procfs's `Current` trait.
 Reads are synchronous. Rust 1.95 or newer is required.
 
+`collect_with_limits(CollectionLimits { .. }, || ...)` applies a shared budget to
+the built-in filesystem collectors on the current thread. Defaults admit 16 MiB
+across sources, 4 MiB per file, 64 KiB per line, 65,536 directory entries, 65,536 source attempts (including failures),
+4,096-byte paths and 64 cgroup ancestors. The returned `CollectionReport` records
+admitted bytes/entries/source attempts and the first exhausted limit; a report with
+`limit_exceeded` contains incomplete data. Individual file failures remain in
+their existing error maps. Limits are validated before invoking the closure,
+nested scopes are rejected, and the scope is restored on unwind.
+
+Use `read_source::<T>(path)` inside the scope for types implementing procfs's
+`FromRead`. Direct calls to procfs's `Current`/`FromRead` implementations and
+parsers of caller-provided strings do not acquire this I/O budget automatically.
+EOF checks can read one additional byte per source; oversized prefixes are never
+parsed. Source/entry limits bound input and parser work, not exact Rust heap
+capacity or RSS. WORA separately limits published payload bytes and retained
+snapshot generations. Cgroup discovery retains one best mount candidate and
+marks incomplete ancestor visibility explicitly; it remains read-only.
+
 File snapshots expose a `parsed` map without retaining raw source contents.
 This includes process KSM counters/yes-no flags, numeric sysctl scalars
 and arrays, named filesystem vectors, NUMA counter/memory tables, CPU/node ranges

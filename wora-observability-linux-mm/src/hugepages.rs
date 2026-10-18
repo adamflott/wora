@@ -60,7 +60,17 @@ impl HugePageStats {
                 return snapshot;
             }
         };
-        for entry in nodes {
+        for (index, entry) in nodes.enumerate() {
+            if let Err(error) = crate::budget::charge_entry().and_then(|()| {
+                if index >= 4096 {
+                    Err(crate::budget::exceeded(crate::CollectionLimit::Entries))
+                } else {
+                    Ok(())
+                }
+            }) {
+                snapshot.unavailable.insert("devices/system/node".into(), error.into());
+                break;
+            }
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(error) => {
@@ -118,7 +128,17 @@ impl HugePageFiles {
                 return;
             }
         };
-        for entry in entries {
+        for (index, entry) in entries.enumerate() {
+            if let Err(error) = crate::budget::charge_entry().and_then(|()| {
+                if index >= 4096 {
+                    Err(crate::budget::exceeded(crate::CollectionLimit::Entries))
+                } else {
+                    Ok(())
+                }
+            }) {
+                self.unavailable.insert(key.clone(), error.into());
+                break;
+            }
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(error) => {
@@ -154,9 +174,12 @@ impl HugePageFiles {
                 self.skipped.insert(field, MemorySkipReason::WriteOnly);
                 continue;
             }
-            let result = fs::read_to_string(entry.path()).map_err(MemoryReadError::from).and_then(|text| {
-                crate::parse_memory_file(root.join(&path), &text)?.ok_or_else(|| MemoryReadError::ReadFailed("unsupported hugepage-information layout".into()))
-            });
+            let result = crate::files::read_text(&entry.path(), 4 * 1024 * 1024)
+                .map_err(MemoryReadError::from)
+                .and_then(|text| {
+                    crate::parse_memory_file(root.join(&path), &text)?
+                        .ok_or_else(|| MemoryReadError::ReadFailed("unsupported hugepage-information layout".into()))
+                });
             match result {
                 Ok(value) => {
                     self.parsed.insert(field, value);

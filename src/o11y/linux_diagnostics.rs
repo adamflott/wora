@@ -31,6 +31,8 @@ pub enum LinuxMemoryCollector {
 /// Explicit selection and cadence for potentially costly memory diagnostics.
 #[derive(Clone, Debug)]
 pub struct LinuxMemoryOptions {
+    /// Aggregate collection limits and maximum retained diagnostic generations.
+    pub limits: super::LinuxMemoryLimits,
     /// Per-file page-owner/kmemleak dump bound, 1..=64 MiB (default 4 MiB).
     pub provenance_byte_limit: u64,
     /// Optional physical PFN range; required to collect kpage arrays.
@@ -50,6 +52,7 @@ pub struct LinuxMemoryOptions {
 impl Default for LinuxMemoryOptions {
     fn default() -> Self {
         Self {
+            limits: super::LinuxMemoryLimits::default(),
             provenance_byte_limit: 4 * 1024 * 1024,
             physical_pages: None,
             virtual_pages: None,
@@ -62,6 +65,11 @@ impl Default for LinuxMemoryOptions {
 }
 
 impl LinuxMemoryOptions {
+    /// Set aggregate collection limits and live diagnostic generation admission.
+    pub fn with_memory_limits(mut self, limits: super::LinuxMemoryLimits) -> Self {
+        self.limits = limits;
+        self
+    }
     /// Explicitly enable every snapshot diagnostic except range-based page scans.
     /// Includes costly page-owner and kmemleak reads. Event tracing is separate.
     pub fn all_snapshots() -> Self {
@@ -115,6 +123,8 @@ impl LinuxMemoryOptions {
 /// Diagnostic data with its own timestamp; may be older than the host snapshot.
 #[derive(Clone, Debug, Serialize)]
 pub struct LinuxMemoryDiagnostics {
+    /// Aggregate source accounting; an exhausted limit marks this batch incomplete.
+    pub collection: super::linux_mm::CollectionReport,
     /// Memory blocks, hardware errors and reserved contiguous allocation areas.
     pub hardware: Option<Box<super::linux_mm::MemoryHardwareStats>>,
     /// Existing page allocation provenance, without changing tracking/filter state.
@@ -149,12 +159,24 @@ pub struct LinuxMemoryDiagnostics {
 pub struct LinuxMemoryEnvironment<R> {
     inner: R,
     options: LinuxMemoryOptions,
-    cache: Arc<Mutex<Option<(Instant, Arc<LinuxMemoryDiagnostics>)>>>,
+    cache: Arc<Mutex<DiagnosticCache>>,
+}
+
+#[derive(Debug, Default)]
+struct DiagnosticCache {
+    sample: Option<(Instant, Arc<LinuxMemoryDiagnostics>)>,
+    generations: super::generations::Generations<LinuxMemoryDiagnostics>,
 }
 
 impl<R> LinuxMemoryEnvironment<R> {
     /// Validate options and wrap a telemetry provider without performing I/O.
     pub fn new(inner: R, options: LinuxMemoryOptions) -> Result<Self, O11yError> {
+        options.limits.validate().map_err(|error| O11yError::RuntimeEnvironment(error.to_string()))?;
+        if options.proc_root.as_os_str().len() > options.limits.collection.path_bytes
+            || options.sys_root.as_os_str().len() > options.limits.collection.path_bytes
+        {
+            return Err(O11yError::RuntimeEnvironment("memory source roots exceed path byte limit".into()));
+        }
         if !(1..=64 * 1024 * 1024).contains(&options.provenance_byte_limit) {
             return Err(O11yError::RuntimeEnvironment("provenance byte limit must be 1..=64 MiB".into()));
         }
@@ -174,8 +196,17 @@ impl<R> LinuxMemoryEnvironment<R> {
         Ok(Self {
             inner,
             options,
-            cache: Arc::new(Mutex::new(None)),
+            cache: Arc::new(Mutex::new(DiagnosticCache::default())),
         })
+    }
+
+    /// Inspect diagnostic generations and refreshes skipped due to retained batches.
+    /// A skipped refresh reuses the previous batch and its original timestamp.
+    pub fn diagnostic_sampling_status(&self) -> Result<super::MemorySamplingStatus, O11yError> {
+        self.cache
+            .lock()
+            .map(|cache| cache.generations.status())
+            .map_err(|_| O11yError::RuntimeEnvironment("Linux memory diagnostic cache poisoned".into()))
     }
 
     fn decorate(&self, stats: &mut HostStats) -> Result<(), O11yError> {
@@ -186,9 +217,10 @@ impl<R> LinuxMemoryEnvironment<R> {
             .cache
             .lock()
             .map_err(|_| O11yError::RuntimeEnvironment("Linux memory diagnostic cache poisoned".into()))?;
-        if cache.as_ref().is_none_or(|(time, _)| time.elapsed() >= self.options.interval) {
+        if cache.sample.as_ref().is_none_or(|(time, _)| time.elapsed() >= self.options.interval) && cache.generations.admit(self.options.limits) {
             let selected = |kind| self.options.collectors.contains(&kind);
-            let data = LinuxMemoryDiagnostics {
+            let (mut data, report) = super::linux_mm::collect_with_limits(self.options.limits.collection, || LinuxMemoryDiagnostics {
+                collection: super::linux_mm::CollectionReport::default(),
                 hardware: selected(LinuxMemoryCollector::MemoryHardware)
                     .then(|| Box::new(super::linux_mm::MemoryHardwareStats::from_sys_root(&self.options.sys_root))),
                 page_owner: selected(LinuxMemoryCollector::PageOwner).then(|| {
@@ -231,10 +263,15 @@ impl<R> LinuxMemoryEnvironment<R> {
                         self.options.proc_root.join("self"),
                     ))
                 }),
-            };
-            *cache = Some((Instant::now(), Arc::new(data)));
+            })
+            .map_err(|error| O11yError::RuntimeEnvironment(error.to_string()))?;
+            data.collection = report;
+            let bytes = super::generations::snapshot_size(&data, self.options.limits.snapshot_bytes)?;
+            let data = Arc::new(data);
+            cache.generations.track(&data, bytes);
+            cache.sample = Some((Instant::now(), data));
         }
-        stats.linux_mm.diagnostics = cache.as_ref().map(|(_, data)| Arc::clone(data));
+        stats.linux_mm.diagnostics = cache.sample.as_ref().map(|(_, data)| Arc::clone(data));
         Ok(())
     }
 }

@@ -86,50 +86,53 @@ impl CgroupMemoryStats {
     }
 
     fn collect(&mut self, root: &Path) -> Result<(), (&'static str, MemoryReadError)> {
-        let membership = fs::read_to_string(root.join("self/cgroup")).map_err(|error| ("self/cgroup", error.into()))?;
+        let membership = crate::files::read_text(&root.join("self/cgroup"), 4 * 1024 * 1024).map_err(|error| ("self/cgroup", error.into()))?;
         let mut paths = membership.lines().filter_map(|line| line.strip_prefix("0::"));
         let path = paths.next().ok_or_else(|| ("self/cgroup", invalid("no cgroup v2 membership")))?;
         if paths.next().is_some() || path.ends_with(" (deleted)") {
             return Err(("self/cgroup", invalid("ambiguous or deleted cgroup membership")));
         }
+        crate::budget::check_path(Path::new(path)).map_err(|error| ("self/cgroup", error.into()))?;
         let path = PathBuf::from(path);
         validate_path(&path).map_err(|error| ("self/cgroup", error))?;
         self.membership = Some(path.clone());
-        let mountinfo = fs::read_to_string(root.join("self/mountinfo")).map_err(|error| ("self/mountinfo", error.into()))?;
-        let mut mounts = Vec::new();
+        let mountinfo = crate::files::read_text(&root.join("self/mountinfo"), 4 * 1024 * 1024).map_err(|error| ("self/mountinfo", error.into()))?;
+        let mut best: Option<(PathBuf, PathBuf, PathBuf)> = None;
         for line in mountinfo.lines() {
             let Some((fields, filesystem)) = line.split_once(" - ") else { continue };
             if filesystem.split_ascii_whitespace().next() != Some("cgroup2") {
                 continue;
             }
-            let fields: Vec<_> = fields.split_ascii_whitespace().collect();
-            if fields.len() < 6 {
+            let mut fields = fields.split_ascii_whitespace();
+            let root = fields.nth(3).ok_or_else(|| ("self/mountinfo", invalid("incomplete cgroup2 mount")))?;
+            let point = fields.next().ok_or_else(|| ("self/mountinfo", invalid("incomplete cgroup2 mount")))?;
+            if fields.next().is_none() {
                 return Err(("self/mountinfo", invalid("incomplete cgroup2 mount")));
             }
-            let mount_root = decode_path(fields[3]).map_err(|error| ("self/mountinfo", error))?;
-            let mount_point = decode_path(fields[4]).map_err(|error| ("self/mountinfo", error))?;
+            let mount_root = decode_path(root).map_err(|error| ("self/mountinfo", error))?;
+            let mount_point = decode_path(point).map_err(|error| ("self/mountinfo", error))?;
             if let Ok(relative) = path.strip_prefix(&mount_root) {
-                mounts.push((mount_root.clone(), mount_point.clone(), mount_point.join(relative)));
+                let replace = best.as_ref().is_none_or(|(previous_root, previous_point, _)| {
+                    mount_root.components().count() > previous_root.components().count()
+                        || (mount_root.components().count() == previous_root.components().count() && mount_point < *previous_point)
+                });
+                if replace {
+                    let directory = mount_point.join(relative);
+                    crate::budget::check_path(&directory).map_err(|e| ("self/mountinfo", e.into()))?;
+                    best = Some((mount_root, mount_point, directory));
+                }
             }
         }
         // Prefer a mount rooted closest to this cgroup. Ties are deterministic.
-        mounts.sort_by(|left, right| {
-            right
-                .0
-                .components()
-                .count()
-                .cmp(&left.0.components().count())
-                .then_with(|| left.1.cmp(&right.1))
-        });
-        let (mount_root, mount_point, directory) = mounts
-            .into_iter()
-            .next()
-            .ok_or_else(|| ("cgroup2", invalid("no matching visible cgroup2 mount")))?;
+        let (mount_root, mount_point, directory) = best.ok_or_else(|| ("cgroup2", invalid("no matching visible cgroup2 mount")))?;
         self.mount_point = Some(mount_point.clone());
         self.mount_root = Some(mount_root);
         self.current = Some(CgroupMemory::from_directory(&directory));
         let mut parent = directory;
         while parent != mount_point {
+            if self.ancestors.len() >= crate::budget::limits().ancestors {
+                return Err(("cgroup2", crate::budget::exceeded(crate::CollectionLimit::Ancestors).into()));
+            }
             if !parent.pop() || !parent.starts_with(&mount_point) {
                 break;
             }
@@ -153,14 +156,24 @@ impl CgroupMemory {
             directory: directory.into(),
             ..Self::default()
         };
-        let entries = match fs::read_dir(directory) {
+        let entries = match crate::budget::check_path(directory).and_then(|()| fs::read_dir(directory)) {
             Ok(entries) => entries,
             Err(error) => {
                 snapshot.unavailable.insert(".".into(), error.into());
                 return snapshot;
             }
         };
-        for entry in entries {
+        for (index, entry) in entries.enumerate() {
+            if let Err(error) = crate::budget::charge_entry().and_then(|()| {
+                if index >= 4096 {
+                    Err(crate::budget::exceeded(crate::CollectionLimit::Entries))
+                } else {
+                    Ok(())
+                }
+            }) {
+                snapshot.unavailable.insert(".".into(), error.into());
+                break;
+            }
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(error) => {
@@ -190,7 +203,7 @@ impl CgroupMemory {
                     snapshot.skipped.insert(name.into(), MemorySkipReason::WriteOnly);
                     return Ok(None);
                 }
-                let text = fs::read_to_string(entry.path())?;
+                let text = crate::files::read_text(&entry.path(), 4 * 1024 * 1024)?;
                 parse_value(name, &text).map(Some)
             })();
             match result {
@@ -236,8 +249,10 @@ fn parse_value(name: &str, text: &str) -> Result<CgroupMemoryValue, MemoryReadEr
         {
             let mut values = BTreeMap::new();
             for line in text.lines().filter(|line| !line.trim().is_empty()) {
-                let fields: Vec<_> = line.split_ascii_whitespace().collect();
-                if fields.len() != 2 || values.insert(fields[0].into(), unsigned(fields[1])?).is_some() {
+                let mut fields = line.split_ascii_whitespace();
+                let key = fields.next().ok_or_else(|| invalid("missing memory counter"))?;
+                let value = fields.next().ok_or_else(|| invalid("missing memory counter value"))?;
+                if fields.next().is_some() || values.insert(key.into(), unsigned(value)?).is_some() {
                     return Err(invalid("malformed or duplicate memory counter"));
                 }
             }
@@ -301,6 +316,7 @@ fn invalid(message: impl Into<String>) -> MemoryReadError {
 }
 
 fn validate_path(path: &Path) -> Result<(), MemoryReadError> {
+    crate::budget::check_path(path)?;
     if !path.is_absolute() || path.components().any(|part| matches!(part, Component::ParentDir | Component::CurDir)) {
         return Err(invalid("cgroup paths must be absolute without parent traversal"));
     }
@@ -311,6 +327,9 @@ fn decode_path(value: &str) -> Result<PathBuf, MemoryReadError> {
     let mut decoded = Vec::new();
     let mut bytes = value.bytes();
     while let Some(byte) = bytes.next() {
+        if decoded.len() >= crate::budget::limits().path_bytes {
+            return Err(crate::budget::exceeded(crate::CollectionLimit::PathBytes).into());
+        }
         if byte == b'\\' {
             let mut value = 0_u16;
             for _ in 0..3 {

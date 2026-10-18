@@ -57,6 +57,7 @@ use crate::{App, EventLoopAction, NoConfig, NoSecrets, ReadinessState, RunnerOpt
 /// }
 /// ```
 pub struct MemoryReporter<W = Stdout> {
+    output_byte_limit: usize,
     #[cfg(target_os = "linux")]
     trace: Option<crate::o11y::LinuxMemoryTraceOptions>,
     #[cfg(target_os = "linux")]
@@ -69,6 +70,7 @@ pub struct MemoryReporter<W = Stdout> {
 impl Default for MemoryReporter {
     fn default() -> Self {
         Self {
+            output_byte_limit: 8 * 1024 * 1024,
             #[cfg(target_os = "linux")]
             trace: None,
             #[cfg(target_os = "linux")]
@@ -88,6 +90,26 @@ impl MemoryReporter {
 }
 
 impl<W> MemoryReporter<W> {
+    /// Set collection and retained-generation limits for Linux memory reporting.
+    /// Applies to diagnostics and, with [`Self::run`], the default routine sampler.
+    /// With [`Self::run_with`], configure the caller's telemetry provider separately.
+    #[cfg(target_os = "linux")]
+    pub fn with_linux_memory_limits(mut self, limits: crate::o11y::LinuxMemoryLimits) -> Self {
+        self.diagnostics.limits = limits;
+        self
+    }
+
+    /// Limit each JSON record, including its newline, to this many bytes.
+    ///
+    /// Defaults to 8 MiB. Zero is rejected before starting the runner. A record
+    /// that exceeds the limit fails the sink without writing a partial record.
+    /// The sink reuses one buffer whose requested capacity stays within this
+    /// limit; writer-owned buffering is outside this limit.
+    pub fn with_output_byte_limit(mut self, limit: usize) -> Self {
+        self.output_byte_limit = limit;
+        self
+    }
+
     /// Enable runner-owned tracefs memory events as additional JSON-line records.
     /// Creates/configures only a private tracefs instance, requiring privileges.
     #[cfg(target_os = "linux")]
@@ -126,6 +148,7 @@ impl<W> MemoryReporter<W> {
     /// report, so output does not wait for the periodic pipeline flush.
     pub fn with_writer<NewW>(self, writer: NewW) -> MemoryReporter<NewW> {
         MemoryReporter {
+            output_byte_limit: self.output_byte_limit,
             #[cfg(target_os = "linux")]
             trace: self.trace,
             #[cfg(target_os = "linux")]
@@ -143,7 +166,13 @@ impl<W: AsyncWrite + Unpin + Send + 'static> MemoryReporter<W> {
     pub async fn run(self) -> Result<(), MainEarlyReturn> {
         let fs = PhysicalVFS::new();
         let exec = UnixLikeUser::new(self.name, fs.clone()).await?;
-        self.run_with(exec, fs, RunnerOptions::new()).await
+        #[cfg(target_os = "linux")]
+        let options = RunnerOptions::new().with_runtime_environment(
+            crate::o11y::SystemRuntimeEnvironment::with_linux_memory_limits(self.diagnostics.limits).map_err(|error| WoraSetupError::Str(error.to_string()))?,
+        );
+        #[cfg(not(target_os = "linux"))]
+        let options = RunnerOptions::new();
+        self.run_with(exec, fs, options).await
     }
 
     /// Run with a caller-supplied executor, filesystem, and runner options.
@@ -160,6 +189,9 @@ impl<W: AsyncWrite + Unpin + Send + 'static> MemoryReporter<W> {
         fs: impl WFS + 'static,
         options: RunnerOptions<(), L, R>,
     ) -> Result<(), MainEarlyReturn> {
+        if self.output_byte_limit == 0 {
+            return Err(WoraSetupError::Str("memory report output byte limit must be nonzero".into()).into());
+        }
         #[cfg(target_os = "linux")]
         let options = {
             let environment = crate::o11y::LinuxMemoryEnvironment::new(options.runtime_environment.clone(), self.diagnostics)
@@ -169,7 +201,7 @@ impl<W: AsyncWrite + Unpin + Send + 'static> MemoryReporter<W> {
         let pipeline = O11yPipeline::builder()
             .host_stats_interval(self.interval)
             .failure_policy(O11yFailurePolicy::FailFast)
-            .sink("memory-report", MemoryReportSink { writer: self.writer })
+            .sink("memory-report", MemoryReportSink::new(self.writer, self.output_byte_limit))
             .build()
             .map_err(|error| WoraSetupError::Str(error.to_string()))?;
         #[cfg(target_os = "linux")]
@@ -185,6 +217,57 @@ impl<W: AsyncWrite + Unpin + Send + 'static> MemoryReporter<W> {
 
 struct MemoryReportSink<W> {
     writer: W,
+    buffer: ReportBuffer,
+}
+
+impl<W> MemoryReportSink<W> {
+    fn new(writer: W, limit: usize) -> Self {
+        Self {
+            writer,
+            buffer: ReportBuffer { bytes: Vec::new(), limit },
+        }
+    }
+}
+
+struct ReportBuffer {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl std::io::Write for ReportBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let required = self
+            .bytes
+            .len()
+            .checked_add(bytes.len())
+            .filter(|required| *required <= self.limit)
+            .ok_or_else(|| std::io::Error::other("memory report exceeds output byte limit"))?;
+        if required > self.bytes.capacity() {
+            let capacity = required.max(self.bytes.capacity().saturating_mul(2)).min(self.limit);
+            self.bytes.try_reserve_exact(capacity - self.bytes.len()).map_err(std::io::Error::other)?;
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl ReportBuffer {
+    fn serialize(&mut self, value: &impl Serialize) -> Result<(), O11ySinkError> {
+        self.bytes.clear();
+        let result = (|| {
+            serde_json::to_writer(&mut *self, value)?;
+            std::io::Write::write_all(self, b"\n")?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.bytes.clear();
+        }
+        result
+    }
 }
 
 // Borrow the memory fields so reporting does not construct another owned
@@ -210,12 +293,11 @@ impl<W: AsyncWrite + Unpin + Send> O11ySink<()> for MemoryReportSink<W> {
     async fn handle_event(&mut self, event: &O11yEvent<()>) -> Result<(), O11ySinkError> {
         #[cfg(target_os = "linux")]
         if let O11yEventKind::MemoryTrace(record) = &event.kind {
-            let mut line = serde_json::to_vec(&MemoryTraceReport {
+            self.buffer.serialize(&MemoryTraceReport {
                 timestamp: &event.timestamp,
                 memory_trace: record,
             })?;
-            line.push(b'\n');
-            self.writer.write_all(&line).await?;
+            self.writer.write_all(&self.buffer.bytes).await?;
             self.writer.flush().await?;
             return Ok(());
         }
@@ -227,9 +309,8 @@ impl<W: AsyncWrite + Unpin + Send> O11ySink<()> for MemoryReportSink<W> {
                 #[cfg(target_os = "linux")]
                 linux_mm: &stats.linux_mm,
             };
-            let mut line = serde_json::to_vec(&snapshot)?;
-            line.push(b'\n');
-            self.writer.write_all(&line).await?;
+            self.buffer.serialize(&snapshot)?;
+            self.writer.write_all(&self.buffer.bytes).await?;
             self.writer.flush().await?;
         }
         Ok(())
@@ -301,12 +382,50 @@ mod tests {
     use crate::events::MemorySnapshot;
     use crate::o11y::{HostStats, MemStats, SwapStats, o11y_new_ev_finish};
 
+    #[tokio::test]
+    async fn report_limit_includes_newline_and_never_writes_a_partial_record() -> Result<(), Box<dyn std::error::Error>> {
+        let event = o11y_new_ev_hoststats::<()>(&HostStats::default());
+        let mut reference = MemoryReportSink::new(Vec::new(), 64 * 1024);
+        reference.handle_event(&event).await?;
+        let size = reference.writer.len();
+
+        let mut exact = MemoryReportSink::new(Vec::new(), size);
+        exact.handle_event(&event).await?;
+        assert_eq!(exact.writer, reference.writer);
+        let allocation = exact.buffer.bytes.as_ptr();
+        let capacity = exact.buffer.bytes.capacity();
+        for _ in 0..20 {
+            exact.handle_event(&event).await?;
+        }
+        assert_eq!(exact.buffer.bytes.as_ptr(), allocation);
+        assert_eq!(exact.buffer.bytes.capacity(), capacity);
+        assert!(capacity <= size);
+
+        let mut short = MemoryReportSink::new(Vec::new(), size - 1);
+        assert!(short.handle_event(&event).await.is_err());
+        assert!(short.writer.is_empty());
+        assert!(short.buffer.bytes.is_empty());
+        assert!(short.buffer.bytes.capacity() < size);
+        Ok(())
+    }
+
+    #[test]
+    fn report_buffer_accounts_for_json_escaping_and_recovers_after_overflow() -> Result<(), Box<dyn std::error::Error>> {
+        let mut buffer = ReportBuffer { bytes: Vec::new(), limit: 9 };
+        buffer.serialize(&"\0")?;
+        assert_eq!(buffer.bytes, b"\"\\u0000\"\n");
+        assert!(buffer.serialize(&"\0\0").is_err());
+        assert!(buffer.bytes.is_empty());
+        buffer.serialize(&1)?;
+        assert_eq!(buffer.bytes, b"1\n");
+        assert!(buffer.bytes.capacity() <= 9);
+        Ok(())
+    }
+
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn trace_records_are_flushed_as_distinct_json_lines() -> Result<(), Box<dyn std::error::Error>> {
-        let mut sink = MemoryReportSink {
-            writer: BufWriter::new(Vec::new()),
-        };
+        let mut sink = MemoryReportSink::new(BufWriter::new(Vec::new()), 8 * 1024 * 1024);
         sink.handle_event(&O11yEvent {
             timestamp: chrono::Utc::now(),
             kind: O11yEventKind::MemoryTrace(Box::new(crate::o11y::linux_mm::MemoryTraceRecord::Lost {
@@ -323,9 +442,7 @@ mod tests {
 
     #[tokio::test]
     async fn reports_only_memory_and_flushes_each_json_line() -> Result<(), Box<dyn std::error::Error>> {
-        let mut sink = MemoryReportSink {
-            writer: BufWriter::new(Vec::new()),
-        };
+        let mut sink = MemoryReportSink::new(BufWriter::new(Vec::new()), 8 * 1024 * 1024);
         sink.handle_event(&o11y_new_ev_finish()).await?;
         assert!(sink.writer.get_ref().is_empty());
 
@@ -367,14 +484,14 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn linux_reports_preserve_nested_values_and_source_units() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::o11y::LinuxMemoryStats;
+        use crate::o11y::LinuxMemoryData;
         use crate::o11y::linux_mm::{
             BuddyInfo, CgroupMemory, CgroupMemoryStats, CgroupMemoryValue, FromRead, HugePageFiles, HugePageStats, MemorySysctls, PageTypeInfo,
             ParsedMemoryValue, ProcessMemoryStats, SlabInfo, SmapsRollup, Swaps, SysctlReadError, SysctlSkipReason, VmStat, ZoneInfo,
         };
 
         let stats = HostStats {
-            linux_mm: LinuxMemoryStats {
+            linux_mm: LinuxMemoryData {
                 buddyinfo: Some(BuddyInfo::from_read(
                     include_bytes!("../wora-observability-linux-mm/tests/fixtures/arm64-buddyinfo").as_slice(),
                 )?),
@@ -425,11 +542,12 @@ mod tests {
                     )?),
                     ..ProcessMemoryStats::default()
                 }),
-                ..LinuxMemoryStats::default()
-            },
+                ..LinuxMemoryData::default()
+            }
+            .into(),
             ..HostStats::default()
         };
-        let mut sink = MemoryReportSink { writer: Vec::new() };
+        let mut sink = MemoryReportSink::new(Vec::new(), 8 * 1024 * 1024);
         let event = o11y_new_ev_hoststats(&stats);
         sink.handle_event(&event).await?;
         let report: serde_json::Value = serde_json::from_slice(&sink.writer)?;

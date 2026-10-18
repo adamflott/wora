@@ -17,18 +17,18 @@ follow the same resource limits.
 
 Current gaps identified by code inspection:
 
-- `wora-observability-linux-mm/src/cgroup.rs` reads whole files and retains
-  variable-sized mount candidates, ancestor snapshots, and counter/NUMA maps.
-- `SystemRuntimeEnvironment` and `Host` in `src/o11y.rs` use
-  `System::new_all()` and broad refreshes, collecting system-wide process data.
-  `HostInfo` also collects variable-sized network tables.
-- `MemorySnapshot::from_host_stats`, host-stat observability events, and
-  `LinuxMemoryEnvironment` deep-clone detailed memory data. Old and replacement
-  snapshots, diagnostic caches, and serialization buffers can overlap.
+- Cgroup files now use bounded readers and shared collection budgets, with one
+  retained mount candidate and capped ancestors. Streaming discovery and exact
+  allocation/container-overhead accounting remain open.
+- System sampling now targets host metrics and the daemon PID, but `HostInfo`
+  still collects variable-sized network tables outside the Linux memory budget.
+- Routine Linux tables and diagnostic batches are shared with `Arc`, with limits
+  on live generations and encoded payload bytes. Input/payload byte accounting
+  does not yet include exact Rust container capacities or allocator overhead.
 - Application and observability queues default to 1,024 and 64 items respectively,
   but item counts do not bound payload bytes or memory held by pending senders.
-- `O11yMemorySink` appends formatted events indefinitely. JSON sinks and memory
-  reporting construct complete output buffers before writing them.
+- `O11yMemorySink` appends formatted events indefinitely. Memory reporting reuses
+  a capped JSON buffer; general JSON sinks still need bounded output buffers.
 - `Wora::schedule_task` creates independently owned periodic tasks without an
   admission limit. Config/secret reads, directory enumeration, and reload batches
   also lack memory budgets.
@@ -54,16 +54,17 @@ Implementation order:
 
 ### 2. Make cgroup collection the first bounded collector
 
-- [ ] Extend the bounded-reader helpers in
+- [x] Extend the bounded-reader helpers in
   `wora-observability-linux-mm/src/files.rs` with shared collection budgets.
   Detect oversized input explicitly, including a valid-looking prefix, rather
   than treating a truncated read as complete.
 - [ ] Bound file and line bytes, path lengths, ancestor depth, selected files,
   counter keys, NUMA entries, and aggregate retained bytes. Error messages and
   unavailable/skipped-entry maps must fit the same budget.
-- [ ] Stream membership and mount discovery with bounded buffers. Keep only the
-  best matching mount instead of collecting and sorting every candidate; preserve
-  closest-root selection and deterministic tie-breaking.
+- [x] Keep only the best matching cgroup mount instead of collecting and sorting
+  every candidate, preserving closest-root selection and deterministic ties.
+- [ ] Stream membership and mount discovery instead of retaining complete bounded
+  text buffers. Current shared file/line/input limits already cap those buffers.
 - [ ] Preserve unknown kernel fields within the configured limits. Report explicit
   incomplete/unavailable results when limits are exceeded, including incomplete
   ancestor visibility; never present a partial table as complete accounting.
@@ -72,19 +73,21 @@ Implementation order:
 
 ### 3. Bound sampling and snapshot retention
 
-- [ ] Replace broad `sysinfo` collection with the host fields and current-PID data
-  actually needed. Apply limits before inventory collection allocates; truncating
-  a fully collected table does not bound its peak memory.
+- [x] Replace broad `sysinfo` collection with the host fields and current-PID data
+  actually needed. Task enumeration and command/environment inventories are
+  disabled. Remaining inventories still need limits applied before allocation;
+  truncating a fully collected table does not bound its peak memory.
 - [ ] Provide a small routine telemetry profile through existing collection
   options. Put detailed process/socket, slab, zone/per-CPU, NUMA, hardware, and
   other inventories under explicit selection and aggregate diagnostic budgets.
 - [ ] Apply shared input/output limits to all procfs/sysfs readers. Existing
   per-file, page-range, traversal, and trace-parser limits should participate in
   the aggregate budget rather than each consuming an independent allowance.
-- [ ] Bound snapshot size and simultaneous copies first, then reduce deep cloning,
-  especially diagnostic-cache copies. Consider shared immutable snapshots using
-  `Arc`, with any public payload changes staged for an appropriate release.
-- [ ] Cap live snapshot generations, including samples retained by listeners.
+- [x] Share immutable routine tables and diagnostic batches using `Arc`, eliminate
+  the periodic host-event clone, and enforce per-batch/retained encoded payload
+  limits. Public struct-literal migration is documented; exact heap accounting
+  remains part of the contract work above.
+- [x] Cap live snapshot generations, including samples retained by listeners.
   When capacity is exhausted, skip sampling and expose sample age and skipped
   counts without allocating an unbounded history.
 
@@ -100,8 +103,8 @@ Implementation order:
   count, with an explicit overflow policy. Exclude the existing unbounded capture
   behavior from configurations claiming a memory bound.
 - [ ] Bound record formatting and serialization scratch space before growth.
-  Reuse capped buffers or stream output, and avoid the extra full snapshot clone
-  in `MemoryReportSink`.
+  Memory reporting now reuses a capped buffer and borrows snapshot data; apply
+  equivalent limits to the remaining sinks and record formatters.
 - [ ] Audit forwarding sinks and exporter buffering/cardinality. Define behavior
   for stalled or failed outputs, with bounded counters for dropped/coalesced
   records and rate-limited diagnostics.
@@ -224,9 +227,9 @@ Additional priorities supported by these measurements:
 - [x] Share diagnostic batches across host samples and memory snapshots, including
   SLUB data, and serialize memory/trace reports from borrowed fields to avoid
   report-only copies. See the snapshot-sharing implementation notes below.
-- [ ] Profile remaining allocations to distinguish live objects, transient copy
-  peaks, and allocator retention before assigning exact savings to individual
-  code paths.
+- [x] Profile remaining allocations locally with heaptrack; see the routine-table
+  and budget notes below. Exact production RSS attribution and allocator-retained
+  space remain unmeasured; no arena recommendation is based on this profile.
 
 ### Single-worker reporting examples: 2026-10-18
 
@@ -278,9 +281,10 @@ existing JSON field structure.
 Regression coverage now checks sharing through cached provider clones, host/event
 and memory-snapshot clones, retained data across refreshes, independent mutation,
 release of old batches, and report serialization parity with public snapshots.
-Local macOS formatting, tests, Clippy, and documentation checks passed.
-Linux-specific regression execution and updated memory measurements remain to be
-completed.
+Local macOS formatting, tests, Clippy, and documentation checks passed. The
+Linux-specific regressions subsequently passed in the local Linux container
+during the routine-sharing/budget work below. Measurements of the rebuilt Linux
+process are recorded below.
 
 ### Targeted system sampling: 2026-10-18
 
@@ -302,9 +306,156 @@ Regression tests verify empty host process tables, a single retained process
 without command/environment data (and no tasks on Linux), CPU activity and disk
 counter deltas across cloned environments, and host CPU values matching the
 retained sampler. Local macOS formatting, tests, Clippy, and documentation checks
-passed. Native Linux verification and updated RSS/descriptor measurements remain
-pending; the earlier isolated sampler measurements are the baseline, not measured
-savings from this implementation.
+passed. Linux regressions subsequently passed in the local Linux container during
+the routine-sharing/budget work below. Updated RSS/descriptor measurements of the
+rebuilt process are recorded below; they cover the combined
+changes rather than attributing savings to this sampler alone.
+
+### Rebuilt diagnostics process: inanna, 2026-10-18
+
+Inspected the user-started PID `145249`, running the release `memory_diagnostics`
+example from commit `8702dbe`. The five inspected source files covering system
+sampling, diagnostic ownership, reporting, and the example matched the local
+checkout by SHA-256. The binary was rebuilt at 13:30:23 EDT and the process started
+at 13:30:27 EDT. It used the default five-second reporting and 60-second diagnostic
+intervals, with stdout directed to `/dev/null` and no `MALLOC_ARENA_MAX` or
+`TOKIO_WORKER_THREADS` environment override.
+
+Initial inspection at 81 seconds observed 14.4 MiB RSS. A subsequent 181-second
+window, from 13:32:20 to 13:35:21 EDT, sampled procfs 37 times at approximately
+five-second intervals. RSS rose around successive diagnostic refreshes from
+14.4 to 16.9, 17.6, and 17.6 MiB; the last of these increases was 40 KiB. The final
+snapshot at about five minutes of process uptime showed:
+
+| Measurement | Rebuilt PID `145249` | Original PID `131240` baseline |
+| --- | --- | --- |
+| Resident memory (RSS) | 17.6 MiB | 68.9 MiB |
+| Proportional resident memory (PSS) | 15.3 MiB | 66.6 MiB |
+| Anonymous resident memory | 12.9 MiB | 64.2 MiB |
+| Virtual address space | 275.3 MiB | 1.25 GiB |
+| Threads | 5 | 20 |
+| Cached process/task `stat` descriptors | 1, for this PID | Approximately 1,900 |
+
+The rebuilt process retained 17 descriptors throughout the sampling window and
+had no swapped or locked pages. Its final RSS high-water mark was also 17.6 MiB.
+The five threads were the main thread, two Tokio-named threads, and two notify
+threads. Procfs I/O counters continued advancing, but JSON content and exact
+reporting cadence were not verified because output was discarded. The process
+retained its original start identity and was not modified, restarted, or attached
+to a debugger.
+
+Final RSS was about 74% below the original baseline and about 57% below the
+earlier one-worker-only diagnostic run's 41.1 MiB. These runs differ in age and
+host conditions; they show the combined improvement without isolating the savings
+from sharing, borrowed serialization, and targeted sampling individually. The
+single cached `stat` descriptor confirms the earlier system-wide descriptor
+retention is absent in this process.
+
+The main heap held about 4.0 MiB RSS and anonymous mappings about 8.8 MiB. Those
+regions can contain both live allocations and allocator-retained free memory;
+procfs alone cannot attribute their contents. Much of the virtual address space
+remains nonresident, consistent with allocator reservations. The process still
+shares a login-session cgroup, so its cgroup usage is not a per-process measure.
+
+Next measurement priorities:
+
+- [ ] Extend the soak beyond startup and several diagnostic refreshes; this short
+  window does not establish constant memory or exclude gradual growth.
+- [x] Profile remaining diagnostic allocations, including SLUB tables, routine
+  snapshots, batch overlap and JSON output. The local heaptrack capture below
+  identifies live allocation sites; unresolved frames, allocator retention and
+  exact production RSS attribution still need follow-up.
+- [ ] Implement shared collector/snapshot budgets, starting with the cgroup
+  collector above. A smaller observed footprint does not provide a configured
+  memory ceiling.
+
+This inspection completed the updated RSS/descriptor measurement. The Linux
+regressions subsequently passed during the routine-sharing/budget work below.
+
+### Shared routine tables and collection/output budgets: 2026-10-18
+
+- [x] Move periodic `HostStats` into observability events with
+  `o11y_new_ev_hoststats_owned`, eliminating the event-only copy. The existing
+  borrowed constructor and public lifecycle/provider traits remain available.
+- [x] Share routine Linux tables through `LinuxMemoryStats::data`, an
+  `Arc<LinuxMemoryData>`. Host samples, cached memory snapshots, and observability
+  events share the same tables. Field mutation uses copy-on-write so retained
+  snapshots preserve their data. Diagnostic ownership remains independently shared.
+- [x] Reuse one memory-report JSON buffer with a configurable record byte limit
+  (8 MiB by default, including the newline). Growth is checked before reserving;
+  oversized records fail without writing a partial line. Trace records use the
+  same buffer and limit.
+- [x] Apply one input/work budget to each routine or diagnostic batch, including
+  cgroup discovery/files, sysctls, hugepages, rollups, structured diagnostics and
+  binary page ranges. Default limits admit 16 MiB across sources, 4 MiB per file,
+  64 KiB per line, 65,536 directory entries, 65,536 source attempts (including
+  failures), 4,096-byte paths and 64 cgroup ancestors.
+  EOF probes may read one additional byte per source without retaining it. An
+  exhausted limit is reported in `collection.limit_exceeded`; oversized sources
+  are not parsed from valid-looking prefixes.
+- [x] Limit routine and diagnostic providers independently to four live
+  generations, 8 MiB encoded JSON per batch and 32 MiB across live batches.
+  Reserve the maximum replacement payload allowance before collection; byte or
+  generation exhaustion skips routine collection or reuses the previous
+  diagnostic batch. Provider status APIs expose live generations, retained
+  encoded bytes and saturating skipped-refresh counters. Original sample
+  timestamps expose age. Releasing retained data permits collection to resume.
+
+Configure these through `LinuxMemoryLimits`,
+`SystemRuntimeEnvironment::with_linux_memory_limits`,
+`LinuxMemoryOptions::with_memory_limits`, and
+`MemoryReporter::with_linux_memory_limits`/`with_output_byte_limit`. With
+`MemoryReporter::run_with`, configure the supplied routine provider separately.
+
+Public struct-literal migration: construct routine fields using
+`LinuxMemoryData { .. }.into()` rather than `LinuxMemoryStats { .. }`. Normal field
+reads continue through `Deref`; borrow fields instead of moving them out of shared
+data. Collected routine and diagnostic JSON adds `collection` accounting while
+keeping existing data at its original paths. README and CHANGELOG describe this
+source/API and output change.
+`LinuxMemoryOptions` literals also require `limits` or a default struct update;
+`LinuxMemoryDiagnostics` literals require the new `collection` accounting field.
+
+Regression coverage verifies routine/diagnostic sharing, copy-on-write isolation,
+live-generation and retained-byte admission/recovery, invalid/oversized limits,
+aggregate reads, incomplete ancestor visibility, JSON escaping, exact
+record/newline boundaries, buffer reuse, and unchanged existing snapshot values.
+Failed explicit source lookups are admitted before metadata access and share a
+file-attempt limit, preventing zero-byte failures from growing error maps without
+consuming budget. Oversized source roots and names are rejected before reading.
+
+Validation passed on macOS with repository Rust 1.95.0 (`cargo fmt --check`,
+`cargo test`, `cargo clippy --all-targets --all-features`, `cargo doc --no-deps`).
+Local aarch64 Linux/Rust 1.99.0 passed workspace tests, Clippy across all targets
+and features, and workspace documentation. Nine opt-in live-kernel tests stayed
+ignored. Linux Clippy reports existing warnings in the page/structured helpers,
+raw sysinfo example and unused socket-test helper; the new code has no lint warnings.
+
+Local allocation profiling used heaptrack 1.5.0 in a disposable aarch64 Linux
+container with Rust 1.99.0 development builds. The changed diagnostic example ran
+for about 33 seconds with one-second report and five-second diagnostic intervals,
+produced 16 valid JSON reports spanning four diagnostic batches, and exited zero
+after SIGTERM directed at the example process. Neither routine nor diagnostic
+collection exhausted its source/work limits. Heaptrack reported 751,165 allocation
+calls, a 21.76 MB peak tracked heap, and 39.96 MB peak RSS including profiler
+overhead. This instrumented root/container workload differs from the normal-user
+release process on inanna and does not update that process's RSS baseline.
+This capture preceded the final file-attempt accounting and root-path guards.
+
+Resolved peak allocation stacks include SLUB parsed-map nodes, vmalloc record
+maps, per-mapping structured quantities and the Tokio stdout buffer. More than
+half the peak attribution was unresolved, so these are observed sites rather than
+a complete ownership breakdown. The baseline instrumented process failed under
+the profiler; incomplete captures were excluded and no before/after savings
+percentage is claimed. Stable baseline profiling and a release-process soak
+remain follow-up measurements. Profiling containers were removed; captures remain
+under the ignored `target/memory-profile-20261018-145249` directory.
+
+Input and encoded-payload limits are distinct from an exact heap/RSS budget.
+Allocator/container overhead, CPU/disk/network inventories, custom providers,
+caller-created copies, general sinks, queues, scheduled tasks and reload paths
+remain outside these limits. The broader bounded-memory contract and extended
+production soak above remain open.
 
 ## Deletion-aware reload payloads
 

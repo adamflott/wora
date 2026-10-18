@@ -167,3 +167,22 @@ fn malformed_files_are_isolated_and_do_not_return_partial_counters() -> Result<(
     assert!(CgroupMemory::from_directory(root.path()).unavailable.contains_key("memory.numa_stat"));
     Ok(())
 }
+
+#[test]
+fn equally_rooted_mounts_use_the_lexicographically_first_mount_point() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let proc = root.path().join("proc");
+    let first = root.path().join("a");
+    let last = root.path().join("z");
+    fs::create_dir_all(proc.join("self"))?;
+    fs::create_dir_all(first.join("service"))?;
+    fs::write(proc.join("self/cgroup"), "0::/service\n")?;
+    for mounts in [
+        format!("{}{}", mount_line("/", &last), mount_line("/", &first)),
+        format!("{}{}", mount_line("/", &first), mount_line("/", &last)),
+    ] {
+        fs::write(proc.join("self/mountinfo"), mounts)?;
+        assert_eq!(CgroupMemoryStats::from_proc_root(&proc).mount_point.as_deref(), Some(first.as_path()));
+    }
+    Ok(())
+}

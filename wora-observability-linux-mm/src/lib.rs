@@ -3,6 +3,7 @@
 
 mod allocations;
 mod buddyinfo;
+mod budget;
 mod cgroup;
 mod compressed;
 mod files;
@@ -28,9 +29,10 @@ mod zoneinfo;
 
 pub use allocations::{AllocationSite, AllocationSites, KernelAllocationStats};
 pub use buddyinfo::{BuddyInfo, BuddyZone};
+pub use budget::{CollectionLimit, CollectionLimits, CollectionReport, collect_with_limits};
 pub use cgroup::{CgroupMemory, CgroupMemoryStats, CgroupMemoryValue};
 pub use compressed::{CompressedMemoryStats, ZramDevice, ZramMemoryStat};
-pub use files::MemoryFiles;
+pub use files::{MemoryFiles, read_source};
 pub use fragmentation::{FragmentationStats, FragmentationZone};
 pub use hardware::MemoryHardwareStats;
 pub use hugepages::{HugePageFiles, HugePageStats};

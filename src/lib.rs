@@ -1478,7 +1478,7 @@ async fn exec_async_runner_inner<AppEv: Send + Sync + 'static, AppMetric: Debug 
                         };
                         if let Some(host_stats) = host_stats {
                             publish_memory_snapshot(&host_stats, &memory_stats_tx, &runtime_event_sender);
-                            let _ = tx.send(o11y_new_ev_hoststats(&host_stats)).await;
+                            let _ = tx.send(crate::o11y::o11y_new_ev_hoststats_owned(host_stats)).await;
                         }
 
                         if let Some(process_stats) = process_stats {

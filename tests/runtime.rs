@@ -599,16 +599,20 @@ mod memory_events {
     }
 
     #[tokio::test]
-    async fn memory_profile_rejects_zero_intervals_before_executor_setup() -> Result<(), Box<dyn std::error::Error>> {
+    async fn memory_profile_rejects_zero_intervals_and_output_limits_before_executor_setup() -> Result<(), Box<dyn std::error::Error>> {
         let fs = InMemoryVFS::new();
         let root = unique_test_dir("memory-profile-zero");
-        let result = MemoryReporter::new()
-            .with_interval(Duration::ZERO)
-            .with_writer(tokio::io::sink())
-            .run_with(TestExec { dirs: test_dirs(root.clone()) }, fs.clone(), RunnerOptions::new())
-            .await;
-        assert!(matches!(result, Err(MainEarlyReturn::WoraSetup(_))));
-        assert!(!fs.dir_exists(&root).await?);
+        for reporter in [
+            MemoryReporter::new().with_interval(Duration::ZERO),
+            MemoryReporter::new().with_output_byte_limit(0),
+        ] {
+            let result = reporter
+                .with_writer(tokio::io::sink())
+                .run_with(TestExec { dirs: test_dirs(root.clone()) }, fs.clone(), RunnerOptions::new())
+                .await;
+            assert!(matches!(result, Err(MainEarlyReturn::WoraSetup(_))));
+            assert!(!fs.dir_exists(&root).await?);
+        }
         Ok(())
     }
 

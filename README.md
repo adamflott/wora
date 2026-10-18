@@ -231,8 +231,51 @@ Host samples, memory events, and cloned snapshots share each diagnostic batch;
 refreshing diagnostics creates a new batch while retained snapshots keep their
 original data. Construct this field with `Arc::new(...)` (or convert an existing
 box with `Arc::from(...)`). Use `Arc::make_mut(...)` when a private writable copy
-is needed. JSON fields and values retain the same format. Memory reporting
+is needed. Existing JSON data fields retain the same format. Memory reporting
 serializes borrowed fields directly, avoiding another owned snapshot copy.
+
+Routine tables are also shared, through `LinuxMemoryStats::data`, an
+`Arc<LinuxMemoryData>`. Existing field reads such as `linux_mm.vmstat` continue to
+work through `Deref`; mutation makes an independent copy when needed. For struct
+literals, construct `LinuxMemoryData { .. }` and convert it with `.into()`.
+Borrow fields with `.as_ref()` when reading through the shared wrapper; moving a
+field out requires owning the data, for example via `Arc::unwrap_or_clone`.
+Routine JSON fields remain at their existing paths; collected routine and
+diagnostic data now also contain `collection` accounting, whose
+`limit_exceeded` field marks incomplete data.
+`LinuxMemoryOptions` struct literals also need `limits` (or a default struct
+update), and `LinuxMemoryDiagnostics` literals need `collection` accounting.
+
+Default Linux collection limits are shared across each routine or diagnostic
+batch: 16 MiB of admitted source bytes, 4 MiB per file, 64 KiB per line, 65,536
+source attempts (including failures), 65,536 directory entries (at most 4,096 per
+directory), 4,096-byte paths, and 64 cgroup ancestors. Oversized sources
+fail rather than parsing a truncated prefix. EOF checks may read one additional
+byte per source without retaining it. Cgroup mount discovery keeps only the best
+matching mount, with deterministic ties, and reports incomplete ancestor visibility.
+
+`LinuxMemoryLimits` additionally defaults to four live generations, 8 MiB of
+encoded JSON per batch, and 32 MiB across retained batches. Routine and diagnostic
+providers have separate allowances. Admission reserves room for a replacement
+before collection. When readers retain all available generations or exhaust the
+retained byte allowance, routine sampling skips the refresh and diagnostics reuse
+their previous batch. Existing timestamps expose sample age. Inspect
+`SystemRuntimeEnvironment::memory_sampling_status()` or
+`LinuxMemoryEnvironment::diagnostic_sampling_status()` for live generations,
+retained encoded bytes, and skipped refresh counts.
+
+Set these limits with `SystemRuntimeEnvironment::with_linux_memory_limits(...)`,
+`LinuxMemoryOptions::with_memory_limits(...)`, or the profile's
+`.with_linux_memory_limits(...)`. With `.run_with(...)`, configure the supplied
+routine provider separately. The profile reuses a single JSON buffer capped at
+8 MiB per record, including the newline; `.with_output_byte_limit(...)` changes
+that cap. Oversized reports fail without writing a partial record. The output
+writer can have additional buffering.
+
+Source and encoded payload byte limits describe different resources from Rust
+heap capacity or RSS. Container/allocator overhead, CPU/disk/network inventories,
+custom providers, caller-created copies, application queues and other sinks still
+need their own budgets for a whole-daemon memory guarantee.
 
 Routine Linux reports also include NUMA nodes/tiers, zram/zswap accounting, KSM,
 process status/limits/OOM preferences, and HugeTLB/cpuset cgroup context.

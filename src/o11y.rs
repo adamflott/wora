@@ -30,15 +30,19 @@ use crate::{HealthState, Leadership, ReadinessState};
 pub use wora_observability_linux_mm as linux_mm;
 
 #[cfg(target_os = "linux")]
+mod generations;
+#[cfg(target_os = "linux")]
 mod linux_diagnostics;
 #[cfg(target_os = "linux")]
 mod linux_memory;
+#[cfg(target_os = "linux")]
+pub use generations::MemorySamplingStatus;
 #[cfg(target_os = "linux")]
 pub use linux_diagnostics::{LinuxMemoryCollector, LinuxMemoryDiagnostics, LinuxMemoryEnvironment, LinuxMemoryOptions};
 #[cfg(target_os = "linux")]
 mod linux_trace;
 #[cfg(target_os = "linux")]
-pub use linux_memory::LinuxMemoryStats;
+pub use linux_memory::{LinuxMemoryData, LinuxMemoryLimits, LinuxMemoryStats};
 #[cfg(target_os = "linux")]
 pub use linux_trace::LinuxMemoryTraceOptions;
 
@@ -108,9 +112,14 @@ pub fn o11y_new_ev_hostinfo<T>(hi: &HostInfo) -> O11yEvent<T> {
 }
 /// Build a host statistics event.
 pub fn o11y_new_ev_hoststats<T>(hs: &HostStats) -> O11yEvent<T> {
+    o11y_new_ev_hoststats_owned(hs.clone())
+}
+
+/// Build a host statistics event by transferring ownership without copying it.
+pub fn o11y_new_ev_hoststats_owned<T>(hs: HostStats) -> O11yEvent<T> {
     O11yEvent {
         timestamp: chrono::Utc::now(),
-        kind: O11yEventKind::HostStats(hs.clone()),
+        kind: O11yEventKind::HostStats(hs),
     }
 }
 
@@ -318,6 +327,10 @@ pub trait RuntimeEnvironment: Clone + Send + Sync + 'static {
 pub struct SystemRuntimeEnvironment {
     host_sampler: Arc<std::sync::Mutex<Option<Host>>>,
     process_sampler: Arc<std::sync::Mutex<System>>,
+    #[cfg(target_os = "linux")]
+    memory_limits: LinuxMemoryLimits,
+    #[cfg(target_os = "linux")]
+    memory_generations: Arc<Mutex<generations::Generations<LinuxMemoryData>>>,
 }
 
 impl Default for SystemRuntimeEnvironment {
@@ -325,7 +338,33 @@ impl Default for SystemRuntimeEnvironment {
         Self {
             host_sampler: Arc::new(std::sync::Mutex::new(None)),
             process_sampler: Arc::new(std::sync::Mutex::new(new_process_sampler())),
+            #[cfg(target_os = "linux")]
+            memory_limits: LinuxMemoryLimits::default(),
+            #[cfg(target_os = "linux")]
+            memory_generations: Arc::new(Mutex::new(generations::Generations::default())),
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl SystemRuntimeEnvironment {
+    /// Create a provider with shared Linux collection limits and generation admission.
+    /// When readers retain all available generations, refresh returns `None`
+    /// before collection and the runtime keeps its previous timestamped sample.
+    pub fn with_linux_memory_limits(limits: LinuxMemoryLimits) -> Result<Self, O11yError> {
+        limits.validate().map_err(|error| O11yError::RuntimeEnvironment(error.to_string()))?;
+        Ok(Self {
+            memory_limits: limits,
+            ..Self::default()
+        })
+    }
+
+    /// Inspect live generations and refreshes skipped due to retained snapshots.
+    pub fn memory_sampling_status(&self) -> Result<MemorySamplingStatus, O11yError> {
+        self.memory_generations
+            .lock()
+            .map(|generations| generations.status())
+            .map_err(|_| O11yError::RuntimeEnvironment("memory generation tracker poisoned".into()))
     }
 }
 
@@ -339,7 +378,18 @@ impl RuntimeEnvironment for SystemRuntimeEnvironment {
             return Ok(Host::from_parts(host.info.clone(), host.stats.clone()));
         }
 
+        #[cfg(target_os = "linux")]
+        let host = Host::new_with_linux_memory_limits(self.memory_limits)?;
+        #[cfg(not(target_os = "linux"))]
         let host = Host::new()?;
+        #[cfg(target_os = "linux")]
+        self.memory_generations
+            .lock()
+            .map_err(|_| O11yError::RuntimeEnvironment("memory generation tracker poisoned".into()))?
+            .track(
+                &host.stats.linux_mm.data,
+                generations::snapshot_size(&host.stats.linux_mm.data, self.memory_limits.snapshot_bytes)?,
+            );
         let snapshot = Host::from_parts(host.info.clone(), host.stats.clone());
         *guard = Some(host);
         Ok(snapshot)
@@ -354,18 +404,39 @@ impl RuntimeEnvironment for SystemRuntimeEnvironment {
             .host_sampler
             .lock()
             .map_err(|_| O11yError::RuntimeEnvironment("host sampler poisoned".to_string()))?;
-        match guard.as_mut() {
+        #[cfg(target_os = "linux")]
+        let mut generations = self
+            .memory_generations
+            .lock()
+            .map_err(|_| O11yError::RuntimeEnvironment("memory generation tracker poisoned".into()))?;
+        #[cfg(target_os = "linux")]
+        if !generations.admit(self.memory_limits) {
+            return Ok(None);
+        }
+        let stats = match guard.as_mut() {
             Some(host) => {
+                #[cfg(target_os = "linux")]
+                host.update_with_linux_memory_limits(self.memory_limits)?;
+                #[cfg(not(target_os = "linux"))]
                 host.update()?;
-                Ok(Some(host.stats().clone()))
+                host.stats().clone()
             }
             None => {
+                #[cfg(target_os = "linux")]
+                let host = Host::new_with_linux_memory_limits(self.memory_limits)?;
+                #[cfg(not(target_os = "linux"))]
                 let host = Host::new()?;
                 let stats = host.stats().clone();
                 *guard = Some(host);
-                Ok(Some(stats))
+                stats
             }
-        }
+        };
+        #[cfg(target_os = "linux")]
+        generations.track(
+            &stats.linux_mm.data,
+            generations::snapshot_size(&stats.linux_mm.data, self.memory_limits.snapshot_bytes)?,
+        );
+        Ok(Some(stats))
     }
 
     fn refresh_process_stats(&self) -> Option<ProcessStats> {
@@ -1577,6 +1648,22 @@ pub struct Host {
 }
 
 impl Host {
+    #[cfg(target_os = "linux")]
+    fn new_with_linux_memory_limits(limits: LinuxMemoryLimits) -> Result<Self, O11yError> {
+        let sys = System::new_with_specifics(host_refresh_kind());
+        let info = HostInfo::new(&sys)?;
+        let stats = HostStats::new_with_linux_memory_limits(&sys, limits)?;
+        Ok(Self { sys, info, stats })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn update_with_linux_memory_limits(&mut self, limits: LinuxMemoryLimits) -> Result<(), O11yError> {
+        self.sys.refresh_specifics(host_refresh_kind());
+        self.info.update(&self.sys)?;
+        self.stats = HostStats::new_with_linux_memory_limits(&self.sys, limits)?;
+        Ok(())
+    }
+
     /// Build a host snapshot from explicit parts.
     ///
     /// Performs no telemetry collection. The first [`Self::update`] initializes
@@ -1626,6 +1713,26 @@ pub struct HostStats {
 impl HostStats {
     /// Collect host resource statistics from `sysinfo` and Linux procfs sources.
     pub fn new(sys: &System) -> Self {
+        #[allow(unused_mut)]
+        let mut stats = Self::collect_portable(sys);
+        #[cfg(target_os = "linux")]
+        {
+            stats.linux_mm = LinuxMemoryStats::current();
+        }
+        stats
+    }
+
+    #[cfg(target_os = "linux")]
+    fn new_with_linux_memory_limits(sys: &System, limits: LinuxMemoryLimits) -> Result<Self, O11yError> {
+        let linux_mm =
+            LinuxMemoryStats::from_roots_with_limits("/proc", "/sys", limits.collection).map_err(|error| O11yError::RuntimeEnvironment(error.to_string()))?;
+        generations::snapshot_size(&linux_mm.data, limits.snapshot_bytes)?;
+        let mut stats = Self::collect_portable(sys);
+        stats.linux_mm = linux_mm;
+        Ok(stats)
+    }
+
+    fn collect_portable(sys: &System) -> Self {
         let mut cpus = vec![];
         for cpu in sys.cpus() {
             cpus.push(Cpu {
@@ -1699,7 +1806,7 @@ impl HostStats {
             fs,
             net_io,
             #[cfg(target_os = "linux")]
-            linux_mm: LinuxMemoryStats::current(),
+            linux_mm: LinuxMemoryStats::default(),
         }
     }
 

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::Path;
 
-use crate::{FromBufRead, FromRead, MemoryReadError, ProcError, ProcResult};
+use crate::{FromBufRead, MemoryReadError, ProcError, ProcResult};
 
 /// Process-scoped memory accounting, separate from host and cgroup totals.
 #[derive(Clone, Default, Debug)]
@@ -37,7 +37,7 @@ impl ProcessMemoryStats {
             information: crate::MemoryFiles::from_names(&root, &["status", "limits", "stat", "oom_score", "oom_score_adj"]),
             ..Self::default()
         };
-        match SmapsRollup::from_file(root.as_ref().join("smaps_rollup")) {
+        match crate::read_source(root.as_ref().join("smaps_rollup")) {
             Ok(rollup) => snapshot.smaps_rollup = Some(rollup),
             Err(error) => {
                 let error = match error {

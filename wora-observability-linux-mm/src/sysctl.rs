@@ -117,7 +117,17 @@ impl MemorySysctls {
                 return;
             }
         };
-        for entry in entries {
+        for (index, entry) in entries.enumerate() {
+            if let Err(error) = crate::budget::charge_entry().and_then(|()| {
+                if index >= 4096 {
+                    Err(crate::budget::exceeded(crate::CollectionLimit::Entries))
+                } else {
+                    Ok(())
+                }
+            }) {
+                self.unavailable.insert(namespace.into(), error.into());
+                break;
+            }
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(error) => {
@@ -177,7 +187,8 @@ impl MemorySysctls {
             self.skipped.insert(key.into(), SysctlSkipReason::WriteOnly);
             return Ok(None);
         }
-        let value = fs::read_to_string(entry.path())?;
-        Ok(Some(value.trim_end_matches('\n').to_owned()))
+        let mut value = crate::files::read_text(&entry.path(), 4 * 1024 * 1024)?;
+        value.truncate(value.trim_end_matches('\n').len());
+        Ok(Some(value))
     }
 }
