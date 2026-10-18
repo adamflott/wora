@@ -6,7 +6,7 @@ primary targets; embedded and `no_std` environments are unsupported.
 
 WORA aims for deterministic memory and CPU usage. Collection budgets, shared
 snapshots and capped reports provide partial bounds; a whole-runtime guarantee
-is still [planned](wora-observability-linux-mm/TODO.md).
+is still [planned](TODO.md#memory-and-resource-limits).
 
 ## Features
 
@@ -71,7 +71,7 @@ cargo clippy --workspace --all-targets --all-features
 cargo doc --workspace --all-features --no-deps
 ```
 
-[Runtime TODO](TODO.md) · [Memory TODO](wora-observability-linux-mm/TODO.md) ·
+[Runtime TODO](TODO.md) · [Linux reader TODO](wora-observability-linux-mm/TODO.md) ·
 [Linux memory readers](wora-observability-linux-mm/README.md) ·
 [Metric exporters](wora-observability/README.md)
 

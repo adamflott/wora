@@ -31,8 +31,9 @@ Key modules and workspace crates:
 
 - Keep `README.md` focused on the project aim, architecture and quick starts.
 - Keep current memory APIs, sources, limits and concise measurement summaries in
-  `docs/memory.md`. Put all remaining memory work, including runtime budgets and
-  profiling, in `wora-observability-linux-mm/TODO.md` as short implementation tasks.
+  `docs/memory.md`. Put runtime budgets, reporting, reloads and profiling work in
+  `TODO.md`; keep Linux reader/parser work in `wora-observability-linux-mm/TODO.md`.
+  Write short implementation tasks.
   Remove completed/stale tasks; link instead of duplicating roadmaps or prose.
 - Document every public memory type's source in Rustdoc: the upstream API and OS
   file/API, scope (host/cgroup/process/node/cache), units, conversions and derived
@@ -93,7 +94,7 @@ ignored by default; ordinary fixture tests should not require root.
 - Linux memory input/payload limits do not account for exact heap overhead, other
   inventories, general sinks, queue payloads, scheduled tasks or reloads. Extended
   release-process soak measurements and runtime-wide contract enforcement remain open
-  in `wora-observability-linux-mm/TODO.md`.
+  in `TODO.md`; reader allocation limits remain in `wora-observability-linux-mm/TODO.md`.
 
 ## CI Notes
 

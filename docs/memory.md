@@ -1,7 +1,7 @@
 # Memory reporting
 
-Current APIs, sources and limits. Remaining implementation work is in
-[the memory TODO](../wora-observability-linux-mm/TODO.md).
+Current APIs, sources and limits. Remaining work:
+[runtime TODO](../TODO.md) · [Linux reader TODO](../wora-observability-linux-mm/TODO.md).
 
 - [Usage](#usage)
 - [Linux mm subsystems](#linux-mm-subsystems)
