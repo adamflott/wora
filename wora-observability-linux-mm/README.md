@@ -21,7 +21,7 @@ The [subsystem/source tables](https://github.com/adamflott/wora/blob/master/docs
 and each type's Rustdoc describe paths, scope and units.
 Zswap includes compression/decompression failure counts and stored-incompressible
 page counts; counters absent on older kernels remain per-file errors.
-Page-owner stacks, kmemleak findings and MGLRU full layouts currently return
+Kmemleak findings and MGLRU full layouts currently return
 unsupported-layout errors rather than structured findings.
 
 ## Kernel compatibility
@@ -67,6 +67,7 @@ Captured cgroup mount paths are used as written.
 | DamonStats | Existing monitor state, estimated bytes/s, signed idle-time percentiles in ms, aggregation interval in us and worker PID; never enables monitoring. |
 | CgroupMemory | DMEM region tables retain byte usage/capacity/limits and literal `max`; optional `dmem.peak` follows the 7.3-rc7 development ABI. |
 | NumaStats | Access-class topology quantities retain nanoseconds and MiB/s under per-node source paths; they describe rated performance. |
+| PageOwnerStats | Bounded allocation/page/stack records, optional migration/charge labels, aggregate signed handles and base-page counts; reviewed 6.12/7.2 layouts. |
 | MemoryFiles / sysctls | Structured integers, flags, units, ranges and policies; relative path/dotted keys. |
 
 Unknown supported numeric keys are retained. Fixed typed fields, filename

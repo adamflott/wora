@@ -1,6 +1,100 @@
 #![cfg(target_os = "linux")]
 use wora_observability_linux_mm::{KernelLeakStats, PageOwnerStats, ParsedMemoryValue};
 
+// Synthetic records matching mm/page_owner.c in Linux 6.12 and 7.2.
+const OWNER: &str = "Page allocated via order 2, mask 0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), pid 12, tgid 9 (worker (pool)), ts 18446744073709551615 ns\nPFN 0x20000000000001 type Movable Block 77 type Unmovable Flags 0x17ffffc0000000(anon|swapbacked)\n alloc_pages+0x123/0x456\n caller+0x1/0x2 [test_module]\nPage has been migrated, last migrate reason: compaction\nSlab cache page\nCharged (via objcg) to offline memcg worker\n\n";
+
+#[test]
+fn page_owner_records_preserve_allocation_page_stack_and_charge_scopes() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::write(root.path().join("page_owner"), OWNER.repeat(2))?;
+    let snapshot = PageOwnerStats::from_debug_root(root.path());
+    let ParsedMemoryValue::List(records) = &snapshot.files.parsed["page_owner"] else {
+        return Err("no owner records".into());
+    };
+    assert_eq!(records.len(), 2);
+    let allocation = records[0].get("allocation").ok_or("no allocation")?;
+    assert_eq!(allocation.get("order").and_then(ParsedMemoryValue::as_u64), Some(2));
+    assert_eq!(allocation.get("timestamp_ns").and_then(ParsedMemoryValue::as_u64), Some(u64::MAX));
+    assert_eq!(allocation.get("comm"), Some(&ParsedMemoryValue::Text("worker (pool)".into())));
+    let page = records[0].get("page").ok_or("no page")?;
+    assert_eq!(page.get("pfn").and_then(ParsedMemoryValue::as_u64), Some(9_007_199_254_740_993));
+    assert_eq!(page.get("block").and_then(ParsedMemoryValue::as_u64), Some(77));
+    assert_eq!(records[0].get("migration_reason"), Some(&ParsedMemoryValue::Text("compaction".into())));
+    let charge = records[0].get("charge").ok_or("no charge")?;
+    assert_eq!(charge.get("offline").and_then(ParsedMemoryValue::as_bool), Some(true));
+    assert_eq!(charge.get("via_objcg").and_then(ParsedMemoryValue::as_bool), Some(true));
+    #[cfg(feature = "serde1")]
+    {
+        let json = serde_json::to_value(&snapshot)?;
+        assert_eq!(json["files"]["parsed"]["page_owner"][0]["stack"][1], "caller+0x1/0x2 [test_module]");
+        assert_eq!(json["files"]["parsed"]["page_owner"][0]["allocation"]["timestamp_ns"], u64::MAX);
+    }
+    assert_eq!(std::fs::read_to_string(root.path().join("page_owner"))?, OWNER.repeat(2));
+    Ok(())
+}
+
+#[test]
+fn page_owner_aggregate_layouts_keep_signed_handles_and_native_page_counts() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("page_owner_stacks"))?;
+    for (name, text) in [
+        ("show_stacks", " alloc_pages+0x1/0x2\nnr_base_pages: 9007199254740993\n\n"),
+        ("show_handles", "handle: -2147483648\nnr_base_pages: 13\n\nhandle: 5\nnr_base_pages: 2\n\n"),
+        ("show_stacks_handles", " caller+0x1/0x2\nhandle: -1\n\n"),
+    ] {
+        std::fs::write(root.path().join("page_owner_stacks").join(name), text)?;
+    }
+    let snapshot = PageOwnerStats::from_debug_root(root.path());
+    let ParsedMemoryValue::List(handles) = &snapshot.files.parsed["page_owner_stacks/show_handles"] else {
+        return Err("no handles".into());
+    };
+    assert_eq!(handles.len(), 2);
+    assert_eq!(handles[0].get("handle").and_then(ParsedMemoryValue::as_i64), Some(i64::from(i32::MIN)));
+    assert_eq!(handles[0].get("nr_base_pages").and_then(ParsedMemoryValue::as_u64), Some(13));
+    let ParsedMemoryValue::List(stacks) = &snapshot.files.parsed["page_owner_stacks/show_stacks"] else {
+        return Err("no stacks".into());
+    };
+    assert_eq!(stacks[0].get("nr_base_pages").and_then(ParsedMemoryValue::as_u64), Some(9_007_199_254_740_993));
+    let ParsedMemoryValue::List(joined) = &snapshot.files.parsed["page_owner_stacks/show_stacks_handles"] else {
+        return Err("no joined stack".into());
+    };
+    assert_eq!(joined[0].get("handle").and_then(ParsedMemoryValue::as_i64), Some(-1));
+    assert!(joined[0].get("nr_base_pages").is_none());
+    Ok(())
+}
+
+#[test]
+fn provenance_parsing_rejects_bad_or_partial_records_and_bounds_stack_growth() -> Result<(), Box<dyn std::error::Error>> {
+    use wora_observability_linux_mm::parse_memory_file;
+    for bad in [
+        "Page allocated via order 0\nPFN 42 pid 9\n".to_owned(),
+        OWNER.replace("0x140cca", "0xnot_hex"),
+        OWNER.replace("pid 12", "pid 2147483648"),
+        OWNER.replace("type Movable Block 77", "type Movable Block -1"),
+        OWNER.to_owned() + "unknown new record\n",
+        OWNER.replace(" alloc_pages+0x123/0x456\n", &" frame+0x1/0x2\n".repeat(257)),
+    ] {
+        assert!(parse_memory_file("page_owner", &bad).is_err());
+    }
+    for (name, bad) in [
+        ("show_stacks", " frame+0x1/0x2\n"),
+        ("show_handles", "handle: 1\nnr_base_pages: -1\n"),
+        ("show_stacks_handles", " frame+0x1/0x2\nhandle: 1\nnr_base_pages: 1\n"),
+        ("show_handles", "handle: 1\nnr_base_pages: 2\n\nhandle: bad\n"),
+    ] {
+        assert!(parse_memory_file(name, bad).is_err());
+    }
+    assert!(parse_memory_file("show_stacks", &(" ".to_owned() + &"x".repeat(4096))).is_err());
+    assert_eq!(parse_memory_file("page_owner", "\n\n")?, Some(ParsedMemoryValue::List(Vec::new())));
+    let root = tempfile::tempdir()?;
+    std::fs::write(root.path().join("page_owner"), OWNER.to_owned() + "unknown record\n")?;
+    let snapshot = PageOwnerStats::from_debug_root(root.path());
+    assert!(!snapshot.files.parsed.contains_key("page_owner"));
+    assert!(snapshot.files.unavailable.contains_key("page_owner"));
+    Ok(())
+}
+
 #[test]
 fn provenance_is_bounded_and_does_not_change_tracking_or_filters() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Features
 
+- Parse bounded page-owner allocation/page/stack records and aggregate stack/handle tables, retaining exact timestamps, masks, page units and migration/charge metadata without changing tracking or filters.
 - Add VMA-aware pagemap bit-57 interpretation through `PageMapEntry::userfaultfd_protection`, distinguishing WP/RWP and unknown context while preserving existing fields and serialization.
 - Collect bounded NUMA access-class topology attributes under each node's source paths, retaining latency in ns and rated bandwidth in MiB/s with independent errors.
 - Add `NumaStats::weighted_interleave` for global node weights and optional auto mode, preserving unknown mode on older kernels and never writing policy.

@@ -132,7 +132,7 @@ fn numa_policies_units_masks_and_node_counts_keep_their_meanings() -> Result<(),
     assert_eq!(field(&size, "value")?.as_u64(), Some(32768));
     assert_eq!(parse_memory_file("shrinker_enabled", "N")?, Some(Value::Bool(false)));
     assert_eq!(parse_memory_file("dimm_label", "[DIMM_A1]")?, Some(Value::Text("[DIMM_A1]".into())));
-    assert!(parse_memory_file("page_owner", "Page allocated via order 0\n allocation_stack+0x1\n")?.is_none());
+    assert!(parse_memory_file("page_owner", "Page allocated via order 0\n allocation_stack+0x1\n").is_err());
     Ok(())
 }
 

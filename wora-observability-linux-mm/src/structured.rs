@@ -188,7 +188,9 @@ pub fn parse_memory_file(path: impl AsRef<Path>, text: &str) -> Result<Option<Pa
         "distance" => ParsedMemoryValue::List(words(text)?.iter().map(|field| number(field)).collect::<Result<_, _>>()?),
         "objects" | "objects_partial" | "total_objects" | "slabs" | "partial" | "slabs_cpu_partial" if text.contains("N") => node_counts(text)?,
         name if name.starts_with("hugetlb.") && name.ends_with(".numa_stat") => assignments(text)?,
-        "page_owner" | "show_stacks" | "show_handles" | "show_stacks_handles" | "kmemleak" | "lru_gen_full" => return Ok(None),
+        "page_owner" => crate::provenance::page_owner(text)?,
+        "show_stacks" | "show_handles" | "show_stacks_handles" => crate::provenance::owner_stacks(name, text)?,
+        "kmemleak" | "lru_gen_full" => return Ok(None),
         _ if text.lines().count() > 1 => return Ok(None),
         _ => atom(text)?,
     };

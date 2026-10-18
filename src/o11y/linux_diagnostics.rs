@@ -141,7 +141,7 @@ pub struct LinuxMemoryDiagnostics {
     /// `/sys/kernel/debug/cma` areas; see [`super::linux_mm::MemoryHardwareStats`].
     pub hardware: Option<Box<super::linux_mm::MemoryHardwareStats>>,
     /// Existing `/sys/kernel/debug/page_owner` and `page_owner_stacks/*` data,
-    /// without changing tracking/filter state. Unsupported dumps remain errors.
+    /// as bounded allocation/page/stack records, without changing tracking/filters.
     pub page_owner: Option<Box<super::linux_mm::PageOwnerStats>>,
     /// `/sys/kernel/debug/kmemleak`; only present with explicit KernelLeaks
     /// selection. Unsupported suspect dumps remain errors without retaining text.

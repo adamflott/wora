@@ -5,7 +5,6 @@ Current behavior and measurements: [memory guide](../docs/memory.md).
 
 ## Collector coverage
 
-- [ ] **Page owner:** parse bounded allocation/page/stack records in `src/provenance.rs`.
 - [ ] **Kmemleak:** parse bounded suspect records in `src/provenance.rs`; retain
   uncertainty and never issue scan/clear commands.
 - [ ] **MGLRU:** parse `lru_gen_full` in `src/lru.rs`; preserve cgroup/node/generation scope.
