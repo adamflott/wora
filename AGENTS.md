@@ -102,6 +102,7 @@ ignored by default; ordinary fixture tests should not require root.
 ## CI Notes
 
 CI is defined in `.github/workflows/ci.yml`. It runs build, docs, and tests on
-Ubuntu stable/beta/nightly and macOS stable, cross builds/tests for i686 and
-aarch64 Linux, and checks rustfmt separately. Local workspace/all-feature checks
-cover optional adapters beyond the default CI commands.
+Ubuntu stable/beta/nightly and macOS stable, plus workspace/all-feature builds,
+docs, and tests for i686 and aarch64 Linux on compatible hosts without QEMU or
+Cross containers. It checks rustfmt separately; local workspace/all-feature
+checks also cover optional adapters on macOS.
