@@ -1,6 +1,6 @@
 [package]
-name = "wora-observability-linux-mm"
-version = "0.2.0"
+name = "linux-observability-mm"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 description = "Typed Linux memory-management readers extending procfs"

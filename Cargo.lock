@@ -1066,6 +1066,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "linux-observability-mm"
+version = "0.3.0"
+dependencies = [
+ "procfs",
+ "procfs-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2926,6 +2937,7 @@ dependencies = [
  "directories",
  "launchd",
  "libc",
+ "linux-observability-mm",
  "log",
  "nix",
  "notify",
@@ -2946,7 +2958,6 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "wora-observability-linux-mm",
 ]
 
 [[package]]
@@ -2968,17 +2979,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wora",
-]
-
-[[package]]
-name = "wora-observability-linux-mm"
-version = "0.2.0"
-dependencies = [
- "procfs",
- "procfs-core",
- "serde",
- "serde_json",
- "tempfile",
 ]
 
 [[package]]
