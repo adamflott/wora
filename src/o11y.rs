@@ -27,7 +27,7 @@ use crate::{HealthState, Leadership, ReadinessState};
 
 /// Linux memory-management snapshot types and procfs parsing traits.
 #[cfg(target_os = "linux")]
-pub use wora_observability_linux_mm as linux_mm;
+pub use linux_observability_mm as linux_mm;
 
 #[cfg(target_os = "linux")]
 mod generations;
