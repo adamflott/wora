@@ -493,20 +493,12 @@ mod tests {
         let stats = HostStats {
             linux_mm: crate::o11y::LinuxMemoryStats::try_from_data(
                 LinuxMemoryData {
-                    buddyinfo: Some(BuddyInfo::from_read(
-                        include_bytes!("../wora-observability-linux-mm/tests/fixtures/arm64-buddyinfo").as_slice(),
-                    )?),
-                    zoneinfo: Some(ZoneInfo::from_read(
-                        include_bytes!("../wora-observability-linux-mm/tests/fixtures/synthetic-zoneinfo").as_slice(),
-                    )?),
-                    swaps: Some(Swaps::from_read(
-                        include_bytes!("../wora-observability-linux-mm/tests/fixtures/synthetic-swaps").as_slice(),
-                    )?),
-                    slabinfo: Some(SlabInfo::from_read(
-                        include_bytes!("../wora-observability-linux-mm/tests/fixtures/synthetic-slabinfo").as_slice(),
-                    )?),
+                    buddyinfo: Some(BuddyInfo::from_read(include_bytes!("../tests/fixtures/linux-mm/arm64-buddyinfo").as_slice())?),
+                    zoneinfo: Some(ZoneInfo::from_read(include_bytes!("../tests/fixtures/linux-mm/synthetic-zoneinfo").as_slice())?),
+                    swaps: Some(Swaps::from_read(include_bytes!("../tests/fixtures/linux-mm/synthetic-swaps").as_slice())?),
+                    slabinfo: Some(SlabInfo::from_read(include_bytes!("../tests/fixtures/linux-mm/synthetic-slabinfo").as_slice())?),
                     pagetypeinfo: Some(PageTypeInfo::from_read(
-                        include_bytes!("../wora-observability-linux-mm/tests/fixtures/synthetic-pagetypeinfo").as_slice(),
+                        include_bytes!("../tests/fixtures/linux-mm/synthetic-pagetypeinfo").as_slice(),
                     )?),
                     vmstat: Some(VmStat(std::collections::HashMap::from([("nr_anomalous".into(), -2)]))),
                     sysctls: MemorySysctls {

@@ -1,0 +1,56 @@
+Node 2, zone FutureZone
+  per-node stats
+      nr_kernel_stack 4096
+      nr_dirtied 9007199254740993
+      nr_written 18446744073709551615
+      workingset_nodes 9
+      workingset_refault_file 22
+      pgpromote_success 3
+  pages free 9007199254740993
+        boost 8
+        min 10
+        low 20
+        high 30
+        promo 40
+        spanned 1000
+        present 900
+        managed 800
+        cma 16
+        protection: (0, 2, 18446744073709551615)
+      nr_free_pages 9007199254740993
+      numa_hit 99
+      future_zone_stat 7
+  pagesets
+    cpu: 7
+              count: 5
+              high: 500
+              batch: 3
+              high_min: 100
+              high_max: 600
+  vm stats threshold: 12
+  node_unreclaimable: 0
+  start_pfn: 1024
+  reserved_highatomic: 8
+  free_highatomic: 4
+Node 2, zone Device
+  pages free 0
+        min 0
+        low 0
+        high 0
+        spanned 0
+        present 0
+        managed 0
+        protection: (0, 0, 0)
+Node 99, zone Normal
+  per-node stats
+      nr_kernel_stack 128
+      nr_dirtied 1
+  pages free 12
+        min 1
+        low 2
+        high 3
+        spanned 100
+        present 100
+        managed 80
+        protection: (0, 0)
+      nr_free_pages 12

@@ -1,6 +1,6 @@
 # Runtime TODO
 
-Linux reader/parser work: [reader TODO](wora-observability-linux-mm/TODO.md).
+Linux reader/parser work: [reader TODO](https://github.com/adamflott/linux-observability-mm/blob/master/TODO.md).
 Current memory APIs and measurements: [memory guide](docs/memory.md).
 
 ## Memory and resource limits

@@ -382,14 +382,11 @@ fn diagnostic_batches_are_shared_and_retained_snapshots_survive_refresh() -> Res
 async fn captured_linux_memory_metrics_reach_host_stats_sinks() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     for (name, contents) in [
-        ("buddyinfo", include_str!("../wora-observability-linux-mm/tests/fixtures/arm64-buddyinfo")),
-        ("zoneinfo", include_str!("../wora-observability-linux-mm/tests/fixtures/synthetic-zoneinfo")),
-        ("swaps", include_str!("../wora-observability-linux-mm/tests/fixtures/synthetic-swaps")),
-        ("slabinfo", include_str!("../wora-observability-linux-mm/tests/fixtures/synthetic-slabinfo")),
-        (
-            "pagetypeinfo",
-            include_str!("../wora-observability-linux-mm/tests/fixtures/synthetic-pagetypeinfo"),
-        ),
+        ("buddyinfo", include_str!("fixtures/linux-mm/arm64-buddyinfo")),
+        ("zoneinfo", include_str!("fixtures/linux-mm/synthetic-zoneinfo")),
+        ("swaps", include_str!("fixtures/linux-mm/synthetic-swaps")),
+        ("slabinfo", include_str!("fixtures/linux-mm/synthetic-slabinfo")),
+        ("pagetypeinfo", include_str!("fixtures/linux-mm/synthetic-pagetypeinfo")),
     ] {
         tokio::fs::write(root.path().join(name), contents).await?;
     }

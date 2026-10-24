@@ -1,7 +1,7 @@
 # Memory reporting
 
 Current APIs, sources and limits. Remaining work:
-[runtime TODO](../TODO.md) · [Linux reader TODO](../wora-observability-linux-mm/TODO.md).
+[runtime TODO](../TODO.md) · [Linux reader TODO](https://github.com/adamflott/linux-observability-mm/blob/master/TODO.md).
 
 - [Usage](#usage)
 - [Linux mm subsystems](#linux-mm-subsystems)
@@ -105,7 +105,7 @@ JSON routine fields stay directly under `linux_mm`, with `collection` accounting
 ## Linux mm subsystems
 
 All fields below are under `linux_mm`. Paths use default `/proc` and `/sys` roots.
-Rustdoc on the [reader types](../wora-observability-linux-mm/src/lib.rs) documents
+Rustdoc on the [reader types](https://docs.rs/linux-observability-mm/0.4.0/linux_observability_mm/) documents
 nested values and conversions.
 
 ### Routine sources
@@ -196,7 +196,7 @@ has been validated; kernel configuration, mounts, permissions and backports matt
 | 4.19 zoneinfo / 6.1 legacy SLAB | Format review/synthetic coverage, not whole-crate live validation. |
 | Other releases, including 7.x | Best-effort supported layouts; source review does not establish live-kernel support. |
 
-[Fixture provenance](../wora-observability-linux-mm/tests/fixtures/README.md).
+[Fixture provenance](https://github.com/adamflott/linux-observability-mm/blob/master/tests/fixtures/README.md).
 CI follows runner images, not a fixed booted-kernel matrix. Containers use the host/VM kernel.
 
 | Interface | Upstream availability / current parser limit |
@@ -235,8 +235,8 @@ make page-owner, kmemleak, EDAC or CMA universally available.
 
 | Interface | Assessment / decision | Probe evidence |
 | --- | --- | --- |
-| `PROCMAP_QUERY` (6.11) | Useful for filtered VMA metadata with fixed buffers; each result is consistent, successive queries can race. It supplies no RSS/PSS accounting. Retain bounded maps/smaps readers: locked procfs/rustix/nix versions have no safe wrapper, and this crate forbids unsafe Rust. [UAPI](https://github.com/torvalds/linux/blob/v6.11/include/uapi/linux/fs.h) | [Read-only probe](../wora-observability-linux-mm/tools/procmap-query.c): at most 64 calls/filter, 256-byte names, no build-ID requests. Compiles cleanly; current 6.8 VM returns unsupported (exit 77). Successful 6.11+ execution remains unvalidated. |
-| `PAGEMAP_SCAN` (6.7) | Useful for filtered page-category regions, with `flags = 0`, explicit address bounds, fixed vectors and `walk_end` continuation. `max_pages` limits matches, not all pages visited. It supplies no PFNs/kpage accounting. Retain current binary readers; production integration needs a safe wrapper and shared request/result admission. [UAPI](https://github.com/torvalds/linux/blob/v6.11/include/uapi/linux/fs.h) | [Read-only probe](../wora-observability-linux-mm/tools/pagemap-scan.c): eight owned pages, one result slot, two matches/call, four calls. Passes on 6.8/aarch64 as root and UID 65534: eight pages reported, complete walk, contents unchanged. No userfaultfd/WP flags. |
+| `PROCMAP_QUERY` (6.11) | Useful for filtered VMA metadata with fixed buffers; each result is consistent, successive queries can race. It supplies no RSS/PSS accounting. Retain bounded maps/smaps readers: locked procfs/rustix/nix versions have no safe wrapper, and this crate forbids unsafe Rust. [UAPI](https://github.com/torvalds/linux/blob/v6.11/include/uapi/linux/fs.h) | [Read-only probe](https://github.com/adamflott/linux-observability-mm/blob/master/tools/procmap-query.c): at most 64 calls/filter, 256-byte names, no build-ID requests. Compiles cleanly; current 6.8 VM returns unsupported (exit 77). Successful 6.11+ execution remains unvalidated. |
+| `PAGEMAP_SCAN` (6.7) | Useful for filtered page-category regions, with `flags = 0`, explicit address bounds, fixed vectors and `walk_end` continuation. `max_pages` limits matches, not all pages visited. It supplies no PFNs/kpage accounting. Retain current binary readers; production integration needs a safe wrapper and shared request/result admission. [UAPI](https://github.com/torvalds/linux/blob/v6.11/include/uapi/linux/fs.h) | [Read-only probe](https://github.com/adamflott/linux-observability-mm/blob/master/tools/pagemap-scan.c): eight owned pages, one result slot, two matches/call, four calls. Passes on 6.8/aarch64 as root and UID 65534: eight pages reported, complete walk, contents unchanged. No userfaultfd/WP flags. |
 
 ## Collection and retention limits
 

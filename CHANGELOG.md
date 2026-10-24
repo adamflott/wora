@@ -7,6 +7,19 @@ and [Semantic Versioning](https://semver.org/) starts at 1.0.0. Earlier releases
 <!-- next-header -->
 ## [Unreleased]
 
+## [0.0.21] - 2026-10-24
+
+### Fixes
+
+- Fix Linux memory reporting unit and integration test builds with the external
+  `linux-observability-mm` dependency by keeping their five shared fixtures in
+  `tests/fixtures/linux-mm/` instead of including files from the removed package.
+
+### Documentation
+
+- Update Linux reader API, roadmap, fixture and probe links to the external crate.
+  Document local integration fixture provenance and update project guidance.
+
 ## [0.0.19] - 2026-10-24
 
 ### Features

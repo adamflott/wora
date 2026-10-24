@@ -71,8 +71,8 @@ cargo clippy --workspace --all-targets --all-features
 cargo doc --workspace --all-features --no-deps
 ```
 
-[Runtime TODO](TODO.md) · [Linux reader TODO](wora-observability-linux-mm/TODO.md) ·
-[Linux memory readers](wora-observability-linux-mm/README.md) ·
+[Runtime TODO](TODO.md) · [Linux reader TODO](https://github.com/adamflott/linux-observability-mm/blob/master/TODO.md) ·
+[Linux memory readers](https://github.com/adamflott/linux-observability-mm/blob/master/README.md) ·
 [Metric exporters](wora-observability/README.md)
 
 ## Project

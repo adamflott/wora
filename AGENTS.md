@@ -25,22 +25,25 @@ Key modules and workspace crates:
 - `src/restart_policy.rs`: restart policy and app main return action types.
 - `src/resources.rs`: validated runtime count budgets and shared admission leases.
 - `wora-observability/`: Prometheus and OpenTelemetry adapters.
-- `wora-observability-linux-mm/`: Linux memory readers/parsers and captured fixtures.
+- External `linux-observability-mm` crate: Linux memory readers/parsers, re-exported
+  as `wora::o11y::linux_mm`. WORA integration fixtures live in `tests/fixtures/linux-mm/`.
 
 ## Documentation
 
 - Keep `README.md` focused on the project aim, architecture and quick starts.
 - Keep current memory APIs, sources, limits and concise measurement summaries in
   `docs/memory.md`. Put runtime budgets, reporting, reloads and profiling work in
-  `TODO.md`; keep Linux reader/parser work in `wora-observability-linux-mm/TODO.md`.
+  `TODO.md`; keep Linux reader/parser work in the external
+  [reader TODO](https://github.com/adamflott/linux-observability-mm/blob/master/TODO.md).
   Write short implementation tasks.
   Remove completed/stale tasks; link instead of duplicating roadmaps or prose.
 - Document every public memory type's source in Rustdoc: the upstream API and OS
   file/API, scope (host/cgroup/process/node/cache), units, conversions and derived
   formulas. Nested tables should identify their containing source. Caller-supplied
   values and captured-root readers must not be described as fresh live samples.
-- Keep parser/API details in `wora-observability-linux-mm/README.md` and Rustdoc;
-  that README is also included in the Linux reader crate's generated docs.
+- Keep parser/API details in the external `linux-observability-mm` README and
+  Rustdoc. Keep WORA test inputs local; do not include files from a dependency's
+  source tree.
 
 ## Build and Test
 
@@ -97,7 +100,7 @@ ignored by default; ordinary fixture tests should not require root.
   headers; other typed tables, inventories, sinks, queue payloads, tasks and reloads
   remain incomplete. The allocator reserve still needs measurement. Extended
   release-process soak measurements and runtime-wide contract enforcement remain open
-  in `TODO.md`; reader allocation limits remain in `wora-observability-linux-mm/TODO.md`.
+  in `TODO.md`; reader allocation limits remain in the external reader TODO.
 
 ## CI Notes
 
