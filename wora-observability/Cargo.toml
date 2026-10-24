@@ -19,7 +19,7 @@ otlp = ["opentelemetry", "dep:opentelemetry-otlp", "dep:tonic"]
 [dependencies]
 async-trait = "0.1.92"
 thiserror = "2.0.20"
-wora = { path = "..", version = "0.0.20" }
+wora = { path = "..", version = "0.0.21" }
 axum = { version = "0.8.9", optional = true }
 opentelemetry = { version = "0.33.1", features = ["metrics"], optional = true }
 opentelemetry_sdk = { version = "0.33.1", features = ["metrics"], optional = true }
