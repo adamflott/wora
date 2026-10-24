@@ -7,6 +7,8 @@ and [Semantic Versioning](https://semver.org/) starts at 1.0.0. Earlier releases
 <!-- next-header -->
 ## [Unreleased]
 
+## [0.0.19] - 2026-10-24
+
 ### Features
 
 - Add `LinuxMemoryLimits::heap` and shared retained/scratch `HeapBudget` reservations with live/peak counters, checked admission and an explicit per-allocation overhead reserve. These APIs account for instrumented storage, not whole-process heap or RSS.
@@ -28,6 +30,7 @@ and [Semantic Versioning](https://semver.org/) starts at 1.0.0. Earlier releases
 
 ### Changes
 
+- Rename the Linux memory reader crate from `wora-observability-linux-mm` to `linux-observability-mm` and use the published `0.4.0` dependency instead of a workspace member. Remove the bundled reader sources, fixtures and licenses from this repository.
 - Make Linux snapshots immutable with private owning Arcs and fallible `try_new`/`try_from_data`/`try_rebuild` builders; borrow tables through `data()`/`diagnostics()`. Provider clones/generations share heap budgets and retain header leases until weak tracker entries are pruned. `from_roots_with_limits` accepts `LinuxMemoryLimits`; add shared-budget collection and heap-usage accessors.
 - Use fallible shared `MemoryList`/`MemoryMap`/`MemoryText` storage for parsed values, `MemoryFiles` and smaps. Replace direct value literals with `try_list`/`try_map`/`try_text` builders and error strings with `SysctlReadError::read_failed`. Reserve capacity before growth/copying; expose allocation failures separately, including an inline `MemoryFiles::allocation_error`. JSON value shapes stay unchanged.
 - `RunnerOptions` struct literals gain `resources: None`; builders preserve the handle through provider/lock type changes. Existing sender types and `schedule_task` return types stay compatible; non-exhaustive resource limits use `Default` plus field assignment.
@@ -38,22 +41,31 @@ and [Semantic Versioning](https://semver.org/) starts at 1.0.0. Earlier releases
 - Serialize memory-report and memory-trace JSON from borrowed fields, avoiding report-only snapshot clones and intermediate trace JSON values.
 - Store only structured data in memory-file, sysctl, cgroup, and hugepage `parsed` maps; remove their former `values` maps and raw-value types. Parse specialized diagnostics during their bounded read without retaining source text.
 - Structure smaps headers and accounting into mapping metadata, quantities, and flag lists. Report malformed or unsupported layouts under their source names in `unavailable`, without retaining raw contents or partial records. Raw-only serialized snapshots require migration.
+- Update Tokio to `1.54.1`, libc to `0.2.191`, and transitive dependencies in the lockfile.
 
 ### Tests
 
 - Verify heap/scratch admission, refusal before builders run, shared-credit lifetimes, replacement/weak-header overlap, error-map exhaustion and unchanged serialized values.
-
 - Cover shared routine data, immutable replacement isolation, generation/byte admission and recovery after reader release, invalid/oversized limits, exact JSON/newline boundaries, escaping, buffer reuse, aggregate reads, and incomplete cgroup visibility.
+- Verify runtime count validation, pipeline refusal before startup, queue capacities, shared admission rollback, scheduled-task refusal/waiting, and lease retention until cancelled blocking workers exit.
 - Verify that host samplers retain no process tables, process sampling retains only the current PID without command/environment/task inventories, supplied host snapshots cause no telemetry collection, and CPU/disk counter history survives refreshes through cloned environments.
 - Verify diagnostic sharing across provider clones, host samples and memory events, immutable retained snapshots across refreshes, release of old batches, and report JSON parity with public memory snapshots.
 - Add coverage for mixed KSM counter/boolean records, filesystem sysctl layouts, integer limits, malformed data, native bases and units, captured process files, structured-only serialization, and propagation through memory events.
+- Add parser and integration coverage for the new zswap, DAMON_STAT, DMEM, NUMA policy/topology, pagemap interpretation, page-owner, kmemleak, full MGLRU and shrinker data, including bounded reads and malformed or unavailable sources.
+- Fix memory-event runtime tests to skip unrelated application events while waiting for snapshots.
 
 ### Documentation
 
+- Consolidate memory APIs, source tables, collection costs, limits, kernel compatibility and measurement summaries in `docs/memory.md`; keep the README focused on architecture and quick starts. Document public memory types' sources, scope, units, conversions and captured-input semantics in Rustdoc.
 - Split runtime and Linux reader TODOs; merge overlapping reload tasks and update roadmap links and guidance.
 - Define the WORA-owned memory contract: retained/scratch/runtime capacities, allocator/control reserve, separate stack accounting, ownership/admission lifetimes, and requirements for custom extensions/runtimes. Mark current heap-enforcement gaps explicitly.
 - Evaluate read-only `PAGEMAP_SCAN` with explicit ranges and fixed result/call limits. The probe passes on 6.8/aarch64 as root and UID 65534 with write-protection flags disabled; document its match-limit semantics and current binary-reader decision.
 - Evaluate `PROCMAP_QUERY` with a bounded read-only C probe and document the unsupported 6.8-kernel result, buffer/consistency constraints, and decision to retain maps/smaps with the current safe Rust dependencies.
+- Clarify that Semantic Versioning starts at `1.0.0` and earlier releases may break APIs.
+
+### CI / Tooling
+
+- Run i686 and aarch64 Linux binaries directly on compatible Ubuntu hosts, replacing Cross containers and QEMU to avoid synthetic process CPU counters and Tokio signal-driver socket failures. Build, document and test the workspace with all features on both targets; install multilib support for i686.
 
 ## [0.0.18] - 2026-10-16
 
