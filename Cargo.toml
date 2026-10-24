@@ -11,7 +11,7 @@ license = "MIT OR Apache-2.0"
 categories = ["development-tools"]
 
 [workspace]
-members = [".", "wora-observability", "linux-observability-mm"]
+members = [".", "wora-observability"]
 resolver = "3"
 
 [dependencies]
@@ -22,7 +22,7 @@ decimal-percentage = "0.1.4"
 derive-getters = "0.5.0"
 derive_builder = "0.20.2"
 directories = "6.0.0"
-libc = "0.2.190"
+libc = "0.2.191"
 log = "0.4.34"
 nix = { version = "0.31.3", features = ["process", "mman", "resource", "fs", "user"]}
 notify = { version = "8.2.0", features = ["serde"] }
@@ -33,7 +33,7 @@ serde_derive = "1.0.229"
 serde_json = "1.0.154"
 sysinfo = "0.39.6"
 thiserror = "2.0.21"
-tokio = { version = "1.53.3", features = ["full"] }
+tokio = { version = "1.54.1", features = ["full"] }
 tokio-util = { version = "0.7.20", features = ["rt"] }
 toml = "1.1.8"
 tracing = "0.1.44"
@@ -43,7 +43,7 @@ tracing-subscriber = "0.3.23"
 caps = "0.5.5"
 procfs = { version = "0.18.0", features = ["serde1"] }
 sd-notify = "0.5.0"
-linux-observability-mm = { path = "linux-observability-mm", version = "0.3.0", features = ["serde1"] }
+linux-observability-mm = { version = "0.4.0", features = ["serde1"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tempfile = "3"
